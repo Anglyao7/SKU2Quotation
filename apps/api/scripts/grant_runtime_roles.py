@@ -55,6 +55,7 @@ AUTH_COLUMN_UPDATE_GRANTS: dict[str, tuple[str, ...]] = {
     "users": ("status", "updated_at"),
 }
 WORKER_TABLES = {
+    "catalog_translation_changes",
     "worker_jobs",
     "media_objects",
     "source_files",
@@ -130,7 +131,9 @@ def grant_runtime_roles() -> dict[str, object]:
     worker_role = _role("ATC_WORKER_DB_ROLE", "atc_worker")
     scheduler_role = _role("ATC_SCHEDULER_DB_ROLE", "atc_scheduler")
 
-    with psycopg.connect(_psycopg_url(owner_url), autocommit=True) as connection:
+    # Publish the complete privilege set atomically. Live API connections must
+    # never observe the intermediate REVOKEs while a release is being prepared.
+    with psycopg.connect(_psycopg_url(owner_url), autocommit=False) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"

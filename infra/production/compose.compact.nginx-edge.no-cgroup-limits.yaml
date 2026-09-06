@@ -11,6 +11,9 @@ services:
   api:
     deploy: !override {}
 
+  translation-worker:
+    deploy: !override {}
+
   postgres:
     deploy: !override {}
 

@@ -2050,8 +2050,8 @@ img { display: block; max-width: 100%; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.product-selection-add { min-width: 154px; }
-.product-selection-quantity { width: 132px; }
+.product-selection-add { grid-column: 2; min-width: 154px; }
+.product-selection-quantity { grid-column: 2; width: 132px; }
 .product-selection-quantity .rt-IconButton { width: 34px; height: 34px; }
 .product-selection-quantity > span { min-width: 40px; }
 .product-mobile-purchase { display: none; }

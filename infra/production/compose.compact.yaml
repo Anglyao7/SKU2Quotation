@@ -6,7 +6,7 @@ x-api-build: &api-build
   args:
     ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
     ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-    ATC_MIGRATION_HEAD: "20260906_0133"
+    ATC_MIGRATION_HEAD: "20260906_0134"
     ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
 
 x-api-environment: &api-environment
@@ -16,7 +16,7 @@ x-api-environment: &api-environment
   ATC_STRICT_RUNTIME: "true"
   ATC_RELEASE: ${ATC_RELEASE:?ATC_RELEASE is required}
   ATC_COMMIT_SHA: ${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
-  ATC_MIGRATION_HEAD: "20260906_0133"
+  ATC_MIGRATION_HEAD: "20260906_0134"
   ATC_IMAGE_DIGEST: ${ATC_IMAGE_DIGEST:?ATC_IMAGE_DIGEST is required}
   ATC_CONFIG_VERSION: ${ATC_CONFIG_VERSION:?ATC_CONFIG_VERSION is required}
   BOOTSTRAP_TENANT_SLUG: ${BOOTSTRAP_TENANT_SLUG:?BOOTSTRAP_TENANT_SLUG is required}
@@ -269,6 +269,33 @@ services:
         reservations:
           memory: 512M
     networks: [app, data, identity-admin, egress]
+
+  translation-worker:
+    <<: *service-defaults
+    image: atc-api:${ATC_COMMIT_SHA:?ATC_COMMIT_SHA is required}
+    command: [python, -m, app.workers.catalog_translation]
+    environment:
+      <<: *api-environment
+    volumes:
+      - local-object-data:/var/lib/atc/object-storage
+    stop_grace_period: 150s
+    healthcheck:
+      test: [CMD, python, -c, "import pathlib,time; assert time.time() - pathlib.Path('/tmp/atc-translation-worker.heartbeat').stat().st_mtime < 180"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 1G
+    networks: [app, data, egress]
 
   postgres:
     <<: *service-defaults

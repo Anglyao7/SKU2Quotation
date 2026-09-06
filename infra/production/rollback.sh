@@ -89,6 +89,9 @@ compose up --detach --wait "${rollback_dependencies[@]}"
 "${SCRIPT_DIR}/keycloak-reconcile.sh"
 info "restoring application containers from ${ATC_RELEASE}; persistent volumes are untouched"
 compose up --detach --no-deps --wait api web caddy
+if compose config --services | grep -Fxq translation-worker; then
+  compose up --detach --no-deps translation-worker
+fi
 if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
   compose_with_workers up --detach --no-deps --wait \
     tenant-worker product-event-consumer

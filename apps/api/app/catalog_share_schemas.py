@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 class CatalogShareCreate(BaseModel):
     target_type: Literal["PRODUCTS", "CATEGORY"]
     sku_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    product_ids: list[UUID] = Field(default_factory=list, max_length=500)
     category_id: UUID | None = None
     logo_position: Literal["NONE", "TOP_LEFT", "TOP_RIGHT"] = "NONE"
 
@@ -17,10 +18,12 @@ class CatalogShareCreate(BaseModel):
     def validate_target(self) -> "CatalogShareCreate":
         if len(self.sku_ids) != len(set(self.sku_ids)):
             raise ValueError("sku ids must be unique")
+        if len(self.product_ids) != len(set(self.product_ids)):
+            raise ValueError("product ids must be unique")
         if self.target_type == "PRODUCTS":
-            if not self.sku_ids or self.category_id is not None:
-                raise ValueError("product shares require sku_ids only")
-        elif self.category_id is None or self.sku_ids:
+            if bool(self.sku_ids) == bool(self.product_ids) or self.category_id is not None:
+                raise ValueError("product shares require either product_ids or sku_ids")
+        elif self.category_id is None or self.sku_ids or self.product_ids:
             raise ValueError("category shares require category_id only")
         return self
 

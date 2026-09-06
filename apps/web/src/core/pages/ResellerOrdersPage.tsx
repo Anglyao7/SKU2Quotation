@@ -64,9 +64,9 @@ export function ResellerOrdersPage() {
           <div className="reseller-orders-table reseller-orders-table-head"><span>{t("询价编号")}</span><span>{t("客户")}</span><span>{t("金额")}</span><span>{t("状态")}</span><span>{t("提交时间")}</span><span>{t("有效期")}</span><span>{t("操作")}</span></div>
           {orders.map((order) => <div className="reseller-orders-table reseller-orders-table-row" key={order.id}>
             <strong className="core-tabular">{order.quoteNumber}</strong>
-            <span><strong>{order.customerCompany || order.customerName}</strong><small>{order.customerCompany ? order.customerName : t("当前账号")}</small></span>
+            <span><strong>{order.customerCompany || order.customerName}</strong></span>
             <strong>{money(order.totalAmount, order.currency)}</strong>
-            <Badge color={order.status === "PENDING_CONFIRMATION" ? "amber" : order.status === "CONFIRMED" ? "jade" : "gray"}>{t(orderStatusLabel[order.status] ?? order.status)}</Badge>
+            <Badge className="reseller-order-status" color={order.status === "PENDING_CONFIRMATION" ? "amber" : order.status === "CONFIRMED" ? "jade" : "gray"}>{t(orderStatusLabel[order.status] ?? order.status)}</Badge>
             <time>{coreDate(order.createdAt)}</time>
             <time>{coreDate(order.validUntil)}</time>
             <Button asChild size="1" variant={order.status === "PENDING_CONFIRMATION" ? "solid" : "soft"}>

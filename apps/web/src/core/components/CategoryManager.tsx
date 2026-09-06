@@ -856,6 +856,7 @@ export function CategoryManager({
                         </span>
                       </button>
                       {root.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                      {onShareCategory ? <Button size="1" variant="soft" disabled={root.status !== "ACTIVE"} onClick={() => onShareCategory(root)} aria-label={`${t("分享分类")} ${root.name}`}><ShareNetwork />{t("分享分类")}</Button> : null}
                       <Button className="core-category-add-child" size="1" variant="ghost" disabled={reordering} onClick={() => beginChild(root.id)} aria-label={t("在 {name} 下新增二级分类", { name: root.name })}><Plus /></Button>
                     </div>
                     <div id={childrenId} className="core-category-children" hidden={collapsed}>
@@ -877,6 +878,7 @@ export function CategoryManager({
                             </span>
                           </button>
                           {child.status !== "ACTIVE" ? <Badge color="gray">{t("停用")}</Badge> : null}
+                          {onShareCategory ? <Button size="1" variant="soft" disabled={child.status !== "ACTIVE"} onClick={() => onShareCategory(child)} aria-label={`${t("分享分类")} ${child.name}`}><ShareNetwork />{t("分享分类")}</Button> : null}
                         </div>
                       ))}
                     </div>

@@ -196,50 +196,6 @@
   white-space: nowrap;
 }
 
-.account-hot-products-setting {
-  min-width: 0;
-  padding: 14px 15px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 11px;
-  align-items: center;
-  border: 1px solid var(--core-line);
-  border-radius: 13px;
-  background: var(--core-soft);
-  transition: border-color 160ms ease, background 160ms ease;
-}
-
-.account-hot-products-setting.is-enabled {
-  border-color: color-mix(in srgb, #d4af37 48%, var(--core-line));
-  background: color-mix(in srgb, #d4af37 8%, var(--core-soft));
-}
-
-.account-hot-products-icon {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  color: #9a6d00;
-  background: color-mix(in srgb, #d4af37 15%, var(--core-surface));
-}
-
-.account-hot-products-copy {
-  min-width: 0;
-  display: grid;
-  gap: 3px;
-}
-
-.account-hot-products-copy p {
-  line-height: 1.55;
-}
-
-.account-hot-products-control {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .account-storefront-preview {
   min-width: 0;
   padding: 13px 14px;
@@ -436,10 +392,6 @@
     grid-template-columns: 1fr;
   }
 
-  .account-hot-products-setting {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
   .account-logo-setting {
     grid-template-columns: 52px minmax(0, 1fr);
   }
@@ -452,11 +404,6 @@
   .account-logo-setting > .rt-Button {
     grid-column: 1 / -1;
     width: 100%;
-  }
-
-  .account-hot-products-control {
-    grid-column: 2;
-    justify-content: space-between;
   }
 
   .account-password-actions {

@@ -17081,6 +17081,23 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         assert repeated.status_code == 201, repeated.text
         assert repeated.json()["id"] == share["id"]
 
+        by_product = client.post("/api/v1/catalog-shares", json={
+            "target_type": "PRODUCTS", "product_ids": [str(value) for value in product_ids],
+        })
+        assert by_product.status_code == 201, by_product.text
+        assert by_product.json()["id"] == share["id"]
+        preview_path = f"/api/store/demo/shares/{share_identifier}/preview"
+        preview = client.get(preview_path, headers={"User-Agent": "facebookexternalhit/1.1"})
+        assert preview.status_code == 200, preview.text
+        assert 'text/html' in preview.headers['content-type']
+        assert '<meta property="og:title"' in preview.text
+        assert '<meta property="og:image"' in preview.text
+        assert '<meta name="twitter:card" content="summary_large_image">' in preview.text
+        assert 'data-share-target href="/demo?share=' in preview.text
+        assert client.head(preview_path).status_code == 200
+        assert client.get("/api/catalog-share-navigation.js").headers['content-type'].startswith('application/javascript')
+        assert client.get("/api/catalog-share-placeholder.png").content.startswith(b'\x89PNG')
+
         branded = client.post(
             "/api/v1/catalog-shares",
             json={
@@ -17153,6 +17170,18 @@ def test_catalog_share_links_scope_products_and_categories() -> None:
         )
         assert category_scoped.status_code == 200, category_scoped.text
         assert category_scoped.json()["total"] == 2
+
+        category_preview = client.get(f"/api/store/demo/shares/{category_share['id']}/preview")
+        assert category_preview.status_code == 200, category_preview.text
+        assert f"分享分类 {suffix}" in category_preview.text
+        with SessionLocal() as session:
+            for sku_id in sku_ids:
+                offer = session.scalar(select(PublicCatalogOfferRow).where(PublicCatalogOfferRow.sku_id == sku_id))
+                offer.publication_status = "DRAFT"
+            session.commit()
+        removed_preview = client.get(preview_path)
+        assert removed_preview.status_code == 404
+        assert f"分享商品 {suffix}" not in removed_preview.text
 
         missing = client.get("/api/store/demo/shares/not-a-real-share-token")
         assert missing.status_code == 404
@@ -22769,6 +22798,8 @@ def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_read
 
 
 def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> None:
+    from alembic.script import ScriptDirectory
+
     database_path = tmp_path / "public-catalog-migration.db"
     migration_url = f"sqlite:///{database_path.as_posix()}"
     config = Config(str(API_ROOT / "alembic.ini"))
@@ -23041,7 +23072,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260906_0133"
+            == ScriptDirectory.from_config(config).get_current_head()
         )
     upgraded_engine.dispose()
     command.check(config)
@@ -23940,6 +23971,45 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             })
             assert "support.settings_manage" not in child_permissions
             headers = {"Authorization": f"Bearer {token}"}
+
+            child_share_response = child_client.post("/api/v1/catalog-shares", headers=headers, json={
+                "target_type": "PRODUCTS", "product_ids": [product_id],
+            })
+            assert child_share_response.status_code == 201, child_share_response.text
+            child_share = child_share_response.json()
+            assert child_share['share_path'].startswith(account['storefront_path'] + '/share/')
+            assert child_share['store_name'] == f"Downstream Customer {suffix}"
+            assert child_share['store_logo_url'] is None
+            anonymous_share = client.get(f"/api/store/{account['storefront_slug']}/shares/{child_share['token']}")
+            assert anonymous_share.status_code == 200, anonymous_share.text
+            assert anonymous_share.json()['store_name'] == child_share['store_name']
+            child_preview = client.get(f"/api/store/{account['storefront_slug']}/shares/{child_share['token']}/preview")
+            assert child_preview.status_code == 200, child_preview.text
+            assert child_share['store_name'] in child_preview.text
+            assert 'Local Demo Company' not in child_preview.text
+            assert 'data-share-target href="' + account['storefront_path'] + '?share=' in child_preview.text
+            from app.subaccount_pricing_models import SubaccountPricingPolicyRow
+            with SessionLocal() as session:
+                policy = session.scalar(select(SubaccountPricingPolicyRow).where(
+                    SubaccountPricingPolicyRow.membership_id == UUID(account['id']),
+                ))
+                if policy is None:
+                    policy = SubaccountPricingPolicyRow(tenant_id=DEFAULT_TENANT_ID, membership_id=UUID(account['id']))
+                    session.add(policy)
+                policy.hidden_product_ids = [product_id]
+                session.commit()
+            hidden_preview = client.get(f"/api/store/{account['storefront_slug']}/shares/{child_share['token']}/preview")
+            assert hidden_preview.status_code == 404, hidden_preview.text
+            denied_share = child_client.post("/api/v1/catalog-shares", headers=headers, json={
+                "target_type": "PRODUCTS", "product_ids": [product_id],
+            })
+            assert denied_share.status_code == 409, denied_share.text
+            with SessionLocal() as session:
+                policy = session.scalar(select(SubaccountPricingPolicyRow).where(
+                    SubaccountPricingPolicyRow.membership_id == UUID(account['id']),
+                ))
+                policy.hidden_product_ids = []
+                session.commit()
 
             for private_endpoint in (
                 "/api/v1/suppliers",

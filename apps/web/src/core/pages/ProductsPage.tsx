@@ -1,4 +1,4 @@
-import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
+import { Badge, Button, Card, Checkbox, Dialog, DropdownMenu, Heading, Progress, Switch, Tabs, Text, TextArea, TextField } from "@radix-ui/themes";
 import { ArrowDown, ArrowUp, ArrowsClockwise, CaretDown, CaretLeft, CaretRight, CheckCircle, DotsThree, DownloadSimple, FileArrowUp, FileXls, Folders, ImageSquare, MagnifyingGlass, PencilSimple, Plus, PushPin, PushPinSlash, Sparkle, Tag, Trash, Translate, Warning, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -29,6 +29,7 @@ import {
   rollbackCatalogImportFile,
   retryCatalogTranslationProduct,
   updateProductCategory,
+  updateMerchantSettings,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -324,10 +325,13 @@ export function ProductsPage() {
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canDelete = canEdit;
+  const canShare = hasPermission("catalog.publish");
+  const canSelect = canDelete || canShare;
   const canImport = hasPermission("product.import")
     && hasPermission("product.edit")
     && hasPermission("catalog.publish");
   const canCreate = canEdit && hasPermission("catalog.publish");
+  const canManageStorefront = hasPermission("system.settings_manage");
   const [params, setParams] = useSearchParams();
   const importInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
@@ -402,6 +406,11 @@ export function ProductsPage() {
   const [bulkNotice, setBulkNotice] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
   const [translationLocale, setTranslationLocale] = useState<StorefrontLocale>("en-US");
+  const [hotProductsEnabled, setHotProductsEnabled] = useState<boolean>();
+  const [hotProductsSaving, setHotProductsSaving] = useState(false);
+  const [merchantSettingsFailed, setMerchantSettingsFailed] = useState(false);
+  const [merchantSettingsReload, setMerchantSettingsReload] = useState(0);
+  const merchantSettingsSequence = useRef(0);
   const [translatingProductId, setTranslatingProductId] = useState<string>();
   const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
   const [imageEnhancementTargets, setImageEnhancementTargets] = useState<ImageEnhancementTarget[]>([]);
@@ -452,13 +461,42 @@ export function ProductsPage() {
   }, [t]);
   useEffect(() => { void loadCategories().catch(() => setCategories([])); }, [loadCategories]);
   useEffect(() => {
+    const sequence = ++merchantSettingsSequence.current;
+    setHotProductsEnabled(undefined);
+    setHotProductsSaving(false);
+    setMerchantSettingsFailed(false);
     void getMerchantSettings().then((settings) => {
+      if (sequence !== merchantSettingsSequence.current) return;
       const preferred = settings.storefrontDefaultLocale !== "zh-CN"
         ? settings.storefrontDefaultLocale
         : settings.storefrontLocales.find((value) => value !== "zh-CN") ?? "en-US";
       setTranslationLocale(preferred);
-    }).catch(() => undefined);
-  }, []);
+      setHotProductsEnabled(settings.hotProductsEnabled);
+    }).catch(() => {
+      if (sequence === merchantSettingsSequence.current) setMerchantSettingsFailed(true);
+    });
+    return () => { merchantSettingsSequence.current += 1; };
+  }, [profile?.context.tenantId, merchantSettingsReload]);
+
+  const saveHotProductsEnabled = async (enabled: boolean) => {
+    if (!canManageStorefront || hotProductsEnabled === undefined || hotProductsSaving) return;
+    const sequence = merchantSettingsSequence.current;
+    const previous = hotProductsEnabled;
+    setHotProductsEnabled(enabled);
+    setHotProductsSaving(true);
+    try {
+      const settings = await updateMerchantSettings({ hotProductsEnabled: enabled });
+      if (sequence !== merchantSettingsSequence.current) return;
+      setHotProductsEnabled(settings.hotProductsEnabled);
+      notify(t("已保存并更新前台"), { kind: "success" });
+    } catch {
+      if (sequence !== merchantSettingsSequence.current) return;
+      setHotProductsEnabled(previous);
+      notify(t("热门商品设置保存失败，请重试。"), { kind: "error" });
+    } finally {
+      if (sequence === merchantSettingsSequence.current) setHotProductsSaving(false);
+    }
+  };
   useEffect(() => {
     void api.getProductTags("", 200)
       .then((response) => setManagedTags(response.tags))
@@ -1327,6 +1365,25 @@ export function ProductsPage() {
           {hasActiveFilters ? <Button variant="ghost" color="gray" onClick={resetFilters}>{t("清除")}</Button> : null}
           <Button variant="soft" color="gray" disabled={loading} onClick={() => void load()}><ArrowsClockwise />{t("刷新")}</Button>
         </div>
+        {canManageStorefront ? (
+          <div className="core-sku-storefront-options">
+            <label className="core-sku-hot-products-control">
+              <Switch
+                checked={hotProductsEnabled ?? false}
+                disabled={hotProductsEnabled === undefined || hotProductsSaving}
+                onCheckedChange={(enabled) => void saveHotProductsEnabled(enabled)}
+                aria-label={t("热门商品优先展示")}
+              />
+              <Text size="2" weight="medium">{t("热门商品优先展示")}</Text>
+            </label>
+            <Text size="1" color={hotProductsEnabled ? "jade" : "gray"} role="status">
+              {t(hotProductsSaving ? "正在保存…" : merchantSettingsFailed ? "暂时无法完成请求" : hotProductsEnabled === undefined ? "正在加载" : hotProductsEnabled ? "已开启" : "未开启")}
+            </Text>
+            {merchantSettingsFailed ? (
+              <Button size="1" variant="soft" onClick={() => setMerchantSettingsReload((value) => value + 1)}>{t("重试")}</Button>
+            ) : null}
+          </div>
+        ) : null}
       </Card>
       {bulkNotice ? (
         <Card className="core-sku-bulk-result" role="status">
@@ -1335,15 +1392,16 @@ export function ProductsPage() {
           <Button size="1" variant="ghost" color="gray" onClick={() => setBulkNotice("")} aria-label={t("关闭")}><X /></Button>
         </Card>
       ) : null}
-      {canDelete && selectedProductIds.size > 0 ? (
+      {canSelect && selectedProductIds.size > 0 ? (
         <Card className="core-sku-bulk-bar">
           <div>
             <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
+            {canShare ? <Button size="2" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [...selectedProductIds] })}>{t("分享商品")}</Button> : null}
             {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button> : null}
             {canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
-            <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button>
+            {canDelete ? <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button> : null}
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
         </Card>
@@ -1380,7 +1438,7 @@ export function ProductsPage() {
             <table className="core-sku-data-table">
               <thead>
                 <tr>
-                  {canDelete ? (
+                  {canSelect ? (
                     <th className="core-sku-select-column" scope="col">
                       <Checkbox
                         checked={allCurrentPageSelected ? true : currentPageSelected.length ? "indeterminate" : false}
@@ -1412,7 +1470,7 @@ export function ProductsPage() {
                     }}
                     aria-label={t("打开商品 {name} 的详情", { name: product.name })}
                   >
-                    {canDelete ? (
+                    {canSelect ? (
                       <td
                         className="core-sku-select-column"
                         onClick={(event) => event.stopPropagation()}
@@ -1504,6 +1562,7 @@ export function ProductsPage() {
                           <Translate />{t("翻译")}
                         </Button>
                       ) : null}
+                      {canShare ? <Button size="1" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [product.id] })}>{t("分享商品")}</Button> : null}
                     </td>
                   </tr>
                 ))}

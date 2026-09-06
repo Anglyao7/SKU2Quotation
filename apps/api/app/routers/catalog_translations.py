@@ -22,6 +22,8 @@ from ..domain.errors import ApplicationError
 from ..services.auth.dependencies import current_context, get_authenticated_session
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..use_cases import catalog_translations as use_cases
+from ..use_cases import translation_automation as automation
+from ..catalog_translation_schemas import CatalogTargetLocale
 from .errors import application_http_error
 
 
@@ -29,6 +31,35 @@ router = APIRouter(
     prefix="/api/v1/catalog/translations",
     tags=["catalog-translations"],
 )
+
+
+@router.get("/automation/{target_locale}")
+def automatic_translation_status(
+    target_locale: CatalogTargetLocale,
+    tenant_id: UUID | None = Query(default=None),
+    session: Session = Depends(get_authenticated_session),
+):
+    context = current_context(session)
+    try:
+        with use_cases.platform_admin_translation_scope(session, context=context, tenant_id=tenant_id) as (scoped, _):
+            return automation.status(session, tenant_id=scoped.tenant_id, locale=target_locale)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.put("/automation/{target_locale}")
+def update_automatic_translation(
+    target_locale: CatalogTargetLocale,
+    payload: automation.AutomationUpdate,
+    tenant_id: UUID | None = Query(default=None),
+    session: Session = Depends(get_authenticated_session),
+):
+    context = current_context(session)
+    try:
+        with use_cases.platform_admin_translation_scope(session, context=context, tenant_id=tenant_id) as (scoped, _):
+            return automation.update_settings(session, context=scoped, locale=target_locale, request=payload)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
 
 
 @router.get("/language-pack/{target_locale}")

@@ -195,8 +195,13 @@ class RateLimitedTranslationProvider:
         *,
         requests_per_minute: int,
         synchronize_limit: bool,
+        concurrency: int | None = None,
     ) -> None:
         self._provider = provider
+        self.concurrency = concurrency
+        if concurrency is not None:
+            from .translation_concurrency import configure
+            self.concurrency = configure(concurrency)
         self._use_configured_limit = synchronize_limit
         self.requests_per_minute = (
             configure_translation_requests_per_minute(requests_per_minute)
@@ -231,11 +236,14 @@ class RateLimitedTranslationProvider:
             and not self._provider_gates_outbound_requests
         ):
             self._acquire_request_slot()
-        return self._provider.translate(
-            text,
-            source_locale=source_locale,
-            target_locale=target_locale,
-        )
+        from contextlib import nullcontext
+        from .translation_concurrency import request_slot
+        with request_slot(self.concurrency) if self.concurrency is not None else nullcontext():
+            return self._provider.translate(
+                text,
+                source_locale=source_locale,
+                target_locale=target_locale,
+            )
 
 
 def rate_limited_translation_provider(
@@ -243,6 +251,7 @@ def rate_limited_translation_provider(
     *,
     requests_per_minute: int,
     synchronize_limit: bool = True,
+    concurrency: int | None = None,
 ) -> TranslationProvider:
     if isinstance(provider, RateLimitedTranslationProvider):
         return provider
@@ -250,6 +259,7 @@ def rate_limited_translation_provider(
         provider,
         requests_per_minute=requests_per_minute,
         synchronize_limit=synchronize_limit,
+        concurrency=concurrency,
     )
 
 

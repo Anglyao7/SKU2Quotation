@@ -77,6 +77,7 @@ interface StoreSkuFilters {
   includeFacets?: boolean;
   page?: number;
   locale?: StorefrontLocale;
+  sourceLocale?: StorefrontLocale;
   shareToken?: string;
   accountId?: string;
 }
@@ -449,8 +450,10 @@ async function getCachedStoreProducts(
   slug: string,
   filters: StoreSkuFilters = {},
 ): Promise<StoreProductList> {
-  const languagePack = await storefrontLanguagePack(slug, filters.locale);
   const params = new URLSearchParams();
+  // Request source content explicitly: an omitted locale can invoke the
+  // merchant's default-language translation again on the server.
+  params.set("locale", filters.sourceLocale || "zh-CN");
   if (filters.q) params.set("q", filters.q);
   if (filters.category) params.set("category", filters.category);
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));
@@ -463,6 +466,28 @@ async function getCachedStoreProducts(
   params.sort();
   const query = params.toString();
   const path = `/api/store/${encodeURIComponent(slug)}/products${query ? `?${query}` : ""}`;
+  // A partially translated package must not evict the underlying catalog page.
+  // Keep source pages independently, shared across language switches, while
+  // retaining account/share/revision isolation in their request keys.
+  const [raw, languagePack] = await Promise.all([
+    cachedPublicRequest(
+      publicCatalogCacheKey("products-source", `${path}${publicCatalogAuthScope()}`),
+      PUBLIC_CATALOG_CACHE_TTL_MS,
+      () => request<unknown>(path),
+    ),
+    storefrontLanguagePack(slug, filters.locale),
+  ]);
+  if (filters.includeFacets !== false) {
+    const compactParams = new URLSearchParams(params);
+    compactParams.set("include_facets", "false");
+    compactParams.sort();
+    const compactPath = `/api/store/${encodeURIComponent(slug)}/products?${compactParams.toString()}`;
+    primePublicRequestCache(
+      publicCatalogCacheKey("products-source", `${compactPath}${publicCatalogAuthScope()}`),
+      PUBLIC_CATALOG_CACHE_TTL_MS,
+      raw,
+    );
+  }
   const cachePath = `${languagePack
     ? `${path}#language-pack=${languagePack.target_locale}:${languagePack.version}`
     : path}${publicCatalogAuthScope()}`;
@@ -470,7 +495,6 @@ async function getCachedStoreProducts(
     publicCatalogCacheKey("products", cachePath),
     PUBLIC_CATALOG_CACHE_TTL_MS,
     async () => {
-      const raw = await request<unknown>(path);
       const list = normalizeList<StoreProduct>(raw);
       const meta = raw && typeof raw === "object" && !Array.isArray(raw)
         ? (raw as Record<string, unknown>)

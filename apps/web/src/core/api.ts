@@ -3281,6 +3281,8 @@ interface ApiCatalogLanguagePack {
 
 interface ApiCatalogTranslationJob {
   id: string;
+  origin?: "MANUAL" | "AUTOMATIC";
+  awaiting_publish?: boolean;
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
@@ -3479,6 +3481,8 @@ function mapCatalogLanguagePack(row: ApiCatalogLanguagePack): CatalogLanguagePac
 function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTranslationJob {
   return {
     id: row.id,
+    origin: row.origin ?? "MANUAL",
+    awaitingPublish: Boolean(row.awaiting_publish),
     sourceLocale: row.source_locale,
     targetLocale: row.target_locale,
     mode: row.mode,
@@ -3627,6 +3631,29 @@ export async function getCatalogTranslationStatus(
       { cache: "no-store" },
     ),
   );
+}
+
+export interface CatalogTranslationAutomation {
+  tenant_id: string;
+  target_locale: StorefrontLocale;
+  enabled: boolean;
+  auto_publish: boolean;
+  debounce_seconds: number;
+  state: "DISABLED" | "IDLE" | "WAITING" | "QUEUED" | "RUNNING" | "PAUSED" | "ATTENTION" | "READY";
+  active_job_id?: string | null;
+  active_job_origin?: "MANUAL" | "AUTOMATIC" | null;
+  last_job_id?: string | null;
+  last_error?: string | null;
+  last_checked_at?: string | null;
+}
+
+export function getCatalogTranslationAutomation(locale: StorefrontLocale, tenantId: string) {
+  return request<CatalogTranslationAutomation>(`/catalog/translations/automation/${encodeURIComponent(locale)}?tenant_id=${encodeURIComponent(tenantId)}`, { cache: "no-store" });
+}
+
+export function updateCatalogTranslationAutomation(locale: StorefrontLocale, tenantId: string,
+  value: Pick<CatalogTranslationAutomation, "enabled" | "auto_publish" | "debounce_seconds">) {
+  return request<CatalogTranslationAutomation>(`/catalog/translations/automation/${encodeURIComponent(locale)}?tenant_id=${encodeURIComponent(tenantId)}`, { method: "PUT", body: JSON.stringify(value) });
 }
 
 export async function startCatalogTranslationJob(
@@ -4242,6 +4269,7 @@ function mapCatalogShare(row: ApiCatalogShare): CatalogShare {
 export async function createCatalogShare(input: {
   targetType: CatalogShareTargetType;
   skuIds?: string[];
+  productIds?: string[];
   categoryId?: string;
   logoPosition?: CatalogShareLogoPosition;
 }): Promise<CatalogShare> {
@@ -4250,6 +4278,7 @@ export async function createCatalogShare(input: {
     body: JSON.stringify({
       target_type: input.targetType,
       sku_ids: input.skuIds ?? [],
+      product_ids: input.productIds ?? [],
       category_id: input.categoryId ?? null,
       logo_position: input.logoPosition ?? "NONE",
     }),

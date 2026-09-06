@@ -18,6 +18,9 @@
 .reseller-catalog-toolbar { padding: 12px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .reseller-catalog-toolbar form { min-width: 0; flex: 1; display: flex; gap: 9px; }
 .reseller-catalog-toolbar form .rt-TextFieldRoot { min-width: 0; flex: 1; }
+.reseller-catalog-share-category { display: flex; align-items: center; gap: 8px; }
+.reseller-catalog-share-category select { max-width: 230px; min-height: 32px; padding: 4px 8px; border: 1px solid var(--core-line); border-radius: 6px; color: var(--core-ink); background: var(--core-surface); }
+.reseller-product-share-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .reseller-clear-search { width: 25px; height: 25px; display: grid; place-items: center; border: 0; border-radius: 7px; color: var(--core-muted); background: transparent; cursor: pointer; }
 .reseller-clear-search:hover { color: var(--core-ink); background: var(--core-soft); }
 .reseller-catalog-card, .reseller-orders-table-card { padding: 0 !important; overflow: hidden; }
@@ -69,6 +72,7 @@
 .reseller-orders-table-row > span small, .reseller-orders-table-row > time { color: var(--core-muted); font-size: 11px; }
 .reseller-orders-table-row > :nth-child(3) { color: var(--core-accent); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .reseller-orders-table-row > time { font-variant-numeric: tabular-nums; }
+.reseller-orders-table-row > .reseller-order-status { display: block; width: fit-content; max-width: 100%; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 
 .core-workspace > *, .core-workspace .rt-TabsRoot { min-width: 0; }
 .core-workspace select {
@@ -489,6 +493,8 @@
 .core-sku-toolbar .rt-TextFieldRoot, .core-sku-toolbar > .rt-Button { min-height: 40px; }
 .core-sku-toolbar > .rt-Button { min-width: 72px; white-space: nowrap; }
 .core-sku-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--control-gap-compact); }
+.core-sku-storefront-options { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 10px; border-top: 1px solid var(--core-line); }
+.core-sku-hot-products-control { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
 .core-sku-bulk-result { padding: 11px 13px !important; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; border-color: color-mix(in srgb, var(--core-accent) 26%, var(--core-line)) !important; background: color-mix(in srgb, var(--core-accent) 7%, var(--core-surface)); }
 .core-sku-bulk-result > svg { color: var(--core-accent); }
 .core-sku-bulk-bar { padding: 13px 15px !important; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-color: color-mix(in srgb, var(--core-accent) 28%, var(--core-line)) !important; background: color-mix(in srgb, var(--core-accent) 6%, var(--core-surface)); }

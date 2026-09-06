@@ -133,7 +133,7 @@ else
   if [[ "${ATC_DEPLOYMENT_PROFILE}" == "compact" ]]; then
     compose_project="ai-trade-cloud-compact"
   fi
-  for managed_service in api web caddy tenant-worker product-event-consumer; do
+  for managed_service in api web caddy translation-worker tenant-worker product-event-consumer; do
     if docker ps --all --quiet \
       --filter "label=com.docker.compose.project=${compose_project}" \
       --filter "label=com.docker.compose.service=${managed_service}" \
@@ -209,7 +209,7 @@ rollback_on_failure() {
       "${SCRIPT_DIR}/rollback.sh" "${DEPLOYMENT_STATE_DIR}/previous.env" || true
   else
     printf '[atc] stopping the unrecorded first-release public workloads\n' >&2
-    compose stop caddy web api keycloak >/dev/null 2>&1 || true
+    compose stop caddy web api translation-worker keycloak >/dev/null 2>&1 || true
     if [[ "${ATC_ENABLE_WORKERS:-false}" == "true" ]]; then
       compose_with_workers stop tenant-worker product-event-consumer \
         >/dev/null 2>&1 || true
@@ -284,6 +284,8 @@ info "reconciling Keycloak realm and confidential OIDC client"
 
 info "rolling out API, web, and TLS edge without taking data services down"
 compose up --detach --no-deps --wait --remove-orphans api web caddy
+# Roll out the independent worker only after the website is serving.
+compose up --detach --no-deps translation-worker
 if [[ "${ATC_ENABLE_WORKERS}" == "true" ]]; then
   compose_with_workers up --detach --no-deps --wait \
     tenant-worker product-event-consumer

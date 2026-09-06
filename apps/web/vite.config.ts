@@ -21,6 +21,11 @@ export default defineConfig({
     port: 5173,
     allowedHosts: ["ricardomacbook-air-1.tailc2d2a2.ts.net"],
     proxy: {
+      "^/[^/]+/share/[A-Za-z0-9_-]{8,64}/?(\\?.*)?$": {
+        target: process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8000",
+        changeOrigin: false,
+        rewrite: (path) => path.replace(/^\/([^/]+)\/share\/([A-Za-z0-9_-]+)\/?/, "/api/store/$1/shares/$2/preview"),
+      },
       "/api": {
         target: process.env.VITE_PROXY_TARGET || "http://127.0.0.1:8000",
         changeOrigin: true,

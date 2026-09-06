@@ -143,7 +143,6 @@ const skuDetail = section(
 
 for (const [name, catalogSource] of [
   ["SKU list", skuList],
-  ["product list", productList],
   ["image search", imageSearch],
 ]) {
   assert.ok(
@@ -151,6 +150,11 @@ for (const [name, catalogSource] of [
     `${name} must request source catalog data instead of foreground translation`,
   );
 }
+assert.ok(
+  productList.includes('params.set("locale", filters.sourceLocale || "zh-CN")')
+    && !productList.includes('params.set("locale", filters.locale'),
+  "Product lists must explicitly request source content, not the merchant's default translation",
+);
 
 assert.ok(
   productDetail.includes("storeProductPath(slug, productId, undefined, accountId);"),

@@ -312,6 +312,8 @@ export function StorePage() {
   );
   const [cartTenant, setCartTenant] = useState(storageScope);
   const requestId = useRef(0);
+  const categoryPrefetchTimer = useRef<number | null>(null);
+  const categoryPrefetchCount = useRef(0);
   const lastRecordedSearchKeyRef = useRef("");
   const imageSearchRef = useRef<StorefrontImageSearchHandle>(null);
   const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
@@ -464,248 +466,6 @@ export function StorePage() {
     if (cartTenant === storageScope) writeStoreCart(storageScope, cart);
   }, [cart, cartTenant, storageScope]);
 
-  const category = secondaryCategory || primaryCategory;
-  const currentCatalogRequestKey = catalogRequestKey(
-    tenantSlug,
-    locale,
-    shareToken,
-    deferredSearch,
-    category,
-    accountId,
-  );
-
-  useEffect(() => {
-    const previousTitle = document.title;
-    const previousLanguage = document.documentElement.lang;
-    const previousDirection = document.documentElement.dir;
-    document.documentElement.lang = locale;
-    document.documentElement.dir = storefrontLayoutDirection();
-    document.title = `${loadedStore.name} | ${BRAND_NAME_ZH}`;
-    return () => {
-      document.title = previousTitle;
-      document.documentElement.lang = previousLanguage;
-      document.documentElement.dir = previousDirection;
-    };
-  }, [loadedStore.name, locale]);
-
-  const loadProducts = useCallback(async (
-    targetPage = 1,
-    options: { preserveCurrent?: boolean; keepCurrentResults?: boolean } = {},
-  ) => {
-    const preserveCurrent = options.preserveCurrent === true;
-    const keepCurrentResults = options.keepCurrentResults
-      ?? (!preserveCurrent && hasCatalogResultsRef.current);
-    const currentRequest = ++requestId.current;
-    const includeFacets = !facetsLoadedRef.current;
-    setPage(targetPage);
-    if (!preserveCurrent) {
-      setPageTransitionError("");
-      setPageTransitioning(keepCurrentResults);
-      if (!keepCurrentResults) setLoading(true);
-    }
-    setError("");
-    try {
-      const data = await api.getStoreProducts(tenantSlug, {
-        q: deferredSearch,
-        category: category || undefined,
-        semantic: Boolean(deferredSearch),
-        includeFacets,
-        page: targetPage,
-        locale,
-        shareToken: shareToken || undefined,
-        accountId,
-      });
-      if (currentRequest !== requestId.current) return;
-      if (includeFacets) facetsLoadedRef.current = true;
-      setProducts(data.items);
-      hasCatalogResultsRef.current = data.items.length > 0;
-      setTotal(data.total);
-      setPage(data.page ?? targetPage);
-      setPages(data.pages ?? Math.ceil(data.total / 24));
-      setStore((current) => current ? {
-        ...current,
-        categories: includeFacets && data.categories?.length
-          ? data.categories
-          : current.categories,
-        category_options: includeFacets && data.category_options?.length
-          ? data.category_options
-          : current.category_options,
-        tags: data.tags?.length ? data.tags : current.tags,
-        all_products_position: includeFacets
-          ? data.all_products_position ?? current.all_products_position ?? 0
-          : current.all_products_position,
-        hot_products_enabled: data.hot_products_enabled
-          ?? current.hot_products_enabled
-          ?? false,
-        category_showcase_enabled: data.category_showcase_enabled
-          ?? current.category_showcase_enabled
-          ?? true,
-        popular_search_terms: loadedStore.popular_search_terms
-          ?? current.popular_search_terms,
-      } : current);
-    } catch (caught) {
-      if (currentRequest !== requestId.current) return;
-      if (keepCurrentResults) {
-        setPageTransitionError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
-      } else if (!preserveCurrent) {
-        setError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
-        setProducts([]);
-        hasCatalogResultsRef.current = false;
-      }
-    } finally {
-      if (!preserveCurrent && currentRequest === requestId.current) {
-        setLoading(false);
-        setPageTransitioning(false);
-      }
-    }
-  }, [accountId, tenantSlug, deferredSearch, category, locale, shareToken, t]);
-
-  useEffect(() => {
-    if (restoredCatalogQueryRef.current === currentCatalogRequestKey) {
-      return;
-    }
-    restoredCatalogQueryRef.current = null;
-    const targetPage = initialLoadPageRef.current ?? 1;
-    void loadProducts(targetPage);
-  }, [currentCatalogRequestKey, loadProducts]);
-
-  useEffect(() => {
-    if (!snapshotFacetRefreshRef.current || !initialCatalogSnapshot) return;
-    snapshotFacetRefreshRef.current = false;
-    facetsLoadedRef.current = false;
-    void loadProducts(initialCatalogSnapshot.page, { preserveCurrent: true });
-  }, [initialCatalogSnapshot, loadProducts]);
-
-  useEffect(
-    () => subscribePublicCatalogRevision(() => {
-      facetsLoadedRef.current = false;
-      void api.getStore(tenantSlug, locale, accountId)
-        .then((nextStore) => setStore(nextStore))
-        .catch(() => undefined);
-      void loadProducts(page);
-    }),
-    [accountId, loadProducts, locale, page, tenantSlug],
-  );
-
-  useEffect(() => {
-    if (!loading) initialLoadPageRef.current = null;
-  }, [loading]);
-
-  useEffect(() => {
-    if (
-      loading
-      || pageTransitioning
-      || error
-      || page < 1
-      || page >= pages
-    ) {
-      return;
-    }
-    const connection = (
-      navigator as Navigator & { connection?: { saveData?: boolean } }
-    ).connection;
-    if (connection?.saveData) return;
-
-    const prefetch = () => {
-      if (document.visibilityState !== "visible") return;
-      void api.prefetchStoreProducts(tenantSlug, {
-        q: deferredSearch,
-        category: category || undefined,
-        semantic: Boolean(deferredSearch),
-        includeFacets: false,
-        page: page + 1,
-        locale,
-        shareToken: shareToken || undefined,
-        accountId,
-      }).catch(() => undefined);
-    };
-    const target = paginationRef.current;
-    if (!target || typeof IntersectionObserver === "undefined") {
-      const timeout = window.setTimeout(prefetch, 1_500);
-      return () => window.clearTimeout(timeout);
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        observer.disconnect();
-        prefetch();
-      },
-      { rootMargin: "700px 0px" },
-    );
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [
-    category,
-    deferredSearch,
-    error,
-    loading,
-    locale,
-    page,
-    pageTransitioning,
-    pages,
-    shareToken,
-    accountId,
-    tenantSlug,
-  ]);
-
-  useEffect(() => {
-    if (loading || pendingScrollRestoreRef.current === null) return;
-    const targetScrollY = pendingScrollRestoreRef.current;
-    let secondFrame = 0;
-    const firstFrame = window.requestAnimationFrame(() => {
-      secondFrame = window.requestAnimationFrame(() => {
-        pendingScrollRestoreRef.current = null;
-        window.scrollTo({ top: targetScrollY, left: 0, behavior: "auto" });
-      });
-    });
-    return () => {
-      window.cancelAnimationFrame(firstFrame);
-      if (secondFrame) window.cancelAnimationFrame(secondFrame);
-    };
-  }, [loading, page, products.length]);
-
-  const prefetchProductDetails = useCallback(
-    (productId: string) => {
-      void preloadProductDetailModule().catch(() => undefined);
-      void api.prefetchStoreProduct(tenantSlug, productId, locale, shareToken || undefined, accountId)
-        .catch(() => undefined);
-    },
-    [accountId, locale, shareToken, tenantSlug],
-  );
-
-  useEffect(() => {
-    if (loading || pageTransitioning || error || products.length === 0) return;
-    void preloadProductDetailModule().catch(() => undefined);
-
-    const sourceLocale = store.source_locale ?? "zh-CN";
-    const connection = (
-      navigator as Navigator & { connection?: { saveData?: boolean } }
-    ).connection;
-    if (locale !== sourceLocale || connection?.saveData) return;
-
-    // Warm only the first visible row after the catalog itself is usable.
-    // Intent prefetch below covers every other card without turning one page
-    // view into 24 detail requests.
-    const timer = window.setTimeout(() => {
-      void Promise.allSettled(
-        products.slice(0, 3).map((product) => (
-          api.prefetchStoreProduct(tenantSlug, product.id, locale, shareToken || undefined, accountId)
-        )),
-      );
-    }, 280);
-    return () => window.clearTimeout(timer);
-  }, [
-    error,
-    loading,
-    locale,
-    pageTransitioning,
-    products,
-    shareToken,
-    accountId,
-    store.source_locale,
-    tenantSlug,
-  ]);
-
   const categories = useMemo(() => {
     if (store?.categories?.length) return store.categories;
     return Array.from(
@@ -822,6 +582,297 @@ export function StorePage() {
     && !secondaryCategory
     && categoryShowcaseOptions.length,
   );
+
+  const category = secondaryCategory || primaryCategory;
+  const currentCatalogRequestKey = catalogRequestKey(
+    tenantSlug,
+    locale,
+    shareToken,
+    deferredSearch,
+    category,
+    accountId,
+  );
+
+  const cancelCategoryPrefetch = useCallback(() => {
+    if (categoryPrefetchTimer.current !== null) {
+      window.clearTimeout(categoryPrefetchTimer.current);
+      categoryPrefetchTimer.current = null;
+    }
+  }, []);
+  const prefetchCategory = (path: string) => {
+    cancelCategoryPrefetch();
+    const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
+    if (connection?.saveData || deferredSearch || shareToken || imageSearchActive || path === category) return;
+    if (categoryShowcaseEnabled && categoryTree.some((node) => node.path === path && node.children.length)) return;
+    categoryPrefetchTimer.current = window.setTimeout(() => {
+      if (categoryPrefetchCount.current >= 2 || document.visibilityState !== "visible") return;
+      categoryPrefetchCount.current += 1;
+      void api.prefetchStoreProducts(tenantSlug, {
+        category: path || undefined,
+        includeFacets: false,
+        page: 1,
+        locale,
+        sourceLocale: loadedStore.source_locale,
+        accountId,
+      }).catch(() => undefined).finally(() => { categoryPrefetchCount.current -= 1; });
+    }, 120);
+  };
+  const categoryIntent = (path: string) => ({
+    onPointerEnter: () => prefetchCategory(path),
+    onPointerLeave: cancelCategoryPrefetch,
+    onFocus: () => prefetchCategory(path),
+    onBlur: cancelCategoryPrefetch,
+  });
+  useEffect(() => cancelCategoryPrefetch, [cancelCategoryPrefetch, currentCatalogRequestKey]);
+
+  useEffect(() => {
+    const previousTitle = document.title;
+    const previousLanguage = document.documentElement.lang;
+    const previousDirection = document.documentElement.dir;
+    document.documentElement.lang = locale;
+    document.documentElement.dir = storefrontLayoutDirection();
+    document.title = `${loadedStore.name} | ${BRAND_NAME_ZH}`;
+    return () => {
+      document.title = previousTitle;
+      document.documentElement.lang = previousLanguage;
+      document.documentElement.dir = previousDirection;
+    };
+  }, [loadedStore.name, locale]);
+
+  const loadProducts = useCallback(async (
+    targetPage = 1,
+    options: { preserveCurrent?: boolean; keepCurrentResults?: boolean } = {},
+  ) => {
+    // Category covers already arrive with the storefront facets. Do not run
+    // a count/page query for products that are hidden behind the cover grid.
+    if (showCategoryShowcase) {
+      requestId.current += 1;
+      setLoading(false);
+      setPageTransitioning(false);
+      setPageTransitionError("");
+      setPage(1);
+      return;
+    }
+    const preserveCurrent = options.preserveCurrent === true;
+    const keepCurrentResults = options.keepCurrentResults
+      ?? (!preserveCurrent && hasCatalogResultsRef.current);
+    const currentRequest = ++requestId.current;
+    const includeFacets = !facetsLoadedRef.current;
+    setPage(targetPage);
+    if (!preserveCurrent) {
+      setPageTransitionError("");
+      setPageTransitioning(keepCurrentResults);
+      if (!keepCurrentResults) setLoading(true);
+    }
+    setError("");
+    try {
+      const data = await api.getStoreProducts(tenantSlug, {
+        q: deferredSearch,
+        category: category || undefined,
+        semantic: Boolean(deferredSearch),
+        includeFacets,
+        page: targetPage,
+        locale,
+        sourceLocale: loadedStore.source_locale,
+        shareToken: shareToken || undefined,
+        accountId,
+      });
+      if (currentRequest !== requestId.current) return;
+      if (includeFacets) facetsLoadedRef.current = true;
+      setProducts(data.items);
+      hasCatalogResultsRef.current = data.items.length > 0;
+      setTotal(data.total);
+      setPage(data.page ?? targetPage);
+      setPages(data.pages ?? Math.ceil(data.total / 24));
+      setStore((current) => current ? {
+        ...current,
+        categories: includeFacets && data.categories?.length
+          ? data.categories
+          : current.categories,
+        category_options: includeFacets && data.category_options?.length
+          ? data.category_options
+          : current.category_options,
+        tags: data.tags?.length ? data.tags : current.tags,
+        all_products_position: includeFacets
+          ? data.all_products_position ?? current.all_products_position ?? 0
+          : current.all_products_position,
+        hot_products_enabled: data.hot_products_enabled
+          ?? current.hot_products_enabled
+          ?? false,
+        category_showcase_enabled: data.category_showcase_enabled
+          ?? current.category_showcase_enabled
+          ?? true,
+        popular_search_terms: loadedStore.popular_search_terms
+          ?? current.popular_search_terms,
+      } : current);
+    } catch (caught) {
+      if (currentRequest !== requestId.current) return;
+      if (keepCurrentResults) {
+        setPageTransitionError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
+      } else if (!preserveCurrent) {
+        setError(caught instanceof Error ? t(caught.message) : t("商品加载失败。"));
+        setProducts([]);
+        hasCatalogResultsRef.current = false;
+      }
+    } finally {
+      if (!preserveCurrent && currentRequest === requestId.current) {
+        setLoading(false);
+        setPageTransitioning(false);
+      }
+    }
+  }, [accountId, tenantSlug, deferredSearch, category, locale, shareToken, t, showCategoryShowcase, loadedStore.source_locale]);
+
+  useEffect(() => {
+    if (restoredCatalogQueryRef.current === currentCatalogRequestKey) {
+      return;
+    }
+    restoredCatalogQueryRef.current = null;
+    const targetPage = initialLoadPageRef.current ?? 1;
+    void loadProducts(targetPage);
+  }, [currentCatalogRequestKey, loadProducts]);
+
+  useEffect(() => {
+    if (!snapshotFacetRefreshRef.current || !initialCatalogSnapshot) return;
+    snapshotFacetRefreshRef.current = false;
+    facetsLoadedRef.current = false;
+    void loadProducts(initialCatalogSnapshot.page, { preserveCurrent: true });
+  }, [initialCatalogSnapshot, loadProducts]);
+
+  useEffect(
+    () => subscribePublicCatalogRevision(() => {
+      facetsLoadedRef.current = false;
+      void api.getStore(tenantSlug, locale, accountId)
+        .then((nextStore) => setStore(nextStore))
+        .catch(() => undefined);
+      void loadProducts(page);
+    }),
+    [accountId, loadProducts, locale, page, tenantSlug],
+  );
+
+  useEffect(() => {
+    if (!loading) initialLoadPageRef.current = null;
+  }, [loading]);
+
+  useEffect(() => {
+    if (
+      loading
+      || showCategoryShowcase
+      || pageTransitioning
+      || error
+      || page < 1
+      || page >= pages
+    ) {
+      return;
+    }
+    const connection = (
+      navigator as Navigator & { connection?: { saveData?: boolean } }
+    ).connection;
+    if (connection?.saveData) return;
+
+    const prefetch = () => {
+      if (document.visibilityState !== "visible") return;
+      void api.prefetchStoreProducts(tenantSlug, {
+        q: deferredSearch,
+        category: category || undefined,
+        semantic: Boolean(deferredSearch),
+        includeFacets: false,
+        page: page + 1,
+        locale,
+        sourceLocale: loadedStore.source_locale,
+        shareToken: shareToken || undefined,
+        accountId,
+      }).catch(() => undefined);
+    };
+    const target = paginationRef.current;
+    if (!target || typeof IntersectionObserver === "undefined") {
+      const timeout = window.setTimeout(prefetch, 1_500);
+      return () => window.clearTimeout(timeout);
+    }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        observer.disconnect();
+        prefetch();
+      },
+      { rootMargin: "700px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [
+    category,
+    deferredSearch,
+    error,
+    loading,
+    locale,
+    page,
+    pageTransitioning,
+    pages,
+    shareToken,
+    accountId,
+    tenantSlug,
+    showCategoryShowcase,
+    loadedStore.source_locale,
+  ]);
+
+  useEffect(() => {
+    if (loading || pendingScrollRestoreRef.current === null) return;
+    const targetScrollY = pendingScrollRestoreRef.current;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        pendingScrollRestoreRef.current = null;
+        window.scrollTo({ top: targetScrollY, left: 0, behavior: "auto" });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [loading, page, products.length]);
+
+  const prefetchProductDetails = useCallback(
+    (productId: string) => {
+      void preloadProductDetailModule().catch(() => undefined);
+      void api.prefetchStoreProduct(tenantSlug, productId, locale, shareToken || undefined, accountId)
+        .catch(() => undefined);
+    },
+    [accountId, locale, shareToken, tenantSlug],
+  );
+
+  useEffect(() => {
+    if (loading || pageTransitioning || showCategoryShowcase || error || products.length === 0) return;
+    void preloadProductDetailModule().catch(() => undefined);
+
+    const sourceLocale = store.source_locale ?? "zh-CN";
+    const connection = (
+      navigator as Navigator & { connection?: { saveData?: boolean } }
+    ).connection;
+    if (locale !== sourceLocale || connection?.saveData) return;
+
+    // Warm only the first visible row after the catalog itself is usable.
+    // Intent prefetch below covers every other card without turning one page
+    // view into 24 detail requests.
+    const timer = window.setTimeout(() => {
+      void Promise.allSettled(
+        products.slice(0, 3).map((product) => (
+          api.prefetchStoreProduct(tenantSlug, product.id, locale, shareToken || undefined, accountId)
+        )),
+      );
+    }, 280);
+    return () => window.clearTimeout(timer);
+  }, [
+    error,
+    loading,
+    locale,
+    pageTransitioning,
+    products,
+    showCategoryShowcase,
+    shareToken,
+    accountId,
+    store.source_locale,
+    tenantSlug,
+  ]);
+
   const hasFilters = Boolean(search || category || imageSearchActive);
   const shareDisplayTitle = useMemo(() => {
     if (!catalogShare) return "";
@@ -1139,6 +1190,7 @@ export function StorePage() {
                         <button
                           type="button"
                           className={`category-browser-option${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
+                          {...categoryIntent("")}
                           aria-pressed={!primaryCategory && !secondaryCategory}
                           onClick={() => {
                             setPrimaryCategory("");
@@ -1152,6 +1204,7 @@ export function StorePage() {
                         <button
                           type="button"
                           className={`category-browser-option${primaryCategory === item.node.path ? " is-active" : ""}`}
+                          {...categoryIntent(item.node.path)}
                           aria-pressed={primaryCategory === item.node.path}
                           onClick={() => {
                             setPrimaryCategory(item.node.path);
@@ -1175,6 +1228,7 @@ export function StorePage() {
                         <button
                           type="button"
                           className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
+                          {...categoryIntent(primaryCategory)}
                           aria-pressed={!secondaryCategory}
                           onClick={() => setSecondaryCategory("")}
                         >
@@ -1184,6 +1238,7 @@ export function StorePage() {
                           <button
                             type="button"
                             className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
+                            {...categoryIntent(item.path)}
                             aria-pressed={secondaryCategory === item.path}
                             title={primaryCategory ? undefined : item.parentName}
                             onClick={() => {
@@ -1213,6 +1268,7 @@ export function StorePage() {
                       <button
                         type="button"
                         className={`category-sidebar-item is-all${!primaryCategory && !secondaryCategory ? " is-active" : ""}`}
+                        {...categoryIntent("")}
                         onClick={() => {
                           setPrimaryCategory("");
                           setSecondaryCategory("");
@@ -1226,6 +1282,7 @@ export function StorePage() {
                         <button
                           type="button"
                           className={`category-sidebar-item is-primary${primaryCategory === item.node.path ? " is-active" : ""}`}
+                          {...categoryIntent(item.node.path)}
                           title={item.node.name}
                           aria-expanded={!categoryShowcaseEnabled && item.node.children.length ? expandedCategories.has(item.node.path) : undefined}
                           onClick={() => {
@@ -1245,6 +1302,7 @@ export function StorePage() {
                               <button
                                 type="button"
                                 className={`category-sidebar-item is-secondary${secondaryCategory === child.path ? " is-active" : ""}`}
+                                {...categoryIntent(child.path)}
                                 title={child.name}
                                 onClick={() => {
                                   setPrimaryCategory(item.node.path);
@@ -1273,6 +1331,7 @@ export function StorePage() {
                   <button
                     type="button"
                     className={`category-browser-option${!secondaryCategory ? " is-active" : ""}`}
+                    {...categoryIntent(primaryCategory)}
                     aria-pressed={!secondaryCategory}
                     onClick={() => setSecondaryCategory("")}
                   >
@@ -1282,6 +1341,7 @@ export function StorePage() {
                     <button
                       type="button"
                       className={`category-browser-option${secondaryCategory === item.path ? " is-active" : ""}`}
+                      {...categoryIntent(item.path)}
                       aria-pressed={secondaryCategory === item.path}
                       onClick={() => setSecondaryCategory(item.path)}
                       key={item.path}
@@ -1426,6 +1486,7 @@ export function StorePage() {
                     <button
                       type="button"
                       className="category-showcase-card"
+                      {...categoryIntent(item.path)}
                       onClick={() => {
                         setPrimaryCategory(item.parentPath);
                         setSecondaryCategory(item.path);

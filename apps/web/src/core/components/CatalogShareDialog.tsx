@@ -16,7 +16,7 @@ import { ToastNotice } from "../ToastContext";
 import type { CatalogShare, CatalogShareLogoPosition } from "../types";
 
 export type CatalogShareTarget =
-  | { type: "PRODUCTS"; skuIds: string[] }
+  | { type: "PRODUCTS"; productIds: string[] }
   | { type: "CATEGORY"; categoryId: string; categoryName: string };
 
 interface CatalogShareDialogProps {
@@ -25,8 +25,10 @@ interface CatalogShareDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-function absoluteShareUrl(path: string) {
-  return new URL(path, window.location.origin).toString();
+function absoluteShareUrl(path: string, locale: string) {
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("lang", locale);
+  return url.toString();
 }
 
 async function copyText(value: string) {
@@ -170,7 +172,7 @@ export function CatalogShareDialog({
   target,
   onOpenChange,
 }: CatalogShareDialogProps) {
-  const { t } = useLocale();
+  const { locale, t } = useLocale();
   const [share, setShare] = useState<CatalogShare>();
   const [qrDataUrl, setQrDataUrl] = useState("");
   const [loading, setLoading] = useState(false);
@@ -180,8 +182,8 @@ export function CatalogShareDialog({
   const [logoPosition, setLogoPosition] = useState<CatalogShareLogoPosition>("NONE");
   const [availableLogoUrl, setAvailableLogoUrl] = useState("");
   const shareUrl = useMemo(
-    () => (share ? absoluteShareUrl(share.sharePath) : ""),
-    [share],
+    () => (share ? absoluteShareUrl(share.sharePath, locale) : ""),
+    [share, locale],
   );
 
   useEffect(() => {
@@ -201,11 +203,11 @@ export function CatalogShareDialog({
     setCopied(false);
     void createCatalogShare(
       target.type === "PRODUCTS"
-        ? { targetType: "PRODUCTS", skuIds: target.skuIds, logoPosition }
+        ? { targetType: "PRODUCTS", productIds: target.productIds, logoPosition }
         : { targetType: "CATEGORY", categoryId: target.categoryId, logoPosition },
     )
       .then(async (created) => {
-        const url = absoluteShareUrl(created.sharePath);
+        const url = absoluteShareUrl(created.sharePath, locale);
         const qr = await QRCode.toDataURL(url, {
           width: 640,
           margin: 2,
@@ -225,7 +227,7 @@ export function CatalogShareDialog({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [logoPosition, open, target, t]);
+  }, [logoPosition, open, target, locale, t]);
 
   const handleCopy = async () => {
     if (!shareUrl) return;
@@ -257,7 +259,7 @@ export function CatalogShareDialog({
         <div className="core-dialog-heading">
           <div>
             <Text size="1" color="gray">{t("商品前台")}</Text>
-            <Dialog.Title>{t("分享商品")}</Dialog.Title>
+            <Dialog.Title>{t(target?.type === "CATEGORY" ? "分享分类" : "分享商品")}</Dialog.Title>
             <Dialog.Description>{t("二维码和链接只展示本次选择的商品。")}</Dialog.Description>
           </div>
           <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}>
@@ -274,7 +276,7 @@ export function CatalogShareDialog({
 
         {error ? <ToastNotice kind="error" message={error} /> : null}
 
-        {share || availableLogoUrl ? (
+        {availableLogoUrl ? (
         <section className="core-catalog-share-branding" aria-labelledby="catalog-share-branding-title">
           <div>
             <Text id="catalog-share-branding-title" size="2" weight="bold">{t("名片 Logo")}</Text>
@@ -327,7 +329,7 @@ export function CatalogShareDialog({
             <section className="core-catalog-share-actions">
               <div>
                 <Text size="1" color="gray">{t("分享内容")}</Text>
-                <Text size="5" weight="bold" as="div">{share.title}</Text>
+                <Text size="5" weight="bold" as="div">{share.targetType === "PRODUCTS" && share.itemCount > 1 ? t("{count} 件商品精选", { count: share.itemCount }) : share.title}</Text>
                 <Text size="2" color="gray">{t("共 {count} 件商品", { count: share.itemCount })}</Text>
               </div>
               <label className="core-catalog-share-link">

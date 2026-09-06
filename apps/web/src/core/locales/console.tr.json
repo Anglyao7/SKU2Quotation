@@ -1,4 +1,6 @@
 {
+  "热门商品优先展示": "Popüler ürünleri önce göster",
+  "热门商品设置保存失败，请重试。": "Popüler ürün ayarları kaydedilemedi. Lütfen tekrar deneyin.",
   "箱数": "Koli sayısı",
   "已选 {quantity} 件，再加一箱": "{quantity} adet seçildi · Bir koli ekle",
   "数量必须为装箱数 {size} 的整数倍。": "Miktar, koli başına {size} adedin katı olmalıdır.",
@@ -2088,7 +2090,7 @@
   "商品访问量排行榜": "Ürün görüntüleme sıralaması",
   "商品访问排行加载失败": "Ürün görüntüleme sıralaması yüklenemedi",
   "商品分类": "Ürün kategorisi",
-  "商品分享二维码": "Product share QR code",
+  "商品分享二维码": "Ürün paylaşım QR kodu",
   "商品分页": "Ürün sayfalama",
   "商品规格": "Ürün özellikleri",
   "商品会从所有展示与搜索入口隐藏": "Ürünler tüm vitrin ve arama giriş noktalarından gizlenecek",

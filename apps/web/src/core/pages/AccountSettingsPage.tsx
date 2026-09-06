@@ -1,4 +1,4 @@
-import { Avatar, Badge, Button, Card, Heading, Switch, Text, TextField } from "@radix-ui/themes";
+import { Avatar, Badge, Button, Card, Heading, Text, TextField } from "@radix-ui/themes";
 import {
   CheckCircle,
   Circle,
@@ -6,7 +6,6 @@ import {
   Buildings,
   Eye,
   EyeSlash,
-  Fire,
   ImageSquare,
   Info,
   LockKey,
@@ -69,8 +68,6 @@ export function AccountSettingsPage() {
   const [merchantLogoUrl, setMerchantLogoUrl] = useState("");
   const [logoUploading, setLogoUploading] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const [hotProductsEnabled, setHotProductsEnabled] = useState(false);
-  const [savedHotProductsEnabled, setSavedHotProductsEnabled] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -124,8 +121,6 @@ export function AccountSettingsPage() {
         setMerchantLogoUrl(settings.logoUrl ?? "");
         setShareCardSubtitle(settings.shareCardSubtitle ?? "");
         setSavedShareCardSubtitle(settings.shareCardSubtitle ?? "");
-        setHotProductsEnabled(settings.hotProductsEnabled);
-        setSavedHotProductsEnabled(settings.hotProductsEnabled);
         setMerchantSettingsReady(true);
       })
       .catch(() => {
@@ -139,7 +134,6 @@ export function AccountSettingsPage() {
     };
   }, [canManageMerchant, profile?.context.tenantId, t]);
 
-  const hotProductsChanged = hotProductsEnabled !== savedHotProductsEnabled;
   const shareCardSubtitleChanged = shareCardSubtitle.trim() !== savedShareCardSubtitle;
 
   const clearFeedback = (field: keyof PasswordChangeValidation) => {
@@ -210,7 +204,7 @@ export function AccountSettingsPage() {
       || !normalized
     ) return;
     const nameChanged = normalized !== profile?.context.tenantName;
-    if (!nameChanged && !hotProductsChanged && !shareCardSubtitleChanged) return;
+    if (!nameChanged && !shareCardSubtitleChanged) return;
     setMerchantSubmitting(true);
     setMerchantError("");
     setMerchantSuccess("");
@@ -218,15 +212,12 @@ export function AccountSettingsPage() {
       const updated = await updateMerchantSettings({
         name: nameChanged ? normalized : undefined,
         shareCardSubtitle: shareCardSubtitleChanged ? shareCardSubtitle.trim() : undefined,
-        hotProductsEnabled: hotProductsChanged ? hotProductsEnabled : undefined,
       });
       setMerchantName(updated.name);
       setMerchantSlug(updated.slug);
       setMerchantLogoUrl(updated.logoUrl ?? "");
       setShareCardSubtitle(updated.shareCardSubtitle ?? "");
       setSavedShareCardSubtitle(updated.shareCardSubtitle ?? "");
-      setHotProductsEnabled(updated.hotProductsEnabled);
-      setSavedHotProductsEnabled(updated.hotProductsEnabled);
       await reloadProfile();
       setMerchantSuccess(t("商家资料与商品前台设置已保存。商家名称变更后，旧地址仍会自动跳转。"));
     } catch (caught) {
@@ -410,42 +401,6 @@ export function AccountSettingsPage() {
                 </Text>
               </div>
 
-              <section
-                className={`account-hot-products-setting${hotProductsEnabled ? " is-enabled" : ""}`}
-                aria-labelledby="account-hot-products-title"
-              >
-                <span className="account-hot-products-icon">
-                  <Fire size={20} weight="duotone" aria-hidden="true" />
-                </span>
-                <div className="account-hot-products-copy">
-                  <Text id="account-hot-products-title" size="2" weight="bold">
-                    {t("爆款优先展示")}
-                  </Text>
-                  <Text size="1" color="gray">
-                    {t("开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。")}
-                  </Text>
-                </div>
-                <div className="account-hot-products-control">
-                  <Badge color={hotProductsEnabled ? "amber" : "gray"} variant="soft">
-                    {t(hotProductsEnabled ? "已开启" : "未开启")}
-                  </Badge>
-                  <Switch
-                    checked={hotProductsEnabled}
-                    disabled={
-                      !canManageMerchant
-                      || merchantSettingsLoading
-                      || !merchantSettingsReady
-                    }
-                    onCheckedChange={(checked) => {
-                      setHotProductsEnabled(checked);
-                      setMerchantError("");
-                      setMerchantSuccess("");
-                    }}
-                    aria-label={t("爆款优先展示")}
-                  />
-                </div>
-              </section>
-
               {storefrontUrl ? (
                 <div className="account-storefront-preview">
                   <div>
@@ -479,7 +434,6 @@ export function AccountSettingsPage() {
                     || !merchantName.trim()
                     || (
                       merchantName.trim() === profile?.context.tenantName
-                      && !hotProductsChanged
                       && !shareCardSubtitleChanged
                     )
                   }

@@ -10,6 +10,7 @@ async function moduleUrl(path, replacements = {}) {
 }
 const quantityUrl = await moduleUrl("../src/lib/cartonQuantity.ts");
 const { skuCartonSize, cartQuantity, cartCartons, changeCartQuantity } = await import(quantityUrl);
+const { skuPackingQuantity } = await import(await moduleUrl("../src/lib/productVariantOptions.ts", { '"./cartonQuantity"': JSON.stringify(quantityUrl) }));
 const { addCartSku, setCartQuantity, refreshCartSkus, readStoreCart, writeStoreCart } = await import(await moduleUrl("../src/lib/storeCart.ts", { '"./cartonQuantity"': JSON.stringify(quantityUrl) }));
 const sku = { id: "box", sku_code: "BOX", name: "Carton SKU", price: 10, currency: "USD", tags: [], packing_quantity: "20", option_values: { "Unités / carton": "999" } };
 assert.equal(skuCartonSize(sku), 20);
@@ -29,6 +30,11 @@ assert.deepEqual(cart, {});
 assert.equal(cartQuantity(sku, 1), 20);
 assert.equal(cartQuantity(sku, 21), 40);
 const perPiece = { ...sku, packing_quantity: null };
+assert.equal(skuPackingQuantity(sku), "20");
+assert.equal(skuPackingQuantity(perPiece), null, "No packing label for explicitly unset packing quantity");
+for (const value of [null, undefined, "", "   "]) {
+  assert.equal(skuPackingQuantity({ option_values: { "装箱数": value } }), null);
+}
 assert.equal(addCartSku({}, perPiece).box.quantity, 1, "API null overrides stale translated options");
 assert.equal(skuCartonSize({ option_values: { "装箱数": "20" } }), 20);
 assert.equal(skuCartonSize({ option_values: { "装箱数": "" } }), null);
@@ -53,4 +59,7 @@ for (const path of ["../src/pages/ProductDetailPage.tsx", "../src/pages/SkuDetai
   assert.ok(page.includes("addCartSku(current, sku)"));
   assert.ok(!page.includes("?.quantity || 0) + 1"));
 }
+const productPage = await fs.readFile(new URL("../src/pages/ProductDetailPage.tsx", import.meta.url), "utf8");
+assert.match(productPage, /\{selectedPackingQuantity \? \(\s*<div className="product-selection-identity">/, "Hide the entire packing label when quantity is absent");
+assert.ok(!productPage.includes('selectedPackingQuantity || t("未设置")'));
 console.log("Carton ordering: add/remove, subtotal, empty field, decimal precision, old carts, SKU refresh and account isolation passed");

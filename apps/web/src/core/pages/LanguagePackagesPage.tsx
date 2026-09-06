@@ -34,6 +34,7 @@ import {
   resumeCatalogTranslationJob,
   retryCatalogTranslationBatch,
   startCatalogTranslationJob,
+  type CatalogTranslationAutomation,
 } from "../api";
 import type {
   CatalogTranslationJob,
@@ -50,6 +51,8 @@ import {
 } from "../../lib/storefrontLocale";
 import type { StorefrontLocale, Tenant } from "../../types";
 import { CatalogTranslationEditor } from "./CatalogTranslationEditor";
+import { AutomaticTranslationControls } from "../components/AutomaticTranslationControls";
+import { automaticTranslationCopy } from "../automationMessages";
 
 const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
   (language) => language.code !== "zh-CN",
@@ -97,14 +100,13 @@ function formatDate(value?: string) {
 
 function completedSkuCount(job?: CatalogTranslationJob) {
   if (!job) return 0;
-  return job.executionMode === "QWEN_BATCH"
-    ? job.translationProcessedSkus
-    : job.processedSkus;
+  return Math.max(job.translationProcessedSkus, job.processedSkus);
 }
 
 export function LanguagePackagesPage() {
   const { hasPermission } = useCoreAuth();
-  const { t } = useLocale();
+  const { t, locale: uiLocale } = useLocale();
+  const automationCopy = automaticTranslationCopy(uiLocale);
   const canEditProducts = hasPermission("product.edit");
   const [merchants, setMerchants] = useState<Tenant[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState("");
@@ -113,6 +115,8 @@ export function LanguagePackagesPage() {
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
+  const [automation, setAutomation] = useState<CatalogTranslationAutomation>();
+  const automationEventRef = useRef("");
   const [batchHistory, setBatchHistory] = useState<CatalogTranslationBatchPage>();
   const [batchesJobId, setBatchesJobId] = useState<string>();
   const [batchPage, setBatchPage] = useState(1);
@@ -177,6 +181,9 @@ export function LanguagePackagesPage() {
   const selectedJob = job?.targetLocale === selectedLocale
     ? job
     : undefined;
+  const automationLoaded = automation?.tenant_id === selectedTenantId && automation.target_locale === selectedLocale;
+  const automationBusy = automationLoaded && ["WAITING", "QUEUED", "RUNNING"].includes(automation.state);
+  const translationStartBlocked = !automationLoaded || automationBusy;
   const selectedBatchHistory = selectedJob && batchesJobId === selectedJob.id
     ? batchHistory
     : undefined;
@@ -214,7 +221,7 @@ export function LanguagePackagesPage() {
   const displayedRemainingJobSkus = selectedJob
     ? selectedJob.executionMode === "QWEN_BATCH"
       ? Math.max(0, selectedJob.totalSkus - completedSkuCount(selectedJob))
-      : selectedStatus?.pendingSkus ?? selectedJob.remainingSkus
+      : selectedJob.origin === "AUTOMATIC" ? Math.max(0, selectedJob.totalSkus - completedSkuCount(selectedJob)) : selectedStatus?.pendingSkus ?? selectedJob.remainingSkus
     : 0;
   const resumableRealtimeJob = selectedJob?.resumable
     && selectedJob.executionMode === "REALTIME"
@@ -329,6 +336,25 @@ export function LanguagePackagesPage() {
     return next;
   };
 
+  const receiveAutomationStatus = (next: CatalogTranslationAutomation | undefined) => {
+    if (!localeRequestIsCurrent(selectedLocale, selectedTenantId)) return;
+    if (next && (next.tenant_id !== selectedTenantId || next.target_locale !== selectedLocale)) return;
+    setAutomation(next);
+    if (!next) return;
+    const event = `${next.tenant_id}:${next.target_locale}:${next.state}:${next.active_job_id}:${next.last_job_id}`;
+    if (automationEventRef.current === event) return;
+    const previousEvent = automationEventRef.current;
+    automationEventRef.current = event;
+    // A lightweight poll discovers background jobs even when no job was running
+    // when this page opened. Full coverage is fetched only on state transitions.
+    if (next.active_job_id || (previousEvent && next.last_job_id)) {
+      void refreshHistory(selectedLocale, selectedTenantId).catch(() => undefined);
+      if (!["RUNNING", "QUEUED", "WAITING"].includes(next.state)) {
+        void refreshStatus(selectedLocale, selectedTenantId).catch(() => undefined);
+      }
+    }
+  };
+
   useEffect(() => {
     selectedTenantIdRef.current = selectedTenantId;
     selectedLocaleRef.current = selectedLocale;
@@ -338,6 +364,8 @@ export function LanguagePackagesPage() {
     setSuccess("");
     setStatus(undefined);
     setJob(undefined);
+    setAutomation(undefined);
+    automationEventRef.current = "";
     setBatchHistory(undefined);
     setBatchesJobId(undefined);
     batchPageRef.current = 1;
@@ -458,7 +486,7 @@ export function LanguagePackagesPage() {
               refreshHistory(next.targetLocale, pollTenantId),
             ]).then(([latest]) => {
               if (cancelled) return;
-              if (next.status === "SUCCEEDED" && latest.package) {
+              if (next.status === "SUCCEEDED" && next.packagePublished && latest.package) {
                 setSuccess(t("翻译内容已更新，前台将自动使用最新版本。"));
               }
             });
@@ -514,6 +542,7 @@ export function LanguagePackagesPage() {
       !canEditProducts
       || !selectedTenantId
       || startingJob
+      || translationStartBlocked
       || (activeJob && activeJob.status !== "PAUSED")
     ) return;
     const executionMode = fullRebuild ? "QWEN_BATCH" : "REALTIME";
@@ -577,6 +606,7 @@ export function LanguagePackagesPage() {
       !canEditProducts
       || !selectedTenantId
       || publishingPack
+      || (automation?.active_job_origin === "AUTOMATIC" && automationBusy)
       || displayedTranslatedSkus === 0
     ) return;
     const actionLocale = selectedLocale;
@@ -590,7 +620,7 @@ export function LanguagePackagesPage() {
         actionTenantId,
       );
       if (!localeRequestIsCurrent(actionLocale, actionTenantId)) return;
-      await refreshStatus(actionLocale, actionTenantId);
+      await Promise.all([refreshStatus(actionLocale, actionTenantId), refreshHistory(actionLocale, actionTenantId)]);
       setSuccess(t("已手动发布 {language} 语言包 v{version}；未完成内容继续显示中文原文。", {
         language: selectedLanguage.label,
         version: pack.version,
@@ -612,6 +642,7 @@ export function LanguagePackagesPage() {
       || !selectedTenantId
       || !controllableJob
       || controllingJob
+      || (action === "resume" && translationStartBlocked)
     ) return;
     const actionTenantId = selectedTenantId;
     setControllingJob(true);
@@ -646,7 +677,7 @@ export function LanguagePackagesPage() {
   };
 
   const retryBatch = async (batch: CatalogTranslationBatch) => {
-    if (!selectedTenantId || !selectedJob || retryingBatchId) return;
+    if (!selectedTenantId || !selectedJob || retryingBatchId || translationStartBlocked) return;
     const actionTenantId = selectedTenantId;
     setRetryingBatchId(batch.id);
     setError("");
@@ -780,6 +811,14 @@ export function LanguagePackagesPage() {
         <ToastNotice kind="info" message={t("当前没有可翻译的商家。")} />
       ) : null}
 
+      {selectedTenantId ? <AutomaticTranslationControls
+        key={`${selectedTenantId}:${selectedLocale}`}
+        tenantId={selectedTenantId}
+        targetLocale={selectedLocale}
+        canEdit={canEditProducts}
+        onStatus={receiveAutomationStatus}
+      /> : null}
+
       <div className="language-pack-grid">
         <Card className="language-pack-status-card">
           <div className="language-card-heading compact">
@@ -856,6 +895,7 @@ export function LanguagePackagesPage() {
                 || coverageLoading
                 || historyLoading
                 || startingJob
+                || translationStartBlocked
                 || Boolean(activeJob && activeJob.status !== "PAUSED")
               }
             >
@@ -874,6 +914,7 @@ export function LanguagePackagesPage() {
                     || coverageLoading
                     || historyLoading
                     || startingJob
+                    || translationStartBlocked
                     || Boolean(activeJob && activeJob.status !== "PAUSED")
                   }
                 >
@@ -903,6 +944,7 @@ export function LanguagePackagesPage() {
                 loading={controllingJob}
                 disabled={
                   controllingJob
+                  || (["PAUSED", "FAILED"].includes(controllableJob.status) && translationStartBlocked)
                   || (controllableJob.status !== "PAUSED" && controllableJob.pauseRequested)
                 }
                 onClick={() => void controlTranslationJob(
@@ -973,6 +1015,7 @@ export function LanguagePackagesPage() {
                     !canEditProducts
                     || coverageLoading
                     || publishingPack
+                    || (automation?.active_job_origin === "AUTOMATIC" && automationBusy)
                     || displayedTranslatedSkus === 0
                     || !selectedStatus?.packageOutdated
                   }
@@ -1038,7 +1081,11 @@ export function LanguagePackagesPage() {
             <div>
               <Text size="1" color="gray">{t("最近任务")}</Text>
               <Heading size="4">
-                {t(jobOnlyNeedsPackageFields
+                {selectedJob.origin === "AUTOMATIC" && ["QUEUED", "RUNNING"].includes(selectedJob.status)
+                  ? automationCopy[selectedJob.status as "QUEUED" | "RUNNING"]
+                  : selectedJob.awaitingPublish && selectedJob.status === "SUCCEEDED"
+                    ? automationCopy.READY
+                    : t(jobOnlyNeedsPackageFields
                   ? "SKU 已翻译，语言包仍待补全"
                   : selectedJob.status === "FAILED" && selectedJob.resumable
                     ? "任务中断，断点已保存"
@@ -1191,7 +1238,8 @@ export function LanguagePackagesPage() {
                 && failedAttemptCount > 0;
               const retryAvailable = batch.status === "FAILED"
                 && selectedJob.status === "FAILED"
-                && !activeJob;
+                && !activeJob
+                && !translationStartBlocked;
               const batchStatusLabel = automaticRetrying
                 ? "自动重试中"
                 : recoveredAfterRetry

@@ -564,6 +564,8 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
             ).one()
         )
     return CatalogTranslationJobResponse(
+        origin=getattr(job, "origin", "MANUAL"),
+        awaiting_publish=bool((getattr(job, "automatic_scope", None) or {}).get("awaiting_publish")),
         id=job.id,
         source_locale=job.source_locale,
         target_locale=job.target_locale,
@@ -1001,7 +1003,7 @@ def _expire_stale_job(
         tenant_id=tenant_id,
         target_locale=target_locale,
     )
-    if job is None or job.status == "PAUSED":
+    if job is None or job.status == "PAUSED" or getattr(job, "origin", "MANUAL") == "AUTOMATIC":
         return
     if _as_utc(job.updated_at) >= utcnow() - _stale_job_after:
         return
@@ -1126,6 +1128,9 @@ def latest_translation_job(
         tenant_id=tenant_id,
         target_locale=target_locale,
     )
+    active = _active_job(session, tenant_id=tenant_id, target_locale=target_locale)
+    if active is not None:
+        return _job_response(active)
     job = session.scalar(
         select(CatalogTranslationJobRow)
         .where(
@@ -2529,6 +2534,27 @@ def publish_reviewed_language_pack(
     _require_platform_admin(context)
     _require(context.permissions, "product.edit")
     locale = _admin_target_locale(request.target_locale)
+    active = _active_job(session, tenant_id=context.tenant_id, target_locale=locale)
+    if active is not None and active.origin == "AUTOMATIC" and active.status in {"QUEUED", "RUNNING"}:
+        raise ApplicationError("CATALOG_TRANSLATION_BUSY", "当前语言正在自动翻译，请暂停或等待完成后发布。", kind="conflict")
+    automatic = session.scalar(select(CatalogTranslationJobRow).where(
+        CatalogTranslationJobRow.tenant_id == context.tenant_id,
+        CatalogTranslationJobRow.target_locale == locale,
+        CatalogTranslationJobRow.origin == "AUTOMATIC",
+    ).order_by(CatalogTranslationJobRow.created_at.desc()).limit(1))
+    if automatic is not None and (automatic.automatic_scope or {}).get("awaiting_publish"):
+        active = _active_job(session, tenant_id=context.tenant_id, target_locale=locale)
+        if active is not None and active.status in {"QUEUED", "RUNNING"}:
+            raise ApplicationError("CATALOG_TRANSLATION_BUSY", "当前语言正在翻译，请暂停或等待完成后发布。", kind="conflict")
+        from ..services.automatic_catalog_translation import publish_available_results
+        published = publish_available_results(session, context=replace(context, locale=locale),
+            identity=TranslationIdentity(provider=automatic.provider, version=automatic.provider_version)).pack
+        automatic.automatic_scope = {**automatic.automatic_scope, "awaiting_publish": False}
+        automatic.package_published = True
+        automatic.package_version = published.version
+        session.commit()
+        tenant = session.get(TenantRow, context.tenant_id)
+        return _language_pack_response(published, tenant_slug=tenant.slug)
     storage_status = language_package_storage_status()
     if not storage_status.configured:
         raise ApplicationError(
@@ -5053,6 +5079,11 @@ def _run_translation_job(
             if _pause_at_safe_checkpoint(session, job):
                 return
 
+            if job.origin == "AUTOMATIC":
+                from ..services.automatic_catalog_translation import run_automatic_job
+                run_automatic_job(session, job=job)
+                return
+
             if job.execution_mode == "QWEN_BATCH":
                 _run_qwen_batch_translation_job(
                     session,
@@ -5396,16 +5427,23 @@ def _dispatch_translation_job(
                     CatalogTranslationJobRow.id == job_id,
                 )
             )
+            origin = session.scalar(select(CatalogTranslationJobRow.origin).where(
+                CatalogTranslationJobRow.tenant_id == tenant_id,
+                CatalogTranslationJobRow.id == job_id,
+            ))
+            if origin == "AUTOMATIC":
+                return  # The separate worker owns automatic execution/recovery.
             session.rollback()
         if execution_mode == "QWEN_BATCH":
             executor = _qwen_batch_executor
-    except Exception:
-        # Falling back to the conservative executor delays a submission but
-        # never loses it; the worker itself still reads the persisted mode.
+    except Exception as exc:
+        # Do not let an API process accidentally execute an automatic job when
+        # its persisted ownership could not be verified.
         logger.exception(
             "could not select translation executor for job %s",
             job_id,
         )
+        raise RuntimeError("Could not verify translation job ownership") from exc
     executor.submit(
         _run_translation_job,
         job_id=job_id,
@@ -5460,10 +5498,9 @@ def _translation_job_tenant_ids(session: Session) -> tuple[UUID, ...]:
 def recover_interrupted_translation_jobs() -> int:
     """Convert process-owned unfinished jobs into resumable checkpoints.
 
-    Translation workers currently run inside the API process. Any QUEUED or
-    RUNNING row found during process startup therefore belongs to the previous
-    process and cannot still be executing. Keeping it PAUSED avoids duplicate
-    provider calls and lets the merchant continue from persisted translations.
+    Manual translation workers run inside the API process. Keep their old
+    queued/running work paused for explicit continuation. Automatic jobs belong
+    to the independent worker and must never be paused by an API restart.
     """
 
     with SessionLocal() as session:
@@ -5485,6 +5522,7 @@ def recover_interrupted_translation_jobs() -> int:
                         select(CatalogTranslationJobRow).where(
                             CatalogTranslationJobRow.tenant_id == tenant_id,
                             CatalogTranslationJobRow.status.in_(("QUEUED", "RUNNING")),
+                            CatalogTranslationJobRow.origin != "AUTOMATIC",
                             CatalogTranslationJobRow.deleted_at.is_(None),
                         )
                     ).all()

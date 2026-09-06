@@ -68,4 +68,20 @@ responseStore = store;
 calls = 0;
 assert.deepEqual(await functions.storefrontLoader({ params: { tenantSlug: "aaa" }, request: new Request("https://example.test/aaa?lang=en-US") }), store);
 assert.equal(calls, 1, "A stale parent snapshot must be refreshed, never followed as a redirect");
-console.log("Child storefront routes: safe console links, all 4 legacy loaders, identity mismatch and stale snapshots passed");
+const ordersPage = await fs.readFile(new URL("../src/core/pages/ResellerOrdersPage.tsx", import.meta.url), "utf8");
+assert.ok(!ordersPage.includes('t("当前账号")'), "My inquiries must not show redundant account labels");
+assert.ok(ordersPage.includes("<span><strong>{order.customerCompany || order.customerName}</strong></span>"), "Keep customer identification without a secondary account line");
+assert.ok(ordersPage.includes("listCustomerPortalOrders()"), "Keep the account-scoped inquiry endpoint");
+const localeSource = await fs.readFile(new URL("../src/core/LocaleContext.tsx", import.meta.url), "utf8");
+const localeAst = ts.createSourceFile("LocaleContext.tsx", localeSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const englishDeclaration = localeAst.statements.filter(ts.isVariableStatement).flatMap(statement => [...statement.declarationList.declarations]).find(declaration => declaration.name.getText(localeAst) === "english");
+assert.ok(englishDeclaration?.initializer, "The English dictionary must exist");
+const english = new Function(`return (${englishDeclaration.initializer.getText(localeAst)});`)();
+assert.equal(english["去商品前台"], "Open storefront");
+assert.equal(english["处理报价"], "Process quote");
+assert.equal(english["待商家确认"], "Awaiting confirm");
+for (const key of ["查看报价", "查看并处理由当前代理商前台提交的全部报价。", "在商品前台选择商品并提交后，记录会显示在这里。"]) {
+  assert.ok(english[key] && !/[\p{Script=Han}]/u.test(english[key]), `Missing English inquiry translation: ${key}`);
+}
+assert.ok(ordersPage.includes('className="reseller-order-status"'), "Status badges must use the bounded, wrapping table style");
+console.log("Child storefront routes and inquiry labels: safe routes, account-scoped inquiries, English labels and compact status passed");

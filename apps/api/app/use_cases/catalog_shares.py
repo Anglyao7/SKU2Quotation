@@ -15,6 +15,22 @@ from ..public_catalog_models import CatalogShareRow
 from ..repositories import catalog_share_repository as repository
 from ..repositories import public_catalog_repository
 from ..services.storefront_branding import storefront_logo_url
+from ..services.subaccount_pricing import subaccount_price_rules
+
+
+def _store_branding(tenant, profile, subaccount=None) -> dict:
+    if subaccount is not None:
+        membership, user = subaccount
+        if membership.tenant_id != tenant.id or not membership.storefront_slug:
+            raise ApplicationError("CATALOG_SHARE_NOT_FOUND", "分享内容不存在或已失效。", kind="not_found")
+        return dict(
+            store_name=user.display_name or membership.storefront_slug,
+            store_slug=membership.storefront_slug,
+            store_subtitle=None,
+            store_logo_url=None,
+        )
+    return dict(store_name=tenant.name, store_slug=profile.slug,
+                store_subtitle=profile.description, store_logo_url=storefront_logo_url(profile))
 
 
 @dataclass(frozen=True)
@@ -85,7 +101,12 @@ def _response(
     store_slug: str,
     store_subtitle: str | None,
     store_logo_url: str | None,
+    subaccount_membership_id: UUID | None = None,
 ) -> CatalogShareResponse:
+    _, _, hidden_ids = subaccount_price_rules(
+        session, tenant_id=row.tenant_id,
+        membership_id=subaccount_membership_id, product_ids=set(),
+    )
     response_category_path = row.category_path
     if row.target_type == "CATEGORY":
         current_category = (
@@ -95,6 +116,8 @@ def _response(
             if row.category_id is not None
             else None
         )
+        if current_category is None or current_category.status != "ACTIVE":
+            raise ApplicationError("CATALOG_SHARE_NOT_FOUND", "分享内容不存在或已失效。", kind="not_found")
         current_category_path = (
             (current_category.path or current_category.name).strip()
             if current_category is not None
@@ -108,6 +131,7 @@ def _response(
             query="",
             category=current_category_path,
             tags=set(),
+            excluded_product_ids=hidden_ids,
         )
     else:
         current_item_count = public_catalog_repository.count_public_catalog_products(
@@ -118,12 +142,20 @@ def _response(
             category=None,
             tags=set(),
             product_ids={UUID(str(value)) for value in row.product_ids},
+            excluded_product_ids=hidden_ids,
         )
+    title = _category_name(session, row) if row.target_type == "CATEGORY" else None
+    if row.target_type == "PRODUCTS" and current_item_count == 1:
+        visible_products = public_catalog_repository.list_public_catalog_rows_by_product_ids(
+            session, tenant_id=row.tenant_id, now=utcnow(), category=None,
+            product_ids=[UUID(str(value)) for value in row.product_ids if UUID(str(value)) not in hidden_ids],
+        )
+        title = visible_products[0][2].name if visible_products else None
     return CatalogShareResponse(
         id=row.id,
         token=row.share_token,
         target_type=row.target_type,
-        title=row.title,
+        title=title or (f"{current_item_count} 件商品精选" if row.target_type == "PRODUCTS" else "商品分类"),
         item_count=current_item_count,
         category_id=row.category_id,
         category_name=_category_name(session, row),
@@ -144,10 +176,16 @@ def create_share(
     user_id: UUID,
     permissions: frozenset[str],
     request: CatalogShareCreate,
+    subaccount=None,
 ) -> CatalogShareResponse:
-    _require_permission(permissions, "catalog.publish")
+    _require_permission(permissions, "product.view" if subaccount is not None else "catalog.publish")
     tenant, profile = _published_store(session, tenant_id=tenant_id)
-    logo_url = storefront_logo_url(profile)
+    branding = _store_branding(tenant, profile, subaccount)
+    logo_url = branding["store_logo_url"]
+    membership_id = subaccount[0].id if subaccount is not None else None
+    _, _, hidden_ids = subaccount_price_rules(
+        session, tenant_id=tenant_id, membership_id=membership_id, product_ids=set(),
+    )
     if request.logo_position != "NONE" and not logo_url:
         raise ApplicationError(
             "CATALOG_SHARE_LOGO_REQUIRED",
@@ -174,6 +212,8 @@ def create_share(
         product_ids = list(
             dict.fromkeys(sku_by_id[sku_id].product_id for sku_id in request.sku_ids)
         )
+        if request.product_ids:
+            product_ids = list(request.product_ids)
         public_rows = public_catalog_repository.list_public_catalog_rows_by_product_ids(
             session,
             tenant_id=tenant_id,
@@ -182,7 +222,7 @@ def create_share(
             category=None,
         )
         public_product_ids = {row[2].id for row in public_rows}
-        if public_product_ids != set(product_ids):
+        if public_product_ids != set(product_ids) or hidden_ids.intersection(product_ids):
             raise ApplicationError(
                 "CATALOG_SHARE_PRODUCT_NOT_PUBLIC",
                 "部分商品尚未上架，无法加入公开分享。",
@@ -221,6 +261,7 @@ def create_share(
             query="",
             category=category_path,
             tags=set(),
+            excluded_product_ids=hidden_ids,
         )
         if item_count <= 0:
             raise ApplicationError(
@@ -241,10 +282,8 @@ def create_share(
         return _response(
             session,
             row=existing,
-            store_name=tenant.name,
-            store_slug=profile.slug,
-            store_subtitle=profile.description,
-            store_logo_url=logo_url,
+            **branding,
+            subaccount_membership_id=membership_id,
         )
 
     token = ""
@@ -271,7 +310,7 @@ def create_share(
             product_ids=[str(product_id) for product_id in product_ids],
             category_id=category_id,
             category_path=category_path,
-            title=title,
+            title=title[:240],
             item_count=item_count,
             logo_position=request.logo_position,
             fingerprint=fingerprint,
@@ -283,15 +322,13 @@ def create_share(
     return _response(
         session,
         row=row,
-        store_name=tenant.name,
-        store_slug=profile.slug,
-        store_subtitle=profile.description,
-        store_logo_url=logo_url,
+        **branding,
+        subaccount_membership_id=membership_id,
     )
 
 
 def resolve_share(
-    session: Session, *, slug: str, token: str
+    session: Session, *, slug: str, token: str, subaccount=None,
 ) -> CatalogShareResponse:
     tenant, profile = _public_store(session, slug=slug)
     row = repository.find_by_token(
@@ -304,10 +341,8 @@ def resolve_share(
     return _response(
         session,
         row=row,
-        store_name=tenant.name,
-        store_slug=profile.slug,
-        store_subtitle=profile.description,
-        store_logo_url=storefront_logo_url(profile),
+        **_store_branding(tenant, profile, subaccount),
+        subaccount_membership_id=subaccount[0].id if subaccount is not None else None,
     )
 
 
@@ -329,6 +364,8 @@ def resolve_share_constraint(
             if row.category_id is not None
             else None
         )
+        if category is None or category.status != "ACTIVE":
+            raise ApplicationError("CATALOG_SHARE_NOT_FOUND", "分享内容不存在或已失效。", kind="not_found")
         return CatalogShareConstraint(
             target_type=row.target_type,
             category_path=(

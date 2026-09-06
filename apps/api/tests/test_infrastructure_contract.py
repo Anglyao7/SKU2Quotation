@@ -89,3 +89,32 @@ def test_postgres_role_names_are_strictly_validated() -> None:
     for invalid in ("ATC-worker", "atc worker", 'atc_worker" SUPERUSER', "1atc"):
         with pytest.raises(ValueError):
             validated_role_name(invalid)
+
+
+@pytest.mark.parametrize("grant_fails", [False, True])
+def test_runtime_role_grants_publish_in_one_transaction(monkeypatch, grant_fails) -> None:
+    from unittest.mock import MagicMock
+    from scripts import grant_runtime_roles as grants
+
+    connect = MagicMock()
+    connection = connect.return_value
+    connection.__enter__.return_value = connection
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchall.return_value = [
+        (name,) for name in sorted(
+            set(grants.AUTH_TABLE_GRANTS) | grants.WORKER_TABLES
+            | grants.WORKER_READ_ONLY_TABLES | {"alembic_version"}
+        )
+    ]
+    monkeypatch.setenv("ATC_POSTGRES_OWNER_URL", "postgresql://test/db")
+    monkeypatch.setattr(grants.psycopg, "connect", connect)
+    if grant_fails:
+        monkeypatch.setattr(grants, "_grant_tables", MagicMock(side_effect=RuntimeError("grant failed")))
+        with pytest.raises(RuntimeError, match="grant failed"):
+            grants.grant_runtime_roles()
+        assert connection.__exit__.call_args.args[0] is RuntimeError
+    else:
+        grants.grant_runtime_roles()
+        assert connection.__exit__.call_args.args == (None, None, None)
+    connect.assert_called_once_with("postgresql://test/db", autocommit=False)
+    connection.commit.assert_not_called()

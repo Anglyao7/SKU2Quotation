@@ -473,10 +473,12 @@ export function ProductDetailPage() {
 
                 {selectedSku ? (
                   <div className="product-selection-bar">
-                    <div className="product-selection-identity">
-                      <small>{t("装箱数")}</small>
-                      <strong>{selectedPackingQuantity || t("未设置")}</strong>
-                    </div>
+                    {selectedPackingQuantity ? (
+                      <div className="product-selection-identity">
+                        <small>{t("装箱数")}</small>
+                        <strong>{selectedPackingQuantity}</strong>
+                      </div>
+                    ) : null}
                     {selectedQuantity ? (
                       <div
                         className="sku-quantity-control product-selection-quantity"

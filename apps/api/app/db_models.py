@@ -40,6 +40,7 @@ from .image_intelligence_models import (  # noqa: F401
     VisionObservationRow,
 )
 from .model_mixins import AuditTimestampMixin
+from .translation_automation_models import CatalogTranslationAutomationRow, CatalogTranslationChangeRow  # noqa: F401
 
 
 class SupplierRow(AuditTimestampMixin, Base):

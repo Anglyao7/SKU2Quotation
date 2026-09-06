@@ -343,6 +343,8 @@ class CatalogTranslationJobRow(AuditTimestampMixin, Base):
     source_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     mode: Mapped[str] = mapped_column(String(30), nullable=False)
+    origin: Mapped[str] = mapped_column(String(20), default="MANUAL", server_default="MANUAL", nullable=False)
+    automatic_scope: Mapped[dict] = mapped_column(JSON_DOCUMENT, default=dict, server_default=text("'{}'"), nullable=False)
     execution_mode: Mapped[str] = mapped_column(
         String(30), default="REALTIME", nullable=False
     )

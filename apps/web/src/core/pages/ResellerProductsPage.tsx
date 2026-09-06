@@ -15,11 +15,13 @@ import {
   Cube,
   MagnifyingGlass,
   Storefront,
+  ShareNetwork,
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useCoreAuth } from "../AuthContext";
+import { CatalogShareDialog, type CatalogShareTarget } from "../components/CatalogShareDialog";
 import {
   CoreCatalogLanguageLoading,
   CoreEmpty,
@@ -37,7 +39,7 @@ import {
 } from "../api";
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
-import { localizeProduct, localizeProductDetail } from "../../lib/storefrontLanguagePack";
+import { localizeCategoryOptions, localizeProduct, localizeProductDetail } from "../../lib/storefrontLanguagePack";
 import { consoleStorefrontPath } from "../../lib/storefrontAccount";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import type { Sku, StoreProduct, StoreProductDetail, StoreProductList } from "../../types";
@@ -64,6 +66,7 @@ export function ResellerProductsPage() {
     sourceResult && activeLanguagePack
       ? {
           ...sourceResult,
+          category_options: localizeCategoryOptions(sourceResult.category_options, activeLanguagePack),
           items: sourceResult.items.map((product) => (
             localizeProduct(product, activeLanguagePack)
           )),
@@ -83,6 +86,8 @@ export function ResellerProductsPage() {
   const [selectedProductId, setSelectedProductId] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState("");
+  const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
+  const [category, setCategory] = useState("");
 
   const load = useCallback(async () => {
     if (!tenantSlug) return;
@@ -92,7 +97,8 @@ export function ResellerProductsPage() {
       setSourceResult(await api.getStoreProducts(tenantSlug, {
         q: query || undefined,
         page,
-        includeFacets: false,
+        includeFacets: true,
+        category: category || undefined,
         accountId,
       }));
     } catch (caught) {
@@ -100,7 +106,7 @@ export function ResellerProductsPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, page, query, t, tenantSlug]);
+  }, [accountId, category, page, query, t, tenantSlug]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -169,6 +175,16 @@ export function ResellerProductsPage() {
           </TextField.Root>
           <Button type="submit"><MagnifyingGlass />{t("搜索")}</Button>
         </form>
+        <div className="reseller-catalog-share-category">
+          <select aria-label={t("分类")} value={category} onChange={(event) => { setCategory(event.target.value); setPage(1); }}>
+            <option value="">{t("全部商品")}</option>
+            {result?.category_options?.filter((item) => item.id).map((item) => <option key={item.id} value={item.value}>{item.label}</option>)}
+          </select>
+          <Button variant="soft" disabled={!category} onClick={() => {
+            const item = result?.category_options?.find((option) => option.value === category);
+            if (item?.id) setShareTarget({ type: "CATEGORY", categoryId: item.id, categoryName: item.label });
+          }}><ShareNetwork />{t("分享分类")}</Button>
+        </div>
         <Text size="1" color="gray">{result ? t("共 {count} 个商品", { count: result.total }) : t("正在读取商品")}</Text>
       </Card>
 
@@ -184,7 +200,7 @@ export function ResellerProductsPage() {
         <Card className="reseller-catalog-card">
           <div className="reseller-catalog-table-scroll">
             <div className="reseller-catalog-table reseller-catalog-table-head"><span>{t("商品")}</span><span>{t("分类")}</span><span>{t("SKU")}</span><span>{t("当前价格")}</span><span>{t("操作")}</span></div>
-            {result.items.map((product) => <ProductRow key={product.id} product={product} onOpen={() => void openProduct(product)} t={t} />)}
+            {result.items.map((product) => <ProductRow key={product.id} product={product} onOpen={() => void openProduct(product)} onShare={() => setShareTarget({ type: "PRODUCTS", productIds: [product.id] })} t={t} />)}
           </div>
         </Card>
         <div className="reseller-pagination" aria-label={t("商品分页")}>
@@ -202,11 +218,12 @@ export function ResellerProductsPage() {
           {selected ? <ProductDetail product={selected} t={t} onPriceChanged={refreshSelectedProduct} /> : null}
         </Dialog.Content>
       </Dialog.Root>
+      <CatalogShareDialog open={Boolean(shareTarget)} target={shareTarget} onOpenChange={(open) => { if (!open) setShareTarget(undefined); }} />
     </div>
   );
 }
 
-function ProductRow({ product, onOpen, t }: { product: StoreProduct; onOpen: () => void; t: (value: string, variables?: Record<string, string | number>) => string }) {
+function ProductRow({ product, onOpen, onShare, t }: { product: StoreProduct; onOpen: () => void; onShare: () => void; t: (value: string, variables?: Record<string, string | number>) => string }) {
   const image = product.image_url;
   return (
     <div className="reseller-catalog-table reseller-catalog-table-row" role="button" tabIndex={0} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>
@@ -214,7 +231,10 @@ function ProductRow({ product, onOpen, t }: { product: StoreProduct; onOpen: () 
       <span>{product.category_label || product.category || "—"}</span>
       <span className="core-tabular">{product.sku_count.toLocaleString()}</span>
       <strong className="reseller-price-cell">{formatPriceRange(product)}</strong>
-      <span><Button type="button" size="1" variant="soft" tabIndex={-1}>{t("查看详情")}<ArrowRight /></Button></span>
+      <span className="reseller-product-share-actions" onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+        <Button type="button" size="1" variant="soft" onClick={onOpen}>{t("查看详情")}<ArrowRight /></Button>
+        <Button type="button" size="1" variant="soft" onClick={onShare}><ShareNetwork />{t("分享商品")}</Button>
+      </span>
     </div>
   );
 }

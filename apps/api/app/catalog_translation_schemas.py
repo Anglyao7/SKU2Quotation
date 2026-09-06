@@ -259,6 +259,8 @@ class CatalogTranslationProductUpdateRequest(BaseModel):
 
 class CatalogTranslationJobResponse(BaseModel):
     id: UUID
+    origin: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
+    awaiting_publish: bool = False
     source_locale: str
     target_locale: str
     mode: Literal["INCREMENTAL", "FULL_REBUILD"]

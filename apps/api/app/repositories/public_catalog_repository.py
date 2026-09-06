@@ -60,8 +60,11 @@ def _additional_category_text_match(
             category_path == normalized_category,
             category_path.startswith(f"{normalized_category}/", autoescape=True),
         )
-    return exists(
-        select(ProductCategoryMembershipRow.id)
+    # Resolve matching product IDs once, not a correlated EXISTS for every
+    # offer/SKU in the outer count and page queries. On large catalogs the
+    # latter repeatedly walks category memberships even for tiny categories.
+    return ProductRow.id.in_(
+        select(ProductCategoryMembershipRow.product_id)
         .join(
             AdditionalProductCategoryRow,
             (AdditionalProductCategoryRow.tenant_id == ProductCategoryMembershipRow.tenant_id)
@@ -69,7 +72,6 @@ def _additional_category_text_match(
         )
         .where(
             ProductCategoryMembershipRow.tenant_id == tenant_id,
-            ProductCategoryMembershipRow.product_id == ProductRow.id,
             AdditionalProductCategoryRow.status == "ACTIVE",
             AdditionalProductCategoryRow.deleted_at.is_(None),
             or_(name_match, path_match),
@@ -290,10 +292,19 @@ def _public_catalog_statement(
         )
         statement = statement.where(
             or_(
-                func.lower(ProductCategoryRow.name) == normalized_category,
-                category_path == normalized_category,
-                category_path.startswith(
-                    f"{normalized_category}/", autoescape=True
+                ProductRow.category_id.in_(
+                    select(ProductCategoryRow.id)
+                    .where(
+                        ProductCategoryRow.tenant_id == tenant_id,
+                        or_(
+                            func.lower(ProductCategoryRow.name) == normalized_category,
+                            category_path == normalized_category,
+                            category_path.startswith(
+                                f"{normalized_category}/", autoescape=True
+                            ),
+                        ),
+                    )
+                    .correlate(None)
                 ),
                 _additional_category_text_match(
                     tenant_id=tenant_id,

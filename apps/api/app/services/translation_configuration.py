@@ -727,6 +727,7 @@ def resolved_catalog_translator(
         return rate_limited_translation_provider(
             environment_factory(),
             requests_per_minute=environment_translation_requests_per_minute(),
+            concurrency=_environment_catalog_translation_concurrency(),
         )
     if not settings.is_active:
         raise TranslationProviderError("catalog translation provider is disabled")
@@ -750,6 +751,7 @@ def resolved_catalog_translator(
             reasoning_effort=settings.reasoning_effort,
         ),
         requests_per_minute=settings.requests_per_minute,
+        concurrency=settings.catalog_concurrency,
     )
 
 

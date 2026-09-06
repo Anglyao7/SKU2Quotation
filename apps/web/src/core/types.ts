@@ -1561,6 +1561,8 @@ export interface CatalogLanguagePackInfo {
 
 export interface CatalogTranslationJob {
   id: string;
+  origin?: "MANUAL" | "AUTOMATIC";
+  awaitingPublish?: boolean;
   sourceLocale: StorefrontLocale;
   targetLocale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
