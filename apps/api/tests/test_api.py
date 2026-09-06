@@ -21960,6 +21960,64 @@ def test_supply_chain_partner_contact_crud_and_pagination() -> None:
     assert after_delete.json()["total"] == 0
 
 
+def test_public_carton_orders_validate_source_and_freeze_quote_rule() -> None:
+    listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
+    sku_id = listing.json()["items"][0]["id"]
+    with SessionLocal() as session:
+        sku = session.get(SkuRow, UUID(sku_id))
+        offer = session.scalar(select(PublicCatalogOfferRow).where(PublicCatalogOfferRow.sku_id == UUID(sku_id)))
+        original_options, original_price = sku.option_values, offer.unit_price
+        sku.option_values = {**(original_options or {}), "装箱数": "20"}
+        offer.unit_price = Decimal("10")
+        session.commit()
+    try:
+        detail = client.get(f"/api/store/demo/skus/{sku_id}")
+        assert detail.status_code == 200, detail.text
+        assert Decimal(detail.json()["packing_quantity"]) == 20
+        payload = {"customer_name": "Carton purchase test", "privacy_acknowledged": True, "items": [{"sku_id": sku_id, "quantity": 21}]}
+        rejected = client.post("/api/store/demo/quotes", json=payload)
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["detail"]["code"] == "PUBLIC_QUOTE_CARTON_QUANTITY_REQUIRED"
+        for quantity, cartons, total in [(20, 1, 200), (40, 2, 400)]:
+            payload["items"][0]["quantity"] = quantity
+            response = client.post("/api/store/demo/quotes", json=payload)
+            assert response.status_code == 201, response.text
+            quote = response.json()
+            item = quote["items"][0]
+            assert Decimal(item["quantity"]) == quantity
+            assert Decimal(item["packing_quantity"]) == 20
+            assert Decimal(item["carton_count"]) == cartons
+            assert Decimal(item["unit_price_snapshot"]) == 10
+            assert Decimal(item["line_total"]) == total
+            assert Decimal(quote["total"]) == total
+        with SessionLocal() as session:
+            sku = session.get(SkuRow, UUID(sku_id))
+            sku.option_values = {**(original_options or {}), "装箱数": "24"}
+            session.commit()
+        url = f"/api/v1/public-quote-drafts/{quote['id']}/items"
+        invalid_edit = client.patch(url, json={"items": [{"item_id": item["id"], "quantity": 24}]})
+        assert invalid_edit.status_code == 422, invalid_edit.text
+        valid_edit = client.patch(url, json={"items": [{"item_id": item["id"], "quantity": 60}]})
+        assert valid_edit.status_code == 200, valid_edit.text
+        assert Decimal(valid_edit.json()["items"][0]["carton_count"]) == 3
+        assert Decimal(valid_edit.json()["total"]) == 600
+        with SessionLocal() as session:
+            sku = session.get(SkuRow, UUID(sku_id))
+            sku.option_values = {"装箱数": ""}
+            session.commit()
+        payload["items"][0]["quantity"] = 1
+        piece = client.post("/api/store/demo/quotes", json=payload)
+        assert piece.status_code == 201, piece.text
+        assert piece.json()["items"][0]["carton_count"] is None
+        assert Decimal(piece.json()["total"]) == 10
+    finally:
+        with SessionLocal() as session:
+            sku = session.get(SkuRow, UUID(sku_id))
+            offer = session.scalar(select(PublicCatalogOfferRow).where(PublicCatalogOfferRow.sku_id == UUID(sku_id)))
+            sku.option_values, offer.unit_price = original_options, original_price
+            session.commit()
+
+
 def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

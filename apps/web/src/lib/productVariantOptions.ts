@@ -1,4 +1,5 @@
 import type { Sku } from "../types";
+import { skuCartonSize } from "./cartonQuantity";
 
 const TEMPLATE_MARKER_KEY = "_sku2quotation";
 const FALLBACK_DIMENSION_KEY = "__sku__";
@@ -68,6 +69,10 @@ function normalizedOptionKey(value: string): string {
 }
 
 export function skuPackingQuantity(sku: Sku | undefined): string | null {
+  if (sku?.packing_quantity !== undefined) {
+    const size = skuCartonSize(sku);
+    return size === null ? null : String(size);
+  }
   if (!sku?.option_values) return null;
   for (const [key, value] of Object.entries(sku.option_values)) {
     if (!PACKING_QUANTITY_OPTION_KEYS.has(normalizedOptionKey(key))) continue;

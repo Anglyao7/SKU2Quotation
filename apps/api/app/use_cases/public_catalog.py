@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..adapters.object_storage import get_object_storage
 from ..database import set_public_tenant_context, set_request_context
 from ..domain.errors import ApplicationError
+from ..services.carton_ordering import packing_quantity, carton_count, validate_carton_quantity
 from ..identity_models import (
     CustomerAccountAccessEventRow,
     MembershipRow,
@@ -1155,6 +1156,7 @@ def _sku_response(
     if localized_specification:
         localized_options["规格名称"] = localized_specification
     return PublicSkuResponse(
+        packing_quantity=packing_quantity(sku.option_values),
         id=sku.id,
         product_id=product.id,
         sku_code=sku.sku_code,
@@ -3428,7 +3430,10 @@ def get_public_sku(
 
 
 def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse:
+    packing = packing_quantity(row.option_values_snapshot)
     return PublicQuoteDraftItemResponse(
+        packing_quantity=packing,
+        carton_count=carton_count(row.quantity, packing),
         id=row.id,
         sku_id=row.sku_id,
         product_id=row.product_id_snapshot,
@@ -4258,6 +4263,8 @@ def create_public_quote_draft(
     for position, cart_item in enumerate(request.items, 1):
         offer, sku, product, category = row_by_sku[cart_item.sku_id]
         quantity = Decimal(cart_item.quantity)
+        packing = packing_quantity(sku.option_values)
+        validate_carton_quantity(quantity, packing, sku.sku_code)
         unit_price = effective_subaccount_price(
             _money(Decimal(offer.unit_price)),
             markup_percent=pricing_markup_percent,
@@ -4306,6 +4313,7 @@ def create_public_quote_draft(
         internal_marker = localized_options.get(_PUBLIC_OPTION_INTERNAL_KEY)
         marker = dict(internal_marker) if isinstance(internal_marker, dict) else {}
         marker["quote_source_option_values"] = source_public_options
+        marker["order_packing_quantity"] = str(packing) if packing is not None else None
         option_values[_PUBLIC_OPTION_INTERNAL_KEY] = marker
 
         source_specification = str(
@@ -5782,6 +5790,11 @@ def update_tenant_quote_draft_items(
         if "unit_price" in fields:
             item.unit_price_snapshot = _money(patch.unit_price or Decimal("0"))
         if "quantity" in fields:
+            validate_carton_quantity(
+                patch.quantity or Decimal("0.000001"),
+                packing_quantity(item.option_values_snapshot),
+                item.sku_code_snapshot,
+            )
             item.quantity = patch.quantity or Decimal("0.000001")
         if "name" in fields:
             item.name_snapshot = patch.name or ""

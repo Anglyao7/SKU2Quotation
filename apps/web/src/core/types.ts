@@ -2022,6 +2022,7 @@ export type QuoteTemplateField =
   | "quantity"
   | "unit_code"
   | "packing_quantity"
+  | "carton_count"
   | "carton_dimensions"
   | "gross_weight"
   | "carton_volume"

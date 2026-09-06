@@ -1,4 +1,7 @@
 {
+  "箱数": "Caixas",
+  "已选 {quantity} 件，再加一箱": "{quantity} unidades selecionadas · Adicionar uma caixa",
+  "数量必须为装箱数 {size} 的整数倍。": "A quantidade deve ser múltipla de {size} unidades por caixa.",
   "点击选择语言，保存后生效。": "Selecione os idiomas e guarde.",
   "已选中": "Selecionado",
   "未选中": "Não selecionado",

@@ -1,4 +1,5 @@
 import type { Sku } from "../types";
+import { cartQuantity, changeCartQuantity } from "./cartonQuantity";
 
 export interface StoredCartLine {
   sku: Sku;
@@ -28,14 +29,37 @@ function sanitizeCart(value: unknown): StoredCart {
     if (!entry || typeof entry !== "object") return;
     const line = entry as { sku?: Sku; quantity?: number; note?: string };
     const quantity = Number(line.quantity);
-    if (!line.sku || line.sku.id !== skuId || !Number.isFinite(quantity) || quantity < 1) return;
+    if (!line.sku || line.sku.id !== skuId || !Number.isFinite(quantity) || quantity <= 0) return;
+    const normalized = cartQuantity(line.sku, quantity);
+    if (normalized <= 0) return;
     cart[skuId] = {
       sku: line.sku,
-      quantity: Math.min(1_000_000, Math.floor(quantity)),
+      quantity: normalized,
       note: typeof line.note === "string" ? line.note.slice(0, 1000) : undefined,
     };
   });
   return cart;
+}
+
+export function setCartQuantity(cart: StoredCart, skuId: string, quantity: number): StoredCart {
+  if (!cart[skuId]) return cart;
+  const next = { ...cart };
+  const normalized = cartQuantity(next[skuId].sku, quantity);
+  if (normalized <= 0) delete next[skuId];
+  else next[skuId] = { ...next[skuId], quantity: normalized };
+  return next;
+}
+
+export function addCartSku(cart: StoredCart, sku: Sku): StoredCart {
+  return { ...cart, [sku.id]: { sku, quantity: changeCartQuantity(sku, cart[sku.id]?.quantity || 0, 1), note: cart[sku.id]?.note } };
+}
+
+export function refreshCartSkus(cart: StoredCart, skus: Sku[]): StoredCart {
+  const next = { ...cart };
+  for (const sku of skus) if (next[sku.id]) {
+    next[sku.id] = { ...next[sku.id], sku, quantity: cartQuantity(sku, next[sku.id].quantity) };
+  }
+  return next;
 }
 
 export function readStoreCart(slug: string): StoredCart {

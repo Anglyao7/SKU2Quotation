@@ -61,6 +61,28 @@ def test_packing_list_uses_order_snapshots_and_preserves_barcode():
     assert row["total_gross_weight"] == Decimal("25")
 
 
+def test_carton_quote_export_keeps_unit_quantity_and_carton_count():
+    from app.services.public_quote_documents import _quote_table_value
+    document = _document()
+    item = document.quote.items[0]
+    item.quantity = Decimal("20")
+    item.unit_price_snapshot = Decimal("10")
+    item.line_total = Decimal("200")
+    document.quote.total = Decimal("200")
+    document.quote.locale = "en-US"
+    assert _quote_table_value("quantity", document, item) == "20"
+    assert _quote_table_value("carton_count", document, item) == "1"
+    sheet = load_workbook(BytesIO(render_public_quote_draft_xlsx(document)), data_only=True).active
+    header_row = next(row for row in sheet if any(cell.value == "Cartons" for cell in row))
+    headers = {cell.value: cell.column for cell in header_row}
+    data_row = header_row[0].row + 1
+    assert sheet.cell(data_row, headers["Quantity"]).value == 20
+    assert sheet.cell(data_row, headers["Cartons"]).value == 1
+    pdf_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(render_public_quote_draft_pdf(document))).pages)
+    assert "Cartons" in pdf_text
+    assert "200.00" in pdf_text
+
+
 def test_packing_list_partial_carton_retains_actual_order_quantity():
     document = _document()
     document.quote.items[0].quantity = Decimal(100)

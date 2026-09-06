@@ -39,6 +39,7 @@ from reportlab.platypus import (
 
 from ..public_catalog_schemas import PUBLIC_QUOTE_PDF_MAX_COLUMNS, PublicQuoteDocument
 from .public_catalog_privacy import public_specification
+from .carton_ordering import packing_quantity
 from .quote_localization import (
     localize_quote_unit,
     proforma_text,
@@ -75,6 +76,7 @@ DEFAULT_QUOTE_WIDTHS = (
     26,
     28,
     18,
+    16,
 )
 
 
@@ -259,7 +261,7 @@ def _logistics_values(item: object) -> dict[str, object | None]:
     gross_raw = _option_value(item, "gross_weight")
     volume_raw = _option_value(item, "carton_volume")
     moq_raw = _option_value(item, "minimum_order_quantity")
-    packing = _positive_decimal(packing_raw)
+    packing = packing_quantity(getattr(item, "option_values_snapshot", {}))
     gross_weight = _gross_weight_kg(gross_raw)
     carton_volume = _carton_volume_m3(volume_raw) or _dimensions_volume_m3(
         dimensions_raw
@@ -267,6 +269,7 @@ def _logistics_values(item: object) -> dict[str, object | None]:
     quantity = Decimal(str(getattr(item, "quantity", 0) or 0))
     carton_factor = quantity / packing if packing and quantity >= 0 else None
     return {
+        "carton_count": float(carton_factor) if carton_factor is not None else None,
         "packing_quantity": (
             float(packing) if packing is not None else _xlsx_value(packing_raw)
         ),
@@ -907,6 +910,7 @@ _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
         "quantity",
         "unit_code",
         "packing_quantity",
+        "carton_count",
         "carton_dimensions",
         "gross_weight",
         "carton_volume",
@@ -922,6 +926,7 @@ _PUBLIC_QUOTE_DEFAULT_FIELDS = (
     "product_image",
     "product_name",
     "quantity",
+    "carton_count",
     "unit_price",
     "line_total",
 )
@@ -937,6 +942,7 @@ _PUBLIC_QUOTE_COLUMN_WIDTHS_MM = {
     "quantity": 18,
     "unit_code": 18,
     "packing_quantity": 22,
+    "carton_count": 16,
     "carton_dimensions": 30,
     "gross_weight": 22,
     "carton_volume": 22,
@@ -1007,9 +1013,10 @@ def _quote_table_value(field: str, document: PublicQuoteDocument, item: object) 
     value = _template_item_value(field, document, item)
     if value in (None, ""):
         return ""
-    if field in {"quantity", "packing_quantity", "minimum_order_quantity"}:
+    if field in {"quantity", "packing_quantity", "carton_count", "minimum_order_quantity"}:
         try:
-            return f"{Decimal(str(value)):f}".rstrip("0").rstrip(".")
+            text = f"{Decimal(str(value)):f}"
+            return text.rstrip("0").rstrip(".") if "." in text else text
         except (InvalidOperation, ValueError):
             return _clip_quote_table_text(value, field)
     if field in {
@@ -1800,6 +1807,7 @@ def render_public_quote_draft_xlsx(
                 _xlsx_text(item.category_snapshot),
                 _xlsx_text(quote_text(locale, "separator").join(item.tags_snapshot or [])),
                 logistics["minimum_order_quantity"],
+                logistics["carton_count"],
             ]
         )
         row_number = sheet.max_row

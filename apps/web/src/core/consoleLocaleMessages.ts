@@ -11,6 +11,7 @@ import trGenerated from "./locales/console.tr.json";
 type ConsoleDictionary = Record<string, string>;
 
 const en: ConsoleDictionary = {
+  "箱数": "Cartons",
   "点击选择语言，保存后生效。": "Click to select languages, then save.",
   "已选中": "Selected",
   "未选中": "Not selected",

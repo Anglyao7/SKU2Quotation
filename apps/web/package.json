@@ -10,6 +10,7 @@
     "test:import": "node scripts/test-import-queue.mjs",
     "test:storefront": "node scripts/test-storefront-language-fallback.mjs",
     "test:subaccount": "node scripts/test-subaccount-storefront-routing.mjs",
+    "test:cartons": "node scripts/test-carton-ordering.mjs",
     "test:support": "node scripts/test-support-ui.mjs",
     "test:packing": "node scripts/test-packing-list.mjs",
     "test:proforma": "node scripts/test-proforma-invoice.mjs",

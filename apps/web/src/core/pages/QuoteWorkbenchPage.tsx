@@ -37,6 +37,8 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { optionPackingQuantity } from "../../lib/cartonQuantity";
+import { storefrontText } from "../../lib/storefrontLocale";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   CoreApiError,
@@ -187,6 +189,7 @@ const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
   { value: "quantity", label: "数量" },
   { value: "unit_code", label: "单位" },
   { value: "packing_quantity", label: "装箱数量" },
+  { value: "carton_count", label: "箱数" },
   { value: "carton_dimensions", label: "装箱尺寸" },
   { value: "gross_weight", label: "毛重（kg）" },
   { value: "carton_volume", label: "立方（m³）" },
@@ -199,6 +202,7 @@ const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
 ];
 
 const defaultTableFields: QuoteTemplateField[] = [
+  "carton_count",
   "serial_number",
   "sku_code",
   "product_name",
@@ -224,6 +228,7 @@ const defaultVisibleTableFields: QuoteTemplateField[] = [
   "product_image",
   "product_name",
   "quantity",
+  "carton_count",
   "unit_price",
   "line_total",
 ];
@@ -248,6 +253,7 @@ const defaultExcelTableFields: QuoteTemplateField[] = [
   "category",
   "tags",
   "minimum_order_quantity",
+  "carton_count",
 ];
 
 const previewColumnWeights: Partial<Record<QuoteTemplateField, number>> = {
@@ -335,6 +341,7 @@ function fieldLabel(
 }
 
 const FIELD_LABEL_FIELDS = new Set<QuoteTemplateField>([
+  "carton_count",
   "serial_number",
   "sku_code",
   "product_name",
@@ -419,7 +426,11 @@ function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, loc
     case "product_image": return item.imageUrl ? quoteText(locale, "configured") : "";
     case "quantity": return String(item.quantity);
     case "unit_code": return quoteUnit(locale, item.unitCode);
-    case "packing_quantity": return optionValue(item, quoteOptionAliases.packing_quantity, locale);
+    case "packing_quantity": return String(optionPackingQuantity(item.optionValues) ?? "");
+    case "carton_count": {
+      const size = optionPackingQuantity(item.optionValues);
+      return size ? String(Number((item.quantity / size).toFixed(6))) : "";
+    }
     case "carton_dimensions": return optionValue(item, quoteOptionAliases.carton_dimensions, locale);
     case "gross_weight": return optionValue(item, quoteOptionAliases.gross_weight, locale);
     case "carton_volume": return optionValue(item, quoteOptionAliases.carton_volume, locale);
@@ -852,6 +863,11 @@ export function QuoteWorkbenchPage() {
         const value = Number(edit.quantity);
         if (!Number.isFinite(value) || value <= 0) {
           setError(t("请输入有效的商品数量。"));
+          return undefined;
+        }
+        const size = optionPackingQuantity(draft.items.find((item) => item.id === itemId)?.optionValues);
+        if (size && Math.round(value * 1_000_000) % Math.round(size * 1_000_000) !== 0) {
+          setError(storefrontText(locale, "数量必须为装箱数 {size} 的整数倍。", { size }));
           return undefined;
         }
         row.quantity = value;
@@ -1436,7 +1452,8 @@ export function QuoteWorkbenchPage() {
                   </label>
                   <label className="quote-editor-item-field">
                     <Text size="1" color="gray">{t("数量")}</Text>
-                    <TextField.Root type="number" min="0.000001" step="0.000001" value={quantity} disabled={!canEditPrices} aria-label={t("数量")} onChange={(event) => updateItemEdit(item.id, "quantity", event.target.value)} />
+                    <TextField.Root type="number" min={optionPackingQuantity(item.optionValues) || "0.000001"} step={optionPackingQuantity(item.optionValues) || "0.000001"} value={quantity} disabled={!canEditPrices} aria-label={t("数量")} onChange={(event) => updateItemEdit(item.id, "quantity", event.target.value)} />
+                    {optionPackingQuantity(item.optionValues) ? <Text size="1" color="gray">{quoteFieldLabel(locale, "packing_quantity")} × {previewValue(item, "packing_quantity", locale)} · {quoteFieldLabel(locale, "carton_count")} × {previewValue(item, "carton_count", locale)}</Text> : null}
                   </label>
                   <label className="quote-editor-item-field">
                     <Text size="1" color="gray">{t("单位")}</Text>

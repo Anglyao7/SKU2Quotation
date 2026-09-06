@@ -13,7 +13,7 @@ import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { prepareStorefrontCustomPageHtml } from "../lib/storefrontCustomPage";
 import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
-import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
@@ -137,12 +137,7 @@ export function StorefrontCustomPage() {
     writeStoreCart(storageScope, cart);
   }, [cart, storageScope]);
 
-  const updateQuantity = (skuId: string, quantity: number) => setCart((current) => {
-    const next = { ...current };
-    if (quantity < 1) delete next[skuId];
-    else if (next[skuId]) next[skuId] = { ...next[skuId], quantity };
-    return next;
-  });
+  const updateQuantity = (skuId: string, quantity: number) => setCart((current) => setCartQuantity(current, skuId, quantity));
   const updateCartNote = (skuId: string, note: string) => setCart((current) => (
     current[skuId]
       ? { ...current, [skuId]: { ...current[skuId], note } }
@@ -178,6 +173,7 @@ export function StorefrontCustomPage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
                 onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}

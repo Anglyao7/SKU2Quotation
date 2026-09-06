@@ -1,6 +1,7 @@
 import type { StorefrontLocale } from "../types";
 import { consoleLocaleMessage } from "../core/consoleLocaleMessages";
 import { localizedStorefrontMessages } from "./storefrontMessages";
+import { cartonMessages } from "./cartonMessages";
 
 export interface StorefrontLanguageOption {
   code: StorefrontLocale;
@@ -390,14 +391,14 @@ export function storefrontText(
   source: string,
   values: Record<string, string | number> = {},
 ) {
-  let result = locale === "zh-CN"
+  let result = cartonMessages[source]?.[locale] ?? (locale === "zh-CN"
     ? source
     : locale === "en-US"
       ? english[source] ?? source
       : localizedStorefrontMessages[source]?.[locale]
         ?? consoleLocaleMessage(locale, source)
         ?? english[source]
-        ?? source;
+        ?? source);
   for (const [key, value] of Object.entries(values)) {
     result = result.replaceAll(`{${key}}`, String(value));
   }

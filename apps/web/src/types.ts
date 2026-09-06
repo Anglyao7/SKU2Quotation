@@ -422,6 +422,7 @@ export interface StorefrontCategoryOption {
 }
 
 export interface Sku {
+  packing_quantity?: number | string | null;
   id: string;
   product_id?: string;
   tenant_id?: string;
@@ -570,6 +571,8 @@ export interface CreateQuoteInput {
 }
 
 export interface QuoteItem {
+  packing_quantity?: number | string | null;
+  carton_count?: number | string | null;
   id?: string;
   sku_id: string;
   sku_code?: string;

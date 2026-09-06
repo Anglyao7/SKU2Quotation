@@ -1,0 +1,7 @@
+import type { StorefrontLocale } from "../types";
+
+export const cartonMessages: Record<string, Record<StorefrontLocale, string>> = {
+  "箱数": { "zh-CN": "箱数", "en-US": "Cartons", es: "Cajas", tr: "Koli sayısı", ar: "عدد الكراتين", ja: "箱数", ko: "박스 수", pt: "Caixas", fr: "Cartons", fa: "تعداد کارتن" },
+  "已选 {quantity} 件，再加一箱": { "zh-CN": "已选 {quantity} 件，再加一箱", "en-US": "{quantity} units selected · Add a carton", es: "{quantity} unidades seleccionadas · Añadir una caja", tr: "{quantity} adet seçildi · Bir koli ekle", ar: "تم اختيار {quantity} قطعة · أضف كرتونًا", ja: "{quantity} 点選択済み · 1箱追加", ko: "{quantity}개 선택됨 · 한 박스 추가", pt: "{quantity} unidades selecionadas · Adicionar uma caixa", fr: "{quantity} unités sélectionnées · Ajouter un carton", fa: "{quantity} عدد انتخاب شده · افزودن یک کارتن" },
+  "数量必须为装箱数 {size} 的整数倍。": { "zh-CN": "数量必须为装箱数 {size} 的整数倍。", "en-US": "Quantity must be a multiple of {size} units per carton.", es: "La cantidad debe ser múltiplo de {size} unidades por caja.", tr: "Miktar, koli başına {size} adedin katı olmalıdır.", ar: "يجب أن تكون الكمية من مضاعفات {size} قطعة لكل كرتون.", ja: "数量は1箱あたり{size}個の整数倍にしてください。", ko: "수량은 박스당 {size}개의 배수여야 합니다.", pt: "A quantidade deve ser múltipla de {size} unidades por caixa.", fr: "La quantité doit être un multiple de {size} unités par carton.", fa: "تعداد باید مضربی از {size} عدد در هر کارتن باشد." },
+};

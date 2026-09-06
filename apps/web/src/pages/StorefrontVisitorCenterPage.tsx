@@ -30,7 +30,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { money } from "../lib/format";
-import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
 import {
   clearStorefrontHistory,
   markQuoteNotificationsSeen,
@@ -190,12 +190,7 @@ export function StorefrontVisitorCenterPage() {
   ].includes(requestedTab)
     ? requestedTab
     : requestedTab === "quotes" ? "pending" : "history";
-  const updateQuantity = (skuId: string, quantity: number) => setCart((current) => {
-    const next = { ...current };
-    if (quantity < 1) delete next[skuId];
-    else if (next[skuId]) next[skuId] = { ...next[skuId], quantity };
-    return next;
-  });
+  const updateQuantity = (skuId: string, quantity: number) => setCart((current) => setCartQuantity(current, skuId, quantity));
   const updateCartNote = (skuId: string, note: string) => setCart((current) => (
     current[skuId]
       ? { ...current, [skuId]: { ...current[skuId], note } }
@@ -217,7 +212,7 @@ export function StorefrontVisitorCenterPage() {
         <div className="header-actions">
           <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
           <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onNote={updateCartNote} onClear={() => setCart({})} locale={locale} />
+          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))} onNote={updateCartNote} onClear={() => setCart({})} locale={locale} />
         </div>
       </div></Container>
     </header>

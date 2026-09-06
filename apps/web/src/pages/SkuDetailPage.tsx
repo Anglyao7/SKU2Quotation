@@ -30,7 +30,8 @@ import { api } from "../lib/api";
 import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
 import { money } from "../lib/format";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
-import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { addCartSku, readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
+import { cartCartons, skuCartonSize } from "../lib/cartonQuantity";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
@@ -84,13 +85,16 @@ export function SkuDetailPage() {
     : `${storefrontBasePath(store.slug)}${localeQuery}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(storageScope),
+    () => refreshCartSkus(readStoreCart(storageScope), [sku]),
   );
   const [imageFailed, setImageFailed] = useState(!sku.image_url);
   const [announcements, setAnnouncements] = useState(store.announcements || []);
   const displayTag = sku.display_tag || sku.tags[0];
   const quantity = cart[sku.id]?.quantity || 0;
   const cartLines = useMemo(() => Object.values(cart), [cart]);
+  useEffect(() => {
+    setCart((current) => refreshCartSkus(current, [sku]));
+  }, [sku]);
   const description = sku.description?.trim();
   const cameFromCatalog = Boolean(
     (location.state as { fromStorefrontCatalog?: boolean } | null)?.fromStorefrontCatalog,
@@ -141,12 +145,7 @@ export function SkuDetailPage() {
   }, [sku.name, store.name, locale]);
 
   const updateQuantity = (skuId: string, nextQuantity: number) => {
-    setCart((current) => {
-      const next = { ...current };
-      if (nextQuantity < 1) delete next[skuId];
-      else if (next[skuId]) next[skuId] = { ...next[skuId], quantity: nextQuantity };
-      return next;
-    });
+    setCart((current) => setCartQuantity(current, skuId, nextQuantity));
   };
   const updateCartNote = (skuId: string, note: string) => {
     setCart((current) => current[skuId]
@@ -155,14 +154,7 @@ export function SkuDetailPage() {
   };
 
   const addToCart = () => {
-    setCart((current) => ({
-      ...current,
-      [sku.id]: {
-        sku,
-        quantity: (current[sku.id]?.quantity || 0) + 1,
-        note: current[sku.id]?.note,
-      },
-    }));
+    setCart((current) => addCartSku(current, sku));
   };
 
   const returnToCatalog = () => {
@@ -223,6 +215,7 @@ export function SkuDetailPage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
                 onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}
@@ -319,9 +312,12 @@ export function SkuDetailPage() {
               <Button size="3" className="sku-detail-add" onClick={addToCart}>
                 {quantity ? <Check weight="bold" /> : <Plus weight="bold" />}
                 {quantity
-                  ? t("已选 {quantity} 件，再加一件", { quantity })
+                  ? skuCartonSize(sku)
+                    ? t("已选 {quantity} 件，再加一箱", { quantity })
+                    : t("已选 {quantity} 件，再加一件", { quantity })
                   : t("加入报价清单")}
               </Button>
+              {skuCartonSize(sku) ? <Text size="2">{t("装箱数")} × {skuCartonSize(sku)} · {t("数量")} × {quantity} · {t("箱数")} × {cartCartons(sku, quantity)}</Text> : null}
               <Text size="1" color="gray">
                 {t("最终价格与交期以商家确认后的正式报价为准。")}
               </Text>

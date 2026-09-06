@@ -559,6 +559,10 @@ export function proformaText(locale: StorefrontLocale, key: string): string {
 }
 
 export function quoteFieldLabel(locale: StorefrontLocale, field: QuoteTemplateField, fallback?: string): string {
+  if (field === "carton_count") {
+    const labels: Record<StorefrontLocale, string> = { "zh-CN": "箱数", "en-US": "Cartons", es: "Cajas", tr: "Koli sayısı", ar: "عدد الكراتين", ja: "箱数", ko: "박스 수", pt: "Caixas", fr: "Cartons", fa: "تعداد کارتن" };
+    return labels[locale];
+  }
   const key = FIELD_KEYS[field];
   return key ? quoteText(locale, key) : (fallback ?? field);
 }

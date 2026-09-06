@@ -96,6 +96,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "picture",
     ),
     "quantity": ("数量", "采购数量", "报价数量", "quantity", "qty"),
+    "carton_count": ("箱数", "总箱数", "cartons", "cartoncount", "ctns"),
     "unit_code": ("计量单位", "单位", "unit", "uom"),
     "packing_quantity": (
         "装箱数量",

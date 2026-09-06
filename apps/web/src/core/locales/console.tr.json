@@ -1,4 +1,7 @@
 {
+  "箱数": "Koli sayısı",
+  "已选 {quantity} 件，再加一箱": "{quantity} adet seçildi · Bir koli ekle",
+  "数量必须为装箱数 {size} 的整数倍。": "Miktar, koli başına {size} adedin katı olmalıdır.",
   "点击选择语言，保存后生效。": "Dilleri seçin, ardından kaydedin.",
   "已选中": "Seçili",
   "未选中": "Seçili değil",

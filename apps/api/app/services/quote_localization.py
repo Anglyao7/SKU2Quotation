@@ -587,6 +587,9 @@ def proforma_text(locale: str | None, key: str) -> str:
 
 
 def quote_field_label(locale: str | None, field: str) -> str:
+    if field == "carton_count":
+        labels = {"zh-CN": "箱数", "en-US": "Cartons", "es": "Cajas", "tr": "Koli sayısı", "ar": "عدد الكراتين", "ja": "箱数", "ko": "박스 수", "pt": "Caixas", "fr": "Cartons", "fa": "تعداد کارتن"}
+        return labels[quote_locale(locale)]
     return quote_text(locale, QUOTE_FIELD_LABEL_KEYS.get(field, field))
 
 
@@ -661,6 +664,7 @@ def quote_headers(locale: str | None) -> tuple[str, ...]:
             "category",
             "tags",
             "minimum_order_quantity",
+            "carton_count",
         )
     )
 

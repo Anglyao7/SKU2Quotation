@@ -23,11 +23,12 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { money, quoteNumber } from "../lib/format";
+import { cartCartons, changeCartQuantity, skuCartonSize } from "../lib/cartonQuantity";
 import { storefrontBasePath } from "../lib/storefrontAccount";
 import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
 import { notifyStorefrontQuotesChanged } from "../lib/storefrontVisitor";
@@ -57,6 +58,7 @@ interface CartDrawerProps {
   onQuantity: (skuId: string, quantity: number) => void;
   onNote: (skuId: string, note: string) => void;
   onClear: () => void;
+  onRefreshSkus: (skus: Sku[]) => void;
   locale: StorefrontLocale;
 }
 
@@ -128,13 +130,39 @@ function CartLineImage({ sku }: { sku: Sku }) {
   );
 }
 
-export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onNote, onClear, locale }: CartDrawerProps) {
+export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onNote, onClear, onRefreshSkus, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
   const [error, setError] = useState("");
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshSkusRef = useRef(onRefreshSkus);
+  refreshSkusRef.current = onRefreshSkus;
+  const legacySkuIds = lines.filter(({ sku }) => sku.packing_quantity === undefined).map(({ sku }) => sku.id).join(",");
+  useEffect(() => {
+    if (!open || !legacySkuIds) { setRefreshing(false); return; }
+    let cancelled = false;
+    setRefreshing(true);
+    const ids = legacySkuIds.split(",");
+    const updated: Sku[] = [];
+    let next = 0;
+    const worker = async () => {
+      while (!cancelled && next < ids.length) {
+        const id = ids[next++];
+        updated.push(await api.getStoreSku(slug, id, locale, undefined, accountId));
+      }
+    };
+    void Promise.all(Array.from({ length: Math.min(4, ids.length) }, worker)).then(() => {
+      if (!cancelled) refreshSkusRef.current(updated);
+    }).catch(() => {
+      if (!cancelled) setError(storefrontText(locale, "商品加载失败。"));
+    }).finally(() => {
+      if (!cancelled) setRefreshing(false);
+    });
+    return () => { cancelled = true; };
+  }, [open, legacySkuIds, slug, accountId, locale]);
   const itemCount = lines.reduce((sum, line) => sum + line.quantity, 0);
   const knownTotal = useMemo(
     () => lines.reduce((sum, line) => sum + (Number(line.sku.price) || 0) * line.quantity, 0),
@@ -181,6 +209,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (refreshing || legacySkuIds) return;
     if (!lines.length) return;
     setSubmitting(true);
     setError("");
@@ -330,16 +359,18 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                       <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
                       <Text size="1" color="gray" className="mono-text">{sku.sku_code}</Text>
                       <Text size="1" color="gray">{money(sku.price, sku.currency)}</Text>
+                      {skuCartonSize(sku) ? <Text size="1" color="gray">{t("装箱数")} × {skuCartonSize(sku)} · {t("数量")} × {quantity} · {t("箱数")} × {cartCartons(sku, quantity)}</Text> : null}
+                      <Text size="2" weight="medium">{t("小计")} {money((Number(sku.price) || 0) * quantity, sku.currency)}</Text>
                     </div>
                     <div className="quantity-control">
                       <Tooltip content={t("减少数量")}>
-                        <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, quantity - 1)} aria-label={t("减少数量")}>
-                          {quantity <= 1 ? <Trash size={14} /> : <Minus size={14} />}
+                        <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, -1))} aria-label={t("减少数量")}>
+                          {quantity <= (skuCartonSize(sku) || 1) ? <Trash size={14} /> : <Minus size={14} />}
                         </IconButton>
                       </Tooltip>
                       <Text size="2" weight="medium">{quantity}</Text>
                       <Tooltip content={t("增加数量")}>
-                        <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, quantity + 1)} aria-label={t("增加数量")}>
+                        <IconButton type="button" size="1" variant="soft" color="gray" disabled={changeCartQuantity(sku, quantity, 1) === quantity} onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, 1))} aria-label={t("增加数量")}>
                           <Plus size={14} />
                         </IconButton>
                       </Tooltip>
@@ -425,8 +456,8 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                 <span>{t("{skus} 个 SKU · {items} 件", { skus: lines.length, items: itemCount })}</span>
                 <strong>{money(knownTotal, currency)}</strong>
               </div>
-              <Button className="quote-submit" type="submit" size="3" loading={submitting} disabled={!lines.length}>
-                {t("提交并生成报价单")}<ArrowRight size={18} />
+              <Button className="quote-submit" type="submit" size="3" loading={submitting || refreshing} disabled={!lines.length || Boolean(legacySkuIds)}>
+                {refreshing ? t("商品加载中") : t("提交并生成报价单")}<ArrowRight size={18} />
               </Button>
             </div>
           </form>

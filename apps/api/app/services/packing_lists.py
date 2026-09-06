@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 
 from ..public_catalog_schemas import PublicPackingListItem, PublicPackingListSettings
+from .carton_ordering import packing_quantity
 
 ALIASES = {
     "packing_quantity": ("装箱数量", "装箱数", "装箱量", "一箱个数", "每箱数量", "每箱个数", "qtyctn", "pcsctn", "packingquantity"),
@@ -82,7 +83,7 @@ def dimensions(value: object) -> tuple[Decimal | None, Decimal | None, Decimal |
 def default_item(item: object) -> PublicPackingListItem:
     length, width, height = dimensions(option(item, "dimensions"))
     raw_barcode = str(option(item, "barcode") or "").strip()
-    data = dict(item_id=item.id, barcode=raw_barcode if re.fullmatch(r"[0-9]{13}", raw_barcode) else "", article_number=str(option(item, "article_number") or item.sku_code_snapshot), packing_quantity=number(option(item, "packing_quantity")), carton_length=length, carton_width=width, carton_height=height, carton_volume=number(option(item, "carton_volume"), "volume"), gross_weight=number(option(item, "gross_weight"), "weight"))
+    data = dict(item_id=item.id, barcode=raw_barcode if re.fullmatch(r"[0-9]{13}", raw_barcode) else "", article_number=str(option(item, "article_number") or item.sku_code_snapshot), packing_quantity=packing_quantity(getattr(item, "option_values_snapshot", {})), carton_length=length, carton_width=width, carton_height=height, carton_volume=number(option(item, "carton_volume"), "volume"), gross_weight=number(option(item, "gross_weight"), "weight"))
     # Imported metadata is not necessarily a valid editable decimal. Keep
     # valid fields without letting one malformed legacy value break a quote.
     valid = {"item_id": item.id}

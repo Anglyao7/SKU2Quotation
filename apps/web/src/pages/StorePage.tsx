@@ -53,7 +53,7 @@ import {
   storefrontStorageScope,
 } from "../lib/storefrontAccount";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
-import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
 import {
   normalizeStorefrontLocale,
   storefrontDirection,
@@ -877,12 +877,7 @@ export function StorePage() {
     });
   };
   const updateQuantity = (skuId: string, quantity: number) => {
-    setCart((current) => {
-      const next = { ...current };
-      if (quantity < 1) delete next[skuId];
-      else next[skuId] = { ...next[skuId], quantity };
-      return next;
-    });
+    setCart((current) => setCartQuantity(current, skuId, quantity));
   };
   const updateCartNote = (skuId: string, note: string) => {
     setCart((current) => current[skuId]
@@ -988,6 +983,7 @@ export function StorePage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
                 onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}

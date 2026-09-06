@@ -41,7 +41,8 @@ import {
   skuIdForVariantChoice,
 } from "../lib/productVariantOptions";
 import { subscribePublicCatalogRevision } from "../lib/publicCatalogRevision";
-import { readStoreCart, writeStoreCart } from "../lib/storeCart";
+import { addCartSku, readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
+import { cartCartons, changeCartQuantity, skuCartonSize } from "../lib/cartonQuantity";
 import {
   isStorefrontFavorite,
   rememberStorefrontProduct,
@@ -106,7 +107,7 @@ export function ProductDetailPage() {
     : `${storefrontBasePath(store.slug)}${storefrontSearch ? `?${storefrontSearch}` : ""}`;
   const navigate = useNavigate();
   const [cart, setCart] = useState<Record<string, CartLine>>(
-    () => readStoreCart(storageScope),
+    () => refreshCartSkus(readStoreCart(storageScope), product.skus),
   );
   const variantModel = useMemo(
     () => buildProductVariantModel(product.skus, {
@@ -168,6 +169,7 @@ export function ProductDetailPage() {
 
   useEffect(() => {
     setSelectedSkuId(product.skus[0]?.id || "");
+    setCart((current) => refreshCartSkus(current, product.skus));
     setDescriptionExpanded(false);
   }, [product.id, product.skus]);
 
@@ -211,14 +213,7 @@ export function ProductDetailPage() {
   }, [locale, product.name, store.name]);
 
   const updateQuantity = (skuId: string, nextQuantity: number) => {
-    setCart((current) => {
-      const next = { ...current };
-      if (nextQuantity < 1) delete next[skuId];
-      else if (next[skuId]) {
-        next[skuId] = { ...next[skuId], quantity: nextQuantity };
-      }
-      return next;
-    });
+    setCart((current) => setCartQuantity(current, skuId, nextQuantity));
   };
   const updateCartNote = (skuId: string, note: string) => {
     setCart((current) => current[skuId]
@@ -227,14 +222,7 @@ export function ProductDetailPage() {
   };
 
   const addToCart = (sku: Sku) => {
-    setCart((current) => ({
-      ...current,
-      [sku.id]: {
-        sku,
-        quantity: (current[sku.id]?.quantity || 0) + 1,
-        note: current[sku.id]?.note,
-      },
-    }));
+    setCart((current) => addCartSku(current, sku));
   };
 
   const selectVariantChoice = (dimensionKey: string, value: string) => {
@@ -304,6 +292,7 @@ export function ProductDetailPage() {
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
                 lines={cartLines}
                 onQuantity={updateQuantity}
+                onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
                 onNote={updateCartNote}
                 onClear={() => setCart({})}
                 locale={locale}
@@ -497,14 +486,15 @@ export function ProductDetailPage() {
                           size="2"
                           variant="soft"
                           color="gray"
-                          onClick={() => updateQuantity(selectedSku.id, selectedQuantity - 1)}
+                          onClick={() => updateQuantity(selectedSku.id, changeCartQuantity(selectedSku, selectedQuantity, -1))}
                           aria-label={t("减少 {name} 数量", { name: selectedLabel })}
                         >
-                          {selectedQuantity <= 1 ? <Trash size={16} /> : <Minus size={16} />}
+                          {selectedQuantity <= (skuCartonSize(selectedSku) || 1) ? <Trash size={16} /> : <Minus size={16} />}
                         </IconButton>
                         <span>
                           <small>{t("已选")}</small>
                           <strong>{selectedQuantity}</strong>
+                          {skuCartonSize(selectedSku) ? <small>{t("箱数")} × {cartCartons(selectedSku, selectedQuantity)}</small> : null}
                         </span>
                         <IconButton
                           size="2"

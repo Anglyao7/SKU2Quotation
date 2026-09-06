@@ -82,6 +82,7 @@ class PublicCategoryOption(BaseModel):
 
 
 class PublicSkuResponse(BaseModel):
+    packing_quantity: Decimal | None = None
     id: UUID
     product_id: UUID
     sku_code: str
@@ -229,6 +230,8 @@ class PublicQuoteDraftCreate(BaseModel):
 
 
 class PublicQuoteDraftItemResponse(BaseModel):
+    packing_quantity: Decimal | None = None
+    carton_count: Decimal | None = None
     id: UUID
     sku_id: UUID
     product_id: UUID | None = None
