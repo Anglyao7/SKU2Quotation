@@ -1,5 +1,5 @@
 {
-  "箱数": "Cartons",
+  "箱数": "Nombre de cartons",
   "已选 {quantity} 件，再加一箱": "{quantity} unités sélectionnées · Ajouter un carton",
   "数量必须为装箱数 {size} 的整数倍。": "La quantité doit être un multiple de {size} unités par carton.",
   "点击选择语言，保存后生效。": "Sélectionnez les langues, puis enregistrez.",
