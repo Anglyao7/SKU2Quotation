@@ -955,6 +955,19 @@ def get_store(
             "当前子账号不属于这个店铺。",
             kind="forbidden",
         )
+    if subaccount is not None and (
+        not str(subaccount[0].storefront_slug or "").strip()
+        or subaccount[0].storefront_slug.casefold().strip()
+        in {tenant.slug.casefold(), profile.slug.casefold()}
+    ):
+        # Older deployments could leave this column empty under FORCE RLS.
+        # A legacy child URL must never canonicalize to its parent's store:
+        # doing so drops the quote owner for subsequent anonymous visitors.
+        raise ApplicationError(
+            "STOREFRONT_ACCOUNT_PATH_UNAVAILABLE",
+            "子账号前台地址尚未配置，请联系管理员修复。",
+            kind="conflict",
+        )
     source_locale, requested_locale, available_locales = (
         _requested_storefront_locale(
             session,

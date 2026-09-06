@@ -8,6 +8,7 @@ from sqlalchemy import Text, case, cast, exists, func, or_, select, update
 from sqlalchemy.orm import Load, Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
+from ..database import AuthSessionLocal
 from ..identity_models import MembershipRow, TenantRow, UserRow
 from ..product_center_models import SkuRow
 from ..product_supplier_models import (
@@ -89,7 +90,7 @@ def find_published_profile_by_slug(
     )
     if profile is not None:
         return profile
-    tenant_id = session.scalar(
+    account_lookup = (
         select(MembershipRow.tenant_id)
         .join(UserRow, UserRow.id == MembershipRow.user_id)
         .join(TenantRow, TenantRow.id == MembershipRow.tenant_id)
@@ -104,6 +105,18 @@ def find_published_profile_by_slug(
             TenantRow.deleted_at.is_(None),
         )
     )
+    # Public requests have no tenant context yet. The business role cannot
+    # discover a child alias through tenant-isolated memberships/users; use
+    # the existing identity reader for this exact, active public identity.
+    # Never relax RLS or authorize private business data with this lookup.
+    resolved_aliases = session.info.get("resolved_public_storefront_aliases", {})
+    if normalized in resolved_aliases:
+        tenant_id = resolved_aliases[normalized]
+    elif session.bind is not None and session.bind.dialect.name == "postgresql":
+        with AuthSessionLocal() as identity_session:
+            tenant_id = identity_session.scalar(account_lookup)
+    else:
+        tenant_id = session.scalar(account_lookup)
     if tenant_id is not None:
         return find_published_profile_by_tenant(session, tenant_id=tenant_id)
     profiles = session.scalars(

@@ -38,7 +38,7 @@ import {
 import { api } from "../../lib/api";
 import { money } from "../../lib/format";
 import { localizeProduct, localizeProductDetail } from "../../lib/storefrontLanguagePack";
-import { storefrontBasePath } from "../../lib/storefrontAccount";
+import { consoleStorefrontPath } from "../../lib/storefrontAccount";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import type { Sku, StoreProduct, StoreProductDetail, StoreProductList } from "../../types";
 
@@ -138,8 +138,7 @@ export function ResellerProductsPage() {
   };
 
   const totalPages = Math.max(1, result?.pages || Math.ceil((result?.total || 0) / PAGE_SIZE));
-  const storefrontPath = profile?.context.storefrontPath
-    || (tenantSlug ? storefrontBasePath(tenantSlug) : "/");
+  const storefrontPath = consoleStorefrontPath(profile?.context);
 
   return (
     <div className="core-workspace reseller-products-page">

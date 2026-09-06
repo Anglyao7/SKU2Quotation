@@ -22983,7 +22983,7 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
             connection.exec_driver_sql(
                 "SELECT version_num FROM alembic_version"
             ).scalar()
-            == "20260903_0132"
+            == "20260906_0133"
         )
     upgraded_engine.dispose()
     command.check(config)
@@ -23778,6 +23778,23 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
     )
     assert custom_page.status_code == 201, custom_page.text
     custom_page_id = custom_page.json()["id"]
+    # Reproduce production's old FORCE-RLS backfill failure: a valid child
+    # membership existed but its independent address was never persisted.
+    with SessionLocal() as session:
+        membership = session.get(MembershipRow, UUID(account["id"]))
+        assert membership is not None
+        membership.storefront_slug = None
+        session.commit()
+    legacy_without_path = client.get(
+        "/api/store/demo", params={"account": account["id"]}
+    )
+    assert legacy_without_path.status_code == 409, legacy_without_path.text
+    assert legacy_without_path.json()["detail"]["code"] == "STOREFRONT_ACCOUNT_PATH_UNAVAILABLE"
+    from importlib import import_module
+    repair = import_module("migrations.versions.20260906_0133_repair_subaccount_storefront_paths")
+    with SessionLocal() as session:
+        assert repair.backfill_missing_paths(session.connection()) >= 1
+        session.commit()
     short_storefront = client.get(f"/api/store/{account['storefront_slug']}")
     assert short_storefront.status_code == 200, short_storefront.text
     assert short_storefront.json()["slug"] == account["storefront_slug"]

@@ -99,6 +99,7 @@ def _bearer_access_token(
 def _catalog_subaccount(
     identity_session: Session,
     *,
+    public_session: Session,
     expected_membership_id: UUID | None,
     storefront_slug: str,
 ):
@@ -109,6 +110,12 @@ def _catalog_subaccount(
         identity_session,
         storefront_slug=storefront_slug,
     )
+    # Reuse this trusted exact lookup in the business repository. Opening a
+    # second identity connection while this dependency holds the first can
+    # exhaust the identity pool during concurrent public catalog requests.
+    public_session.info.setdefault("resolved_public_storefront_aliases", {})[
+        storefront_slug.casefold().strip()
+    ] = alias_account[0].tenant_id if alias_account is not None else None
     if expected_membership_id is None:
         return alias_account
     explicit_account = use_cases.public_customer_subaccount_membership(
@@ -137,6 +144,7 @@ def get_public_store(
     try:
         subaccount = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -262,6 +270,7 @@ def list_public_skus(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -336,6 +345,7 @@ def list_public_products(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -399,6 +409,7 @@ def search_public_products_by_image(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -472,6 +483,7 @@ def get_public_product(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -517,6 +529,7 @@ def get_public_sku(
     try:
         submitter = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )
@@ -633,6 +646,7 @@ def submit_public_quote_draft(
         )
         storefront_account = _catalog_subaccount(
             identity_session,
+            public_session=session,
             expected_membership_id=account,
             storefront_slug=tenant_slug,
         )

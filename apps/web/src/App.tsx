@@ -31,6 +31,7 @@ import {
 } from "./lib/storefrontViewState";
 import { parseStorefrontLocale } from "./lib/storefrontLocale";
 import {
+  isCanonicalAccountStorefront,
   legacyStorefrontBasePath,
   storefrontAccountMembershipId,
   storefrontBasePath,
@@ -218,6 +219,9 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   try {
     if (accountKey && accountId) {
       const store = await api.getStore(tenantSlug, locale, accountId);
+      if (!isCanonicalAccountStorefront(store, tenantSlug, accountId)) {
+        throw new Response("Account storefront unavailable", { status: 409 });
+      }
       const suffix = /\/me\/?$/u.test(currentUrl.pathname) ? "/me" : "";
       return redirect(`${storefrontBasePath(store.slug)}${suffix}${currentUrl.search}${currentUrl.hash}`);
     }
@@ -227,12 +231,11 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       : readStorefrontCatalogSnapshot(storageScope, locale);
     if (catalogSnapshot) {
       const cachedStore = catalogSnapshot.store;
-      if (cachedStore.slug.toLocaleLowerCase() !== tenantSlug.toLocaleLowerCase()) {
-        return redirect(
-          `/${encodeURIComponent(cachedStore.slug)}${currentUrl.search}${currentUrl.hash}`,
-        );
+      // Cached metadata is not authoritative for storefront identity. Old
+      // child snapshots may contain the parent's slug; refresh, never redirect.
+      if (cachedStore.slug.toLocaleLowerCase() === tenantSlug.toLocaleLowerCase()) {
+        return cachedStore;
       }
-      return cachedStore;
     }
     const category = savedView?.secondaryCategory || savedView?.primaryCategory;
     const catalogWarmup = api.prefetchStoreProducts(tenantSlug, {
@@ -276,6 +279,9 @@ async function storefrontProductLoader({ params, request }: LoaderFunctionArgs) 
   try {
     if (accountKey && accountId) {
       const store = await api.getStore(tenantSlug, locale, accountId);
+      if (!isCanonicalAccountStorefront(store, tenantSlug, accountId)) {
+        throw new Response("Account storefront unavailable", { status: 409 });
+      }
       return redirect(
         `${storefrontBasePath(store.slug)}/products/${encodeURIComponent(productId)}${currentUrl.search}${currentUrl.hash}`,
       );
@@ -316,6 +322,9 @@ async function storefrontCustomPageLoader({ params, request }: LoaderFunctionArg
   try {
     if (accountKey && accountId) {
       const store = await api.getStore(tenantSlug, locale, accountId);
+      if (!isCanonicalAccountStorefront(store, tenantSlug, accountId)) {
+        throw new Response("Account storefront unavailable", { status: 409 });
+      }
       return redirect(
         `${storefrontBasePath(store.slug)}/pages/${encodeURIComponent(pageSlug)}${currentUrl.search}${currentUrl.hash}`,
       );
@@ -358,6 +367,9 @@ async function storefrontSkuLoader({ params, request }: LoaderFunctionArgs) {
   try {
     if (accountKey && accountId) {
       const store = await api.getStore(tenantSlug, locale, accountId);
+      if (!isCanonicalAccountStorefront(store, tenantSlug, accountId)) {
+        throw new Response("Account storefront unavailable", { status: 409 });
+      }
       return redirect(
         `${storefrontBasePath(store.slug)}/skus/${encodeURIComponent(skuId)}${currentUrl.search}${currentUrl.hash}`,
       );
