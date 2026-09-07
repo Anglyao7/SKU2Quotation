@@ -679,6 +679,7 @@ def _card(
             max((offer.unit_price for offer in offers if offer.unit_price is not None), default=None)
             if offers else None
         ),
+        is_pinned=product.storefront_pinned_at is not None,
     )
 
 
@@ -5105,4 +5106,88 @@ def batch_update_sku_pinned(
         "total_count": len(requested_ids),
         "failed_items": failed_items,
         "affected_product_count": len(products),
+    }
+
+
+def batch_update_products_pinned(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_ids: list[UUID],
+    pinned: bool,
+) -> dict[str, Any]:
+    """Pin product cards directly from the storefront merchandising editor."""
+
+    _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    requested_ids = list(dict.fromkeys(product_ids))
+    rows = session.scalars(
+        select(ProductRow)
+        .where(
+            ProductRow.tenant_id == tenant_id,
+            ProductRow.id.in_(requested_ids),
+        )
+        .execution_options(include_deleted=True)
+        .with_for_update()
+    ).all()
+    rows_by_id = {row.id: row for row in rows}
+    products: list[ProductRow] = []
+    failed_items: list[dict[str, Any]] = []
+    for product_id in requested_ids:
+        product = rows_by_id.get(product_id)
+        if product is None or product.deleted_at is not None or product.status == "ARCHIVED":
+            failed_items.append(
+                {
+                    "product_id": str(product_id),
+                    "reason": "商品不存在、已经删除或已经归档",
+                }
+            )
+            continue
+        products.append(product)
+
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[row.id for row in products],
+    )
+    now = utcnow()
+    changed_products: list[ProductRow] = []
+    for product in products:
+        was_pinned = product.storefront_pinned_at is not None
+        if was_pinned == pinned:
+            continue
+        product.storefront_pinned_at = now if pinned else None
+        product.current_version += 1
+        product.updated_by = user_id
+        product.updated_at = now
+        changed_products.append(product)
+        session.add(
+            ProductAuditEventRow(
+                tenant_id=tenant_id,
+                product_id=product.id,
+                entity_type="PRODUCT",
+                entity_id=str(product.id),
+                action="product.storefront_pin_updated",
+                before={"pinned": was_pinned},
+                after={"pinned": pinned},
+                actor_membership_id=membership_id,
+                occurred_at=now,
+            )
+        )
+
+    if changed_products:
+        _commit(
+            session,
+            conflict_code="BATCH_PIN_UPDATE_FAILED",
+            conflict_message="批量置顶失败，请刷新商品库后重试。",
+        )
+    return {
+        "success_count": len(products),
+        "failed_count": len(failed_items),
+        "total_count": len(requested_ids),
+        "failed_items": failed_items,
+        "affected_product_count": len(changed_products),
     }

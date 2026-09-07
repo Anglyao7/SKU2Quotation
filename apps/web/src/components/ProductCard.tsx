@@ -6,6 +6,7 @@ import { money } from "../lib/format";
 import { storefrontText } from "../lib/storefrontLocale";
 import { isStorefrontFavorite, toggleStorefrontFavorite } from "../lib/storefrontVisitor";
 import type { StoreProduct, StorefrontLocale } from "../types";
+import { StorefrontCatalogImage } from "./StorefrontCatalogImage";
 
 export function ProductCard({
   product,
@@ -15,6 +16,7 @@ export function ProductCard({
   onPrefetchDetails,
   locale,
   visualMatch,
+  deferImages = false,
 }: {
   product: StoreProduct;
   tenantSlug: string;
@@ -22,12 +24,12 @@ export function ProductCard({
   onOpenDetails: () => void;
   onPrefetchDetails: () => void;
   locale: StorefrontLocale;
+  deferImages?: boolean;
   visualMatch?: {
     percent: number;
     label: string;
   };
 }) {
-  const [imageFailed, setImageFailed] = useState(!product.image_url);
   const [favorite, setFavorite] = useState(() => isStorefrontFavorite(tenantSlug, product.id));
   const prefetchedDetails = useRef(false);
   const prefetchTimer = useRef<number | null>(null);
@@ -45,7 +47,6 @@ export function ProductCard({
     : money(product.price_from, product.currency);
 
   useEffect(() => {
-    setImageFailed(!product.image_url);
     setFavorite(isStorefrontFavorite(tenantSlug, product.id));
   }, [product.id, product.image_url, tenantSlug]);
 
@@ -100,13 +101,14 @@ export function ProductCard({
         aria-label={t("查看 {name} 商品详情", { name: product.name })}
         onClick={onOpenDetails}
       >
-        {product.image_url && !imageFailed ? (
-          <img
+        {product.image_url ? (
+          <StorefrontCatalogImage
+            key={product.image_url}
+            enabled={!deferImages}
             className="sku-image"
             src={product.image_url}
             alt={product.name}
-            loading="lazy"
-            onError={() => setImageFailed(true)}
+            fallback={<div className="image-unavailable"><ImageIcon size={30} /><span>{t("暂无图片")}</span></div>}
           />
         ) : (
           <div className="image-unavailable"><ImageIcon size={30} /><span>{t("暂无图片")}</span></div>

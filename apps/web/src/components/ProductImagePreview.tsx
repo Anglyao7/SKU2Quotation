@@ -1,6 +1,7 @@
 import { Dialog, IconButton } from "@radix-ui/themes";
 import { CaretLeft, CaretRight, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
 import { useEffect, useLayoutEffect, useMemo, useState, type MouseEvent } from "react";
+import { createImageSwipeHandlers } from "../lib/imageSwipe";
 
 interface ProductImagePreviewProps {
   src: string;
@@ -32,6 +33,9 @@ export function ProductImagePreview({
   const [failedUrls, setFailedUrls] = useState<Set<string>>(() => new Set());
   const activeSrc = imageUrls[activeIndex] || imageUrls[0] || src;
   const activeLoaded = loadedUrls.has(activeSrc);
+  const swipeHandlers = useMemo(() => createImageSwipeHandlers((step) => {
+    setActiveIndex((current) => Math.max(0, Math.min(imageUrls.length - 1, current + step)));
+  }), [imageUrls]);
 
   // Keep the first frame in sync with the selected SKU/image.  Using a layout
   // effect avoids painting the previous gallery index for one frame when the
@@ -104,6 +108,7 @@ export function ProductImagePreview({
             className="sku-detail-image-trigger"
             aria-label={openLabel}
             aria-busy={!activeLoaded}
+            {...swipeHandlers}
           >
             {imageUrls.map((url, index) => (
               <img
@@ -115,6 +120,7 @@ export function ProductImagePreview({
                 loading="eager"
                 fetchPriority={index === activeIndex ? "high" : "low"}
                 decoding="async"
+                draggable={false}
                 onLoad={(event) => markDecoded(url, event.currentTarget)}
                 onError={() => markFailed(url)}
               />
@@ -170,7 +176,7 @@ export function ProductImagePreview({
             <X weight="bold" />
           </IconButton>
         </Dialog.Close>
-        <div className="product-image-lightbox-stage">
+        <div className="product-image-lightbox-stage" {...swipeHandlers}>
           <img
             key={activeSrc}
             src={activeSrc}
@@ -178,6 +184,7 @@ export function ProductImagePreview({
             loading="eager"
             fetchPriority="high"
             decoding="async"
+            draggable={false}
             onLoad={(event) => markDecoded(activeSrc, event.currentTarget)}
             onError={() => markFailed(activeSrc)}
           />

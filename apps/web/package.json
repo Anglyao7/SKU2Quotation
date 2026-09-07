@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "test:console-search": "node scripts/test-console-search-entry.mjs",
     "test:auth": "node scripts/test-auth-password.mjs",
     "test:account": "node scripts/test-account-password.mjs",
     "test:import": "node scripts/test-import-queue.mjs",
     "test:storefront": "node scripts/test-storefront-language-fallback.mjs",
+    "test:storefront-images": "node scripts/test-storefront-image-loading.mjs",
+    "test:image-swipe": "node scripts/test-image-swipe.mjs",
     "test:subaccount": "node scripts/test-subaccount-storefront-routing.mjs",
     "test:cartons": "node scripts/test-carton-ordering.mjs",
     "test:support": "node scripts/test-support-ui.mjs",

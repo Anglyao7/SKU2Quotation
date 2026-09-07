@@ -16,12 +16,12 @@ import {
   Headset,
   IdentificationCard,
   ImageSquare,
+  MagnifyingGlass,
   Megaphone,
   Pulse,
   Robot,
   SignOut,
   SlidersHorizontal,
-  Sparkle,
   Storefront as StoreIcon,
   Tag,
   Translate,
@@ -65,7 +65,6 @@ const navigationGroups = [
     items: [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
       { to: "/console/analytics", label: "网站监测", mobileLabel: "网站监测", icon: ChartLineUp, permissions: ["analytics.view"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/ai-search", label: "AI 搜索", mobileLabel: "AI 搜索", icon: Sparkle, end: true, permissions: ["product.view"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/ai-search/manage", label: "AI 搜索管理", mobileLabel: "搜索管理", icon: Database, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/image-search/manage", label: "图片搜索管理", mobileLabel: "图搜管理", icon: ImageSquare, permissions: ["product.edit"], platformAdminOnly: false, mobilePrimary: false },
     ],
@@ -526,6 +525,18 @@ export function ConsoleLayout() {
           </div>
         </div>
         <div className="topbar-user">
+          {hasPermission("product.view") ? <NavLink
+            to="/console/ai-search"
+            end
+            className={({ isActive }) => `topbar-search-trigger${isActive ? " active" : ""}`}
+            aria-label={t("AI 搜索")}
+            title={t("AI 搜索")}
+            onPointerEnter={() => preloadConsoleRoute("/console/ai-search")}
+            onPointerDown={() => preloadConsoleRoute("/console/ai-search")}
+            onFocus={() => preloadConsoleRoute("/console/ai-search")}
+          >
+            <MagnifyingGlass size={20} aria-hidden="true" />
+          </NavLink> : null}
           <SupportNotificationBell
             tenantId={activeTenantId}
             enabled={hasPermission("support.view")}

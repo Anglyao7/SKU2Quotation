@@ -63,6 +63,8 @@ releaseDescriptor();
 assert.equal((await pending).items.length, 1);
 await Promise.all(Array.from({ length: 5 }, () => api.getStoreProducts("merchant-a", filters)));
 assert.equal(productRequests.length, 1, "Partial translation must not discard source data");
+assert.equal((await api.prefetchStoreProducts("merchant-a", filters)).items[0].id, "p1",
+  "Next-page prefetch returns the cached products so their original images can be warmed");
 await api.getStoreProducts("merchant-a", { ...filters, locale: "ja" });
 assert.equal(productRequests.length, 1, "Another language must reuse the source page");
 assert.equal(new URL(productRequests[0], "https://catalog.test").searchParams.get("locale"), "zh-CN");

@@ -11942,6 +11942,35 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         }
     ]
 
+    # The storefront display editor pins product IDs directly, independently
+    # of the SKU table's existing batch pin endpoint.
+    product_pin = client.post(
+        "/api/v1/products/batch-update-pinned",
+        json={
+            "product_ids": [str(zulu_product_id), str(zulu_product_id), str(missing_id)],
+            "pinned": True,
+        },
+    )
+    assert product_pin.status_code == 200, product_pin.text
+    assert product_pin.json()["success_count"] == 1
+    assert product_pin.json()["failed_count"] == 1
+    assert product_pin.json()["total_count"] == 2
+    assert product_pin.json()["affected_product_count"] == 1
+    assert product_pin.json()["failed_items"][0]["product_id"] == str(missing_id)
+    cards = client.get("/api/v1/product-center/products", params={"q": suffix})
+    assert cards.status_code == 200, cards.text
+    assert next(row for row in cards.json()["items"] if row["id"] == str(zulu_product_id))["is_pinned"] is True
+    for expected_changes, pinned in [(0, True), (1, False)]:
+        updated = client.post(
+            "/api/v1/products/batch-update-pinned",
+            json={"product_ids": [str(zulu_product_id)], "pinned": pinned},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["affected_product_count"] == expected_changes
+    unpinned_cards = client.get("/api/v1/product-center/products", params={"q": suffix})
+    assert unpinned_cards.status_code == 200, unpinned_cards.text
+    assert all(row["is_pinned"] is False for row in unpinned_cards.json()["items"])
+
     with SessionLocal() as session:
         session.execute(
             delete(ProductAuditEventRow).where(
@@ -22610,6 +22639,17 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     assert isolated_rows.status_code == 200, isolated_rows.text
     assert quote_id not in {row["id"] for row in isolated_rows.json()}
 
+    # The workbench saves edited prices before confirming. PostgreSQL's old
+    # blanket immutability trigger rejected this save with HTTP 500 (covered
+    # separately by the real-PostgreSQL trigger regression).
+    item_id = created.json()["items"][0]["id"]
+    edited = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/items",
+        json={"items": [{"item_id": item_id, "unit_price": "60"}]},
+    )
+    assert edited.status_code == 200, edited.text
+    assert Decimal(str(edited.json()["total"])) == Decimal("60")
+
     confirmed = client.patch(
         f"/api/v1/public-quote-drafts/{quote_id}/status",
         json={"status": "CONFIRMED"},
@@ -22638,6 +22678,7 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
         assert order_record.total_quantity == Decimal("1")
         assert order_record.confirmed_by_membership_id == DEFAULT_MEMBERSHIP_ID
         assert order_record.snapshot["items"][0]["sku_id"] == sku_id
+        assert Decimal(order_record.snapshot["items"][0]["unit_price"]) == Decimal("60")
         assert session.scalar(
             select(func.count(StorefrontOrderRecordRow.id)).where(
                 StorefrontOrderRecordRow.source_quote_draft_id == UUID(quote_id)
@@ -22651,6 +22692,12 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
                 separators=(",", ":"),
             ).encode("utf-8")
         ).hexdigest()
+
+    rejected_edit = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/items",
+        json={"items": [{"item_id": item_id, "unit_price": "90"}]},
+    )
+    assert rejected_edit.status_code == 409, rejected_edit.text
 
     statistics = client.get("/api/v1/storefront-orders/statistics")
     assert statistics.status_code == 200, statistics.text

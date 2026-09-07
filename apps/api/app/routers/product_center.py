@@ -34,6 +34,7 @@ from ..product_center_schemas import (
     ManualProductCreateRequest,
     ProductCard,
     ProductBatchDeleteRequest,
+    ProductBatchUpdatePinnedRequest,
     ProductBatchOperationResponse,
     ProductCategoryUpdateRequest,
     ProductDeleteAllJobResponse,
@@ -965,6 +966,33 @@ def batch_update_sku_pinned(
             membership_id=context.membership_id,
             permissions=context.permissions,
             sku_ids=request.sku_ids,
+            pinned=request.pinned,
+        )
+        return SkuBatchOperationResponse(**result)
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/products/batch-update-pinned",
+    response_model=SkuBatchOperationResponse,
+    status_code=status.HTTP_200_OK,
+)
+def batch_update_products_pinned(
+    request: ProductBatchUpdatePinnedRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> SkuBatchOperationResponse:
+    """批量置顶或取消置顶商品。"""
+
+    context = _context(session)
+    try:
+        result = use_cases.batch_update_products_pinned(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_ids=request.product_ids,
             pinned=request.pinned,
         )
         return SkuBatchOperationResponse(**result)

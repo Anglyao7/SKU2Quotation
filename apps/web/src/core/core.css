@@ -493,8 +493,6 @@
 .core-sku-toolbar .rt-TextFieldRoot, .core-sku-toolbar > .rt-Button { min-height: 40px; }
 .core-sku-toolbar > .rt-Button { min-width: 72px; white-space: nowrap; }
 .core-sku-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--control-gap-compact); }
-.core-sku-storefront-options { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 10px; border-top: 1px solid var(--core-line); }
-.core-sku-hot-products-control { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
 .core-sku-bulk-result { padding: 11px 13px !important; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; border-color: color-mix(in srgb, var(--core-accent) 26%, var(--core-line)) !important; background: color-mix(in srgb, var(--core-accent) 7%, var(--core-surface)); }
 .core-sku-bulk-result > svg { color: var(--core-accent); }
 .core-sku-bulk-bar { padding: 13px 15px !important; display: flex; align-items: center; justify-content: space-between; gap: 18px; border-color: color-mix(in srgb, var(--core-accent) 28%, var(--core-line)) !important; background: color-mix(in srgb, var(--core-accent) 6%, var(--core-surface)); }

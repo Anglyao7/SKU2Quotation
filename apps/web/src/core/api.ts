@@ -1912,6 +1912,7 @@ interface ApiProduct {
   price_to?: number | null;
   currency?: string | null;
   tags: string[];
+  is_pinned: boolean;
 }
 
 interface ApiProductListPage {
@@ -2107,6 +2108,7 @@ function mapProduct(row: ApiProduct): CoreProduct {
     supplierCount: row.supplier_count,
     currentVersion: row.current_version,
     capabilities: row.capabilities ?? [],
+    isPinned: Boolean(row.is_pinned),
   };
 }
 
@@ -2504,6 +2506,22 @@ export async function batchUpdateSkuPinned(
   });
   bumpPublicCatalogRevision();
   return mapSkuBatchOperationResult(row);
+}
+
+export async function batchUpdateProductsPinned(
+  productIds: string[],
+  pinned: boolean,
+): Promise<{ successCount: number; failedCount: number; affectedProductCount: number }> {
+  const row = await request<ApiSkuBatchOperationResult>("/products/batch-update-pinned", {
+    method: "POST",
+    body: JSON.stringify({ product_ids: productIds, pinned }),
+  });
+  bumpPublicCatalogRevision();
+  return {
+    successCount: row.success_count,
+    failedCount: row.failed_count,
+    affectedProductCount: row.affected_product_count ?? 0,
+  };
 }
 
 export interface ProductDeleteAllJob {

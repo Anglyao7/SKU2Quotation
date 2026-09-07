@@ -751,7 +751,7 @@ export const api = {
     slug: string,
     filters: StoreSkuFilters = {},
   ) => {
-    await getCachedStoreProducts(slug, filters);
+    return getCachedStoreProducts(slug, filters);
   },
   async getStoreSku(slug: string, skuId: string, locale?: StorefrontLocale, shareToken?: string, accountId?: string): Promise<Sku> {
     const languagePack = await storefrontLanguagePack(slug, locale);

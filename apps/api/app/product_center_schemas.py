@@ -57,6 +57,7 @@ class ProductCard(BaseModel):
     # price for existing table consumers).
     price_from: Decimal | None = None
     price_to: Decimal | None = None
+    is_pinned: bool = False
 
 
 class ProductListPage(BaseModel):
@@ -679,6 +680,11 @@ class SkuBatchDeleteRequest(BaseModel):
 
 class ProductBatchDeleteRequest(BaseModel):
     product_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+
+class ProductBatchUpdatePinnedRequest(BaseModel):
+    product_ids: list[UUID] = Field(min_length=1, max_length=500)
+    pinned: bool
 
 
 class ProductBatchOperationResponse(BaseModel):

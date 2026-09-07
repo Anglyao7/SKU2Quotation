@@ -32,6 +32,7 @@ import { BRAND_NAME_ZH } from "../brand";
 import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
+import { StorefrontCatalogImage } from "../components/StorefrontCatalogImage";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
@@ -47,6 +48,8 @@ import {
 } from "../components/StorefrontImageSearch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
+import { canPrefetchStorefrontResources, prefetchCatalogImages } from "../lib/storefrontImageQueue";
+import { onCatalogScrollSettled } from "../lib/catalogScrollSettled";
 import {
   storefrontAccountMembershipId,
   storefrontBasePath,
@@ -319,6 +322,9 @@ export function StorePage() {
   const hasCatalogResultsRef = useRef(Boolean(initialCatalogSnapshot?.products.length));
   const resultsHeaderRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef<HTMLElement>(null);
+  const [pageScrolling, setPageScrolling] = useState(false);
+  const stopPageScrollRef = useRef(() => {});
+  useEffect(() => () => stopPageScrollRef.current(), []);
   const activeTenantRef = useRef(loadedStore.slug);
   const activeLocaleRef = useRef<StorefrontLocale>(locale);
   const activeShareTokenRef = useRef(shareToken);
@@ -757,7 +763,9 @@ export function StorePage() {
     if (
       loading
       || showCategoryShowcase
+      || imageSearchActive
       || pageTransitioning
+      || pageScrolling
       || error
       || page < 1
       || page >= pages
@@ -769,8 +777,12 @@ export function StorePage() {
     ).connection;
     if (connection?.saveData) return;
 
+    let disposed = false;
+    let started = false;
+    let stopImages = () => {};
     const prefetch = () => {
-      if (document.visibilityState !== "visible") return;
+      if (disposed || started || !canPrefetchStorefrontResources()) return;
+      started = true;
       void api.prefetchStoreProducts(tenantSlug, {
         q: deferredSearch,
         category: category || undefined,
@@ -781,23 +793,37 @@ export function StorePage() {
         sourceLocale: loadedStore.source_locale,
         shareToken: shareToken || undefined,
         accountId,
+      }).then((nextPage) => {
+        if (disposed) return;
+        stopImages = prefetchCatalogImages(nextPage.items.map((product) => product.image_url));
+        // Pagination shares this page's JS/CSS. Warm the detail route's static
+        // resources too, without fetching every product's detail API.
+        if (canPrefetchStorefrontResources()) void preloadProductDetailModule().catch(() => undefined);
       }).catch(() => undefined);
     };
     const target = paginationRef.current;
-    if (!target || typeof IntersectionObserver === "undefined") {
-      const timeout = window.setTimeout(prefetch, 1_500);
-      return () => window.clearTimeout(timeout);
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        observer.disconnect();
-        prefetch();
-      },
-      { rootMargin: "700px 0px" },
+    if (!target) return;
+    const checkPosition = () => {
+      const bounds = target.getBoundingClientRect();
+      if (bounds.top < window.innerHeight + 480 && bounds.bottom > 0) prefetch();
+    };
+    const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(
+      ([entry]) => { if (entry?.isIntersecting) prefetch(); },
+      { rootMargin: "0px 0px 480px 0px" },
     );
-    observer.observe(target);
-    return () => observer.disconnect();
+    observer?.observe(target);
+    if (!observer) {
+      window.addEventListener("scroll", checkPosition, { passive: true });
+      checkPosition();
+    }
+    document.addEventListener("visibilitychange", checkPosition);
+    return () => {
+      disposed = true;
+      stopImages();
+      observer?.disconnect();
+      window.removeEventListener("scroll", checkPosition);
+      document.removeEventListener("visibilitychange", checkPosition);
+    };
   }, [
     category,
     deferredSearch,
@@ -806,11 +832,13 @@ export function StorePage() {
     locale,
     page,
     pageTransitioning,
+    pageScrolling,
     pages,
     shareToken,
     accountId,
     tenantSlug,
     showCategoryShowcase,
+    imageSearchActive,
     loadedStore.source_locale,
   ]);
 
@@ -967,6 +995,11 @@ export function StorePage() {
       || targetPage > pages
     ) return;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    stopPageScrollRef.current();
+    setPageScrolling(!reducedMotion);
+    if (!reducedMotion) {
+      stopPageScrollRef.current = onCatalogScrollSettled(() => setPageScrolling(false));
+    }
     resultsHeaderRef.current?.scrollIntoView({
       behavior: reducedMotion ? "auto" : "smooth",
       block: "start",
@@ -1495,7 +1528,8 @@ export function StorePage() {
                     >
                       <span className="category-showcase-image">
                         {item.coverImageUrl ? (
-                          <img src={item.coverImageUrl} alt="" loading="lazy" />
+                          <StorefrontCatalogImage key={item.coverImageUrl} src={item.coverImageUrl} alt=""
+                            fallback={<span><FolderOpen weight="duotone" /></span>} />
                         ) : (
                           <span><FolderOpen weight="duotone" /></span>
                         )}
@@ -1534,6 +1568,7 @@ export function StorePage() {
                     {products.map((product) => (
                       <ProductCard
                         key={product.id}
+                        deferImages={pageScrolling}
                         product={product}
                         tenantSlug={storageScope}
                         detailsHref={`${storefrontRoot}/products/${encodeURIComponent(product.id)}${sharedQuery}`}

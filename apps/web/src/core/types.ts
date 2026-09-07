@@ -540,6 +540,7 @@ export interface CoreProduct {
   supplierCount: number;
   currentVersion: number;
   capabilities: string[];
+  isPinned: boolean;
 }
 
 export interface ProductSku {
