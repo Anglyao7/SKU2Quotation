@@ -115,6 +115,28 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         JSON_DOCUMENT,
         nullable=True,
     )
+    storefront_sorting_config: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON_DOCUMENT, nullable=True,
+    )
+
+
+class SubaccountStorefrontProfileRow(AuditTimestampMixin, Base):
+    """Presentation settings owned by one reseller; catalog/translation data is shared."""
+
+    __tablename__ = "subaccount_storefront_profiles"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    membership_id: Mapped[UUID] = mapped_column(primary_key=True)
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    settings: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict, nullable=False)
 
 
 class PublicCatalogOfferRow(AuditTimestampMixin, Base):

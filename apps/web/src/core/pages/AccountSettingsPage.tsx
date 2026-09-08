@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useCoreAuth } from "../AuthContext";
+import { canManageOwnStorefront } from "../storefrontPermissions";
 import { ToastNotice } from "../ToastContext";
 import {
   changePassword,
@@ -48,7 +49,7 @@ function describedBy(...ids: Array<string | false | undefined>) {
   return ids.filter(Boolean).join(" ") || undefined;
 }
 
-export function AccountSettingsPage() {
+export function AccountSettingsPage({ view = "account" }: { view?: "account" | "merchant" }) {
   const {
     profile,
     memberships,
@@ -94,7 +95,8 @@ export function AccountSettingsPage() {
   const activeMembership = memberships.find((membership) => membership.id === profile?.context.membershipId);
   const displayName = user?.displayName || user?.email || t("当前成员");
   const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
-  const canManageMerchant = hasPermission("system.settings_manage");
+  const canManageMerchant = canManageOwnStorefront(profile?.context.accountScope, hasPermission);
+  const [savedMerchantName, setSavedMerchantName] = useState("");
   const storefrontUrl = merchantSlug
     ? `${window.location.origin}/${encodeURIComponent(merchantSlug)}`
     : "";
@@ -117,6 +119,7 @@ export function AccountSettingsPage() {
       .then((settings) => {
         if (!active) return;
         setMerchantName(settings.name);
+        setSavedMerchantName(settings.name);
         setMerchantSlug(settings.slug);
         setMerchantLogoUrl(settings.logoUrl ?? "");
         setShareCardSubtitle(settings.shareCardSubtitle ?? "");
@@ -203,7 +206,7 @@ export function AccountSettingsPage() {
       || merchantSubmitting
       || !normalized
     ) return;
-    const nameChanged = normalized !== profile?.context.tenantName;
+    const nameChanged = normalized !== savedMerchantName;
     if (!nameChanged && !shareCardSubtitleChanged) return;
     setMerchantSubmitting(true);
     setMerchantError("");
@@ -214,12 +217,13 @@ export function AccountSettingsPage() {
         shareCardSubtitle: shareCardSubtitleChanged ? shareCardSubtitle.trim() : undefined,
       });
       setMerchantName(updated.name);
+      setSavedMerchantName(updated.name);
       setMerchantSlug(updated.slug);
       setMerchantLogoUrl(updated.logoUrl ?? "");
       setShareCardSubtitle(updated.shareCardSubtitle ?? "");
       setSavedShareCardSubtitle(updated.shareCardSubtitle ?? "");
       await reloadProfile();
-      setMerchantSuccess(t("商家资料与商品前台设置已保存。商家名称变更后，旧地址仍会自动跳转。"));
+      setMerchantSuccess(t(isCustomerSubaccount ? "已保存" : "商家资料与商品前台设置已保存。商家名称变更后，旧地址仍会自动跳转。"));
     } catch (caught) {
       if (caught instanceof CoreApiError && caught.status === 409) {
         setMerchantError(
@@ -259,17 +263,17 @@ export function AccountSettingsPage() {
   };
 
   return (
-    <div className="core-workspace account-settings-page">
+    <div className={`core-workspace account-settings-page${view === "merchant" ? " admin-merchant-profile" : ""}`}>
       <CorePageHeading
         eyebrow={t("账户与安全")}
-        title={t(isCustomerSubaccount ? "账户与安全" : "账户与商家资料")}
+        title={t(view === "merchant" ? "商家资料" : "账户与安全")}
         description={t(isCustomerSubaccount
           ? "查看当前账户资料并修改登录密码。"
           : "管理当前商家名称、公开前台地址与登录密码。")}
       />
 
       <div className="account-settings-grid">
-        <aside className="account-summary" aria-label={t("账户资料摘要")}>
+        {view === "account" ? <aside className="account-summary" aria-label={t("账户资料摘要")}>
           <Card className="account-profile-card">
             <div className="account-profile-heading">
               <Avatar fallback={initials(displayName)} size="5" radius="large" color="jade" />
@@ -312,15 +316,15 @@ export function AccountSettingsPage() {
               </Text>
             </div>
           </Card>
-        </aside>
+        </aside> : null}
 
         <div className="account-settings-content">
-          {canManageMerchant ? <Card className="account-merchant-card">
+          {view === "merchant" && canManageMerchant ? <Card className="account-merchant-card">
             <div className="account-section-heading">
               <span className="account-section-icon"><Buildings size={22} aria-hidden="true" /></span>
               <div>
                 <Heading size="5">{t("商家资料")}</Heading>
-                <Text size="2" color="gray">{t("商家名称会同步成为商品前台地址。")}</Text>
+                {!isCustomerSubaccount ? <Text size="2" color="gray">{t("商家名称会同步成为商品前台地址。")}</Text> : null}
               </div>
             </div>
 
@@ -376,9 +380,9 @@ export function AccountSettingsPage() {
                   disabled={!canManageMerchant}
                   placeholder={t("请输入对外展示的商家名称")}
                 />
-                <Text size="1" color="gray">
+                {!isCustomerSubaccount ? <Text size="1" color="gray">
                   {t("中文可直接用于路径；空格和标点会自动整理。修改后已有链接仍然有效。")}
-                </Text>
+                </Text> : null}
               </div>
 
               <div className="account-field">
@@ -433,7 +437,7 @@ export function AccountSettingsPage() {
                     || !merchantSettingsReady
                     || !merchantName.trim()
                     || (
-                      merchantName.trim() === profile?.context.tenantName
+                      merchantName.trim() === savedMerchantName
                       && !shareCardSubtitleChanged
                     )
                   }
@@ -444,7 +448,7 @@ export function AccountSettingsPage() {
             </form>
           </Card> : null}
 
-          <Card className="account-password-card">
+          {view === "account" ? <Card className="account-password-card">
           <div className="account-section-heading">
             <span className="account-section-icon"><LockKey size={22} aria-hidden="true" /></span>
             <div>
@@ -587,7 +591,7 @@ export function AccountSettingsPage() {
               </Button>
             </div>
           </form>
-          </Card>
+          </Card> : null}
         </div>
       </div>
     </div>

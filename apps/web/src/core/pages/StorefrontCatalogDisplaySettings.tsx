@@ -1,141 +1,131 @@
 import { Badge, Button, Switch, Text, TextField } from "@radix-ui/themes";
-import {
-  ArrowClockwise,
-  ArrowSquareOut,
-  CaretLeft,
-  CaretRight,
-  Fire,
-  MagnifyingGlass,
-  Package,
-  PushPin,
-} from "@phosphor-icons/react";
-import { useCallback, useEffect, useState } from "react";
+import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Fire, MagnifyingGlass, Package, PushPin, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  batchUpdateProductsPinned,
-  getMerchantSettings,
-  listProductCatalog,
-  updateMerchantSettings,
+  batchUpdateProductsPinned, getMerchantSettings, getStorefrontSorting, listStorefrontSortingProducts,
+  updateMerchantSettings, updateStorefrontCategoryPriority,
+  type StorefrontSortingSettings, type StorefrontSortingProductPage,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
+import { canManageOwnStorefront } from "../storefrontPermissions";
 import { CoreError, CoreLoading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
 import { useToast } from "../ToastContext";
-import type { MerchantSettings, ProductListPage } from "../types";
+import type { MerchantSettings } from "../types";
 
-const EMPTY_PRODUCTS: ProductListPage = {
-  items: [],
-  page: 1,
-  pageSize: 20,
-  total: 0,
-  pages: 0,
-};
+const EMPTY_PRODUCTS: StorefrontSortingProductPage = { items: [], page: 1, page_size: 20, total: 0, pages: 0 };
 
 export function StorefrontCatalogDisplaySettings() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const { notify } = useToast();
-  const canEditProducts = hasPermission("product.edit");
+  const membershipId = profile?.context.membershipId;
+  const canManage = canManageOwnStorefront(profile?.context.accountScope, hasPermission);
+  const canEditProducts = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT" ? canManage : hasPermission("product.edit");
   const [merchant, setMerchant] = useState<MerchantSettings>();
+  const [sorting, setSorting] = useState<StorefrontSortingSettings>();
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsError, setSettingsError] = useState("");
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [products, setProducts] = useState<ProductListPage>(EMPTY_PRODUCTS);
+  const [busy, setBusy] = useState("");
+  const [products, setProducts] = useState(EMPTY_PRODUCTS);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState("");
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [savingProductId, setSavingProductId] = useState("");
+  const [categoryQuery, setCategoryQuery] = useState("");
+  const requestId = useRef(0);
+  const settingsRequestId = useRef(0);
 
   const loadSettings = useCallback(async () => {
+    const id = ++settingsRequestId.current;
     setSettingsLoading(true);
     setSettingsError("");
     try {
-      setMerchant(await getMerchantSettings());
+      const [settings, order] = await Promise.all([getMerchantSettings(), getStorefrontSorting()]);
+      if (id !== settingsRequestId.current) return;
+      setMerchant(settings);
+      setSorting(order);
     } catch (caught) {
-      setSettingsError(caught instanceof Error ? caught.message : t("商品展示设置加载失败"));
+      if (id === settingsRequestId.current) setSettingsError(caught instanceof Error ? caught.message : t("商品展示设置加载失败"));
     } finally {
-      setSettingsLoading(false);
+      if (id === settingsRequestId.current) setSettingsLoading(false);
     }
-  }, [t]);
+  }, [membershipId, t]);
 
   const loadProducts = useCallback(async () => {
+    const id = ++requestId.current;
     setProductsLoading(true);
     setProductsError("");
     try {
-      setProducts(await listProductCatalog({
-        q: debouncedQuery.trim() || undefined,
-        statuses: ["ACTIVE"],
-        page,
-        pageSize: 20,
-      }));
+      const result = await listStorefrontSortingProducts({ q: debouncedQuery.trim(), page, pageSize: 20 });
+      if (id === requestId.current) setProducts(result);
     } catch (caught) {
-      setProductsError(caught instanceof Error ? caught.message : t("商品展示清单加载失败"));
+      if (id === requestId.current) setProductsError(caught instanceof Error ? caught.message : t("商品展示清单加载失败"));
     } finally {
-      setProductsLoading(false);
+      if (id === requestId.current) setProductsLoading(false);
     }
-  }, [debouncedQuery, page, t]);
+  }, [debouncedQuery, page, membershipId, t]);
 
+  useEffect(() => { void loadSettings(); return () => { settingsRequestId.current += 1; }; }, [loadSettings]);
+  useEffect(() => { void loadProducts(); return () => { requestId.current += 1; }; }, [loadProducts]);
   useEffect(() => {
-    void loadSettings();
-  }, [loadSettings]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(query), 240);
+    const timer = window.setTimeout(() => { setDebouncedQuery(query); setPage(1); }, 240);
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  useEffect(() => {
-    void loadProducts();
-  }, [loadProducts]);
+  const refreshFirstPage = async () => {
+    if (page !== 1) setPage(1);
+    else await loadProducts();
+  };
 
   const toggleHotProducts = async (enabled: boolean) => {
-    if (!merchant || settingsSaving) return;
-    const previous = merchant.hotProductsEnabled;
-    setMerchant({ ...merchant, hotProductsEnabled: enabled });
-    setSettingsSaving(true);
+    if (!merchant || busy || !canManage) return;
+    setBusy("hot");
     try {
       setMerchant(await updateMerchantSettings({ hotProductsEnabled: enabled }));
+      await refreshFirstPage();
       notify(t("已保存并更新前台"), { kind: "success" });
     } catch (caught) {
-      setMerchant((current) => current ? { ...current, hotProductsEnabled: previous } : current);
-      notify(
-        caught instanceof Error ? caught.message : t("热门商品设置保存失败，请重试。"),
-        { kind: "error" },
-      );
-    } finally {
-      setSettingsSaving(false);
-    }
+      notify(caught instanceof Error ? caught.message : t("热门商品设置保存失败，请重试。"), { kind: "error" });
+    } finally { setBusy(""); }
   };
 
   const togglePinnedProduct = async (productId: string, pinned: boolean) => {
-    if (!canEditProducts || savingProductId) return;
-    setSavingProductId(productId);
-    setProducts((current) => ({
-      ...current,
-      items: current.items.map((item) => (
-        item.id === productId ? { ...item, isPinned: pinned } : item
-      )),
-    }));
+    if (!canEditProducts || busy) return;
+    setBusy(productId);
     try {
       const result = await batchUpdateProductsPinned([productId], pinned);
       if (result.failedCount) throw new Error(t("商品优先顺序保存失败"));
-      notify(t(pinned ? "商品已加入手动优先" : "商品已取消手动优先"), { kind: "success" });
+      await loadProducts();
+      notify(t("已保存并更新前台"), { kind: "success" });
     } catch (caught) {
-      setProducts((current) => ({
-        ...current,
-        items: current.items.map((item) => (
-          item.id === productId ? { ...item, isPinned: !pinned } : item
-        )),
-      }));
-      notify(
-        caught instanceof Error ? caught.message : t("商品优先顺序保存失败"),
-        { kind: "error" },
-      );
-    } finally {
-      setSavingProductId("");
-    }
+      notify(caught instanceof Error ? caught.message : t("商品优先顺序保存失败"), { kind: "error" });
+    } finally { setBusy(""); }
+  };
+
+  const saveCategories = async (ids: string[]) => {
+    if (busy || !canManage) return;
+    setBusy("categories");
+    try {
+      setSorting(await updateStorefrontCategoryPriority(ids));
+      await refreshFirstPage();
+      notify(t("已保存并更新前台"), { kind: "success" });
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : t("商品优先顺序保存失败"), { kind: "error" });
+    } finally { setBusy(""); }
+  };
+
+  const priorityIds = sorting?.priority_category_ids ?? [];
+  const selectedCategories = priorityIds.flatMap((id) => sorting?.categories.find((item) => item.id === id) ?? []);
+  const availableCategories = (sorting?.categories ?? []).filter((item) => !priorityIds.includes(item.id) && item.path.toLocaleLowerCase().includes(categoryQuery.trim().toLocaleLowerCase()));
+  const moveCategory = (index: number, direction: number) => {
+    const ids = [...priorityIds];
+    const target = index + direction;
+    if (target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    void saveCategories(ids);
   };
 
   return (
@@ -143,127 +133,65 @@ export function StorefrontCatalogDisplaySettings() {
       <div className="storefront-catalog-intro">
         <div>
           <Text size="1" color="gray">{t("商品首页")}</Text>
-          <h2 id="storefront-catalog-settings-title">{t("商品展示与排序")}</h2>
-          <p>{t("控制默认商品列表的排序方式，并手动指定需要优先展示的商品。")}</p>
+          <h2 id="storefront-catalog-settings-title">{t("商品排序")}</h2>
+          <p>{t("手动优先 → 自动爆款 → 优先分类 → 其余商品")}</p>
         </div>
         <div className="storefront-catalog-intro-actions">
-          {merchant ? (
-            <Button asChild variant="soft">
-              <Link to={merchant.storefrontPath} target="_blank" rel="noreferrer">
-                <ArrowSquareOut />{t("预览商品前台")}
-              </Link>
-            </Button>
-          ) : null}
-          <Button
-            variant="soft"
-            color="gray"
-            disabled={settingsLoading || productsLoading}
-            onClick={() => void Promise.all([loadSettings(), loadProducts()])}
-          >
-            <ArrowClockwise />{t("刷新")}
-          </Button>
+          {merchant ? <Button asChild variant="soft"><Link to={merchant.storefrontPath} target="_blank" rel="noreferrer"><ArrowSquareOut />{t("预览商品前台")}</Link></Button> : null}
+          <Button variant="soft" color="gray" disabled={Boolean(busy) || settingsLoading || productsLoading} onClick={() => void Promise.all([loadSettings(), loadProducts()])}><ArrowClockwise />{t("刷新")}</Button>
         </div>
       </div>
-
       {settingsLoading ? <CoreLoading label={t("正在加载商品展示设置")} /> : null}
       {settingsError ? <CoreError message={settingsError} onRetry={() => void loadSettings()} /> : null}
-
-      {!settingsLoading && merchant ? (
+      {!settingsLoading && !settingsError && merchant && sorting ? <>
         <article className="storefront-display-strategy">
           <span className="storefront-display-strategy-icon"><Fire weight="duotone" /></span>
           <div>
-            <div className="storefront-display-strategy-heading">
-              <strong>{t("自动爆款排序")}</strong>
-              <Badge color={merchant.hotProductsEnabled ? "jade" : "gray"}>
-                {t(merchant.hotProductsEnabled ? "已开启" : "未开启")}
-              </Badge>
-            </div>
-            <p>{t("开启后，访客进入“全部商品”时会优先看到近 90 天浏览与下单热度更高的商品；搜索和分类顺序不受影响。")}</p>
-            <small><PushPin weight="fill" />{t("手动指定的商品始终排在自动爆款之前。")}</small>
+            <div className="storefront-display-strategy-heading"><strong>{t("自动爆款排序")}</strong><Badge color={merchant.hotProductsEnabled ? "jade" : "gray"}>{t(merchant.hotProductsEnabled ? "已开启" : "未开启")}</Badge></div>
+            <p>{t("近 90 天热度前 {count} 个商品自动设为优先；可在下方取消或追加。", { count: sorting.auto_hot_limit })}</p>
+            <small><PushPin weight="fill" />{t("取消的自动优先会被记住；关闭此功能保留手动优先。")}</small>
           </div>
-          <Switch
-            checked={merchant.hotProductsEnabled}
-            disabled={settingsSaving}
-            onCheckedChange={(enabled) => void toggleHotProducts(enabled)}
-            aria-label={t("爆款优先展示")}
-          />
+          <Switch checked={merchant.hotProductsEnabled} disabled={Boolean(busy) || !canManage} onCheckedChange={(enabled) => void toggleHotProducts(enabled)} aria-label={t("爆款优先展示")} />
         </article>
-      ) : null}
-
+        <section className="storefront-category-priority" aria-labelledby="category-priority-title">
+          <header><h3 id="category-priority-title">{t("优先分类")}</h3><p>{t("只调整全部商品中的顺序，包含子分类和额外关联分类，不改变分类导航。")}</p></header>
+          <div className="storefront-category-priority-controls">
+            <TextField.Root value={categoryQuery} placeholder={t("搜索分类")} aria-label={t("搜索分类")} onChange={(event) => setCategoryQuery(event.target.value)}><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
+            <select aria-label={t("添加优先分类")} value="" disabled={Boolean(busy) || !canManage || priorityIds.length >= 100} onChange={(event) => { if (event.target.value) void saveCategories([...priorityIds, event.target.value]); }}>
+              <option value="">{t("添加优先分类")}</option>
+              {availableCategories.map((item) => <option key={item.id} value={item.id}>{item.path}</option>)}
+            </select>
+          </div>
+          {selectedCategories.length ? <ol className="storefront-category-priority-list">{selectedCategories.map((item, index) => <li key={item.id}>
+            <span className="storefront-category-priority-position">{index + 1}</span><strong title={item.path}>{item.path}</strong>
+            <div>
+              <Button variant="ghost" color="gray" disabled={Boolean(busy) || !canManage || index === 0} aria-label={t("上移") + " " + item.path} onClick={() => moveCategory(index, -1)}><ArrowUp /></Button>
+              <Button variant="ghost" color="gray" disabled={Boolean(busy) || !canManage || index === selectedCategories.length - 1} aria-label={t("下移") + " " + item.path} onClick={() => moveCategory(index, 1)}><ArrowDown /></Button>
+              <Button variant="ghost" color="gray" disabled={Boolean(busy) || !canManage} aria-label={t("移除") + " " + item.path} onClick={() => void saveCategories(priorityIds.filter((id) => id !== item.id))}><X /></Button>
+            </div>
+          </li>)}</ol> : <Text size="2" color="gray">{t("尚未设置优先分类")}</Text>}
+        </section>
+      </> : null}
       <div className="storefront-priority-editor">
         <header>
-          <div>
-            <Text size="1" color="gray">{t("人工编辑")}</Text>
-            <h3>{t("手动优先商品")}</h3>
-            <p>{t("搜索并开启商品右侧的开关，该商品会覆盖自动热度并优先出现在前台。")}</p>
-          </div>
-          <TextField.Root
-            value={query}
-            placeholder={t("搜索商品名称或产品编码")}
-            aria-label={t("搜索可优先展示的商品")}
-            onChange={(event) => {
-              setQuery(event.target.value);
-              setPage(1);
-            }}
-          >
-            <TextField.Slot><MagnifyingGlass /></TextField.Slot>
-          </TextField.Root>
+          <div><Text size="1" color="gray">{t("人工编辑")}</Text><h3>{t("商品优先顺序")}</h3><p>{t("与前台全部商品使用同一排序；自动爆款已勾选，可直接调整。")}</p></div>
+          <TextField.Root value={query} placeholder={t("搜索商品名称或产品编码")} aria-label={t("搜索可优先展示的商品")} onChange={(event) => setQuery(event.target.value)}><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
         </header>
-
         {productsError ? <CoreError message={productsError} onRetry={() => void loadProducts()} /> : null}
         {productsLoading && !products.items.length ? <CoreLoading label={t("正在加载商品清单")} /> : null}
-        {!productsLoading && !productsError && !products.items.length ? (
-          <div className="storefront-priority-empty">
-            <Package weight="duotone" />
-            <strong>{t(query.trim() ? "没有符合条件的商品" : "暂无可展示商品")}</strong>
-            <span>{t(query.trim() ? "请更换商品名称或产品编码后重试。" : "商品上架后会出现在这里。")}</span>
-          </div>
-        ) : null}
-
-        {products.items.length ? (
-          <div className={`storefront-priority-list${productsLoading ? " is-loading" : ""}`}>
-            {products.items.map((product) => (
-              <article className="storefront-priority-row" key={product.id}>
-                <span className="storefront-priority-image">
-                  {product.primaryImageUrl ? <img src={product.primaryImageUrl} alt="" /> : <Package weight="duotone" />}
-                </span>
-                <div className="storefront-priority-copy">
-                  <strong title={product.name}>{product.name}</strong>
-                  <small>{product.productCode || t("未设置产品编码")} · {product.category || t("未分类")}</small>
-                </div>
-                {product.isPinned ? <Badge color="jade"><PushPin weight="fill" />{t("手动优先")}</Badge> : null}
-                <label className="storefront-priority-toggle">
-                  <span>{t(product.isPinned ? "已优先" : "设为优先")}</span>
-                  <Switch
-                    checked={product.isPinned}
-                    disabled={!canEditProducts || Boolean(savingProductId)}
-                    onCheckedChange={(pinned) => void togglePinnedProduct(product.id, pinned)}
-                    aria-label={t("设置商品 {name} 的前台优先状态", { name: product.name })}
-                  />
-                </label>
-              </article>
-            ))}
-          </div>
-        ) : null}
-
-        {products.pages > 1 ? (
-          <footer className="storefront-priority-pagination">
-            <span>{t("第 {page} / {pages} 页 · 共 {total} 个商品", {
-              page: products.page,
-              pages: products.pages,
-              total: products.total,
-            })}</span>
-            <div>
-              <Button variant="soft" color="gray" disabled={page <= 1 || productsLoading} onClick={() => setPage((value) => Math.max(1, value - 1))}>
-                <CaretLeft />{t("上一页")}
-              </Button>
-              <Button variant="soft" color="gray" disabled={page >= products.pages || productsLoading} onClick={() => setPage((value) => value + 1)}>
-                {t("下一页")}<CaretRight />
-              </Button>
-            </div>
-          </footer>
-        ) : null}
-        {!canEditProducts ? <Text size="1" color="gray">{t("仅商家所有者或管理员可以修改。")}</Text> : null}
+        {!productsLoading && !productsError && !products.items.length ? <div className="storefront-priority-empty"><Package weight="duotone" /><strong>{t(query.trim() ? "没有符合条件的商品" : "暂无可展示商品")}</strong><span>{t(query.trim() ? "请更换商品名称或产品编码后重试。" : "商品上架后会出现在这里。")}</span></div> : null}
+        {products.items.length ? <div className={"storefront-priority-list" + (productsLoading ? " is-loading" : "")} aria-busy={productsLoading}>
+          {products.items.map((product) => <article className="storefront-priority-row" key={product.id}>
+            <span className="storefront-priority-image">{product.image_url ? <img src={product.image_url} alt="" loading="lazy" /> : <Package weight="duotone" />}</span>
+            <div className="storefront-priority-copy"><strong title={product.name}>{product.name}</strong><small>{product.product_code || t("未设置产品编码")} · {product.category || t("未分类")}</small></div>
+            <span className="storefront-priority-source">{product.priority_source ? <Badge color={product.priority_source === "HOT" ? "orange" : "jade"}>{product.priority_source === "HOT" ? <Fire weight="fill" /> : <PushPin weight="fill" />}{t(product.priority_source === "HOT" ? "自动爆款" : "手动优先")}</Badge> : product.is_hot_candidate ? <Badge color="gray">{t("已取消自动优先")}</Badge> : null}</span>
+            <label className="storefront-priority-toggle"><span>{t(product.is_prioritized ? "已优先" : "设为优先")}</span><Switch checked={product.is_prioritized} disabled={!canEditProducts || Boolean(busy) || productsLoading} onCheckedChange={(pinned) => void togglePinnedProduct(product.id, pinned)} aria-label={t("设置商品 {name} 的前台优先状态", { name: product.name })} /></label>
+          </article>)}
+        </div> : null}
+        {products.pages > 1 ? <footer className="storefront-priority-pagination"><span>{t("第 {page} / {pages} 页 · 共 {total} 个商品", { page: products.page, pages: products.pages, total: products.total })}</span><div>
+          <Button variant="soft" color="gray" disabled={page <= 1 || productsLoading || Boolean(busy)} onClick={() => setPage((value) => Math.max(1, value - 1))}><CaretLeft />{t("上一页")}</Button>
+          <Button variant="soft" color="gray" disabled={page >= products.pages || productsLoading || Boolean(busy)} onClick={() => setPage((value) => value + 1)}>{t("下一页")}<CaretRight /></Button>
+        </div></footer> : null}
       </div>
     </section>
   );

@@ -10,15 +10,17 @@ import { StorefrontFlag } from "../../components/StorefrontFlag";
 import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
 import type { StorefrontLocale } from "../../types";
 import { useCoreAuth } from "../AuthContext";
+import { canManageOwnStorefront } from "../storefrontPermissions";
+import { useUnsavedChanges } from "../UnsavedChanges";
 import { getMerchantSettings, updateMerchantSettings } from "../api";
 import { useLocale } from "../LocaleContext";
 import { ToastNotice, useToast } from "../ToastContext";
 
 export function StorefrontLanguageSettings() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const { notify } = useToast();
-  const canManageSettings = hasPermission("system.settings_manage");
+  const canManageSettings = canManageOwnStorefront(profile?.context.accountScope, hasPermission);
   const [enabledLocales, setEnabledLocales] = useState<StorefrontLocale[]>(["zh-CN"]);
   const [savedLocales, setSavedLocales] = useState<StorefrontLocale[]>(["zh-CN"]);
   const [configuredLocales, setConfiguredLocales] = useState<StorefrontLocale[]>(["zh-CN"]);
@@ -31,6 +33,7 @@ export function StorefrontLanguageSettings() {
 
   const changed = enabledLocales.join(",") !== savedLocales.join(",")
     || defaultLocale !== savedDefaultLocale;
+  useUnsavedChanges(!loading && (changed || saving));
   const enabledLanguages = STOREFRONT_LANGUAGE_OPTIONS.filter(
     (language) => enabledLocales.includes(language.code),
   );

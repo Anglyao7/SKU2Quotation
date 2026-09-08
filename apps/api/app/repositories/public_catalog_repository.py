@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import Text, case, cast, exists, func, or_, select, update
+from sqlalchemy import DateTime, Text, case, cast, exists, func, literal, or_, select, update
 from sqlalchemy.orm import Load, Session, aliased
 
 from ..catalog_merchandising import POPULAR_CATEGORY_CODE
@@ -560,6 +560,9 @@ def _public_product_id_statement(
     product_ids: set[UUID] | None = None,
     excluded_product_ids: set[UUID] | None = None,
     hot: bool = False,
+    pinned_product_ids: set[UUID] | None = None,
+    priority_product_order: list[UUID] | None = None,
+    priority_category_ids: list[UUID] | None = None,
 ):
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -599,6 +602,20 @@ def _public_product_id_statement(
     child_name = func.lower(func.coalesce(ProductCategoryRow.name, ""))
     pinned_rank = case((ProductRow.storefront_pinned_at.is_not(None), 0), else_=1)
     pinned_at = ProductRow.storefront_pinned_at
+    if pinned_product_ids is not None:
+        pinned_rank = case((ProductRow.id.in_(pinned_product_ids), 0), else_=1)
+        pinned_at = literal(None, type_=DateTime(timezone=True))
+    pinned_order = literal(0)
+    if priority_product_order is not None:
+        pinned_rank = case((ProductRow.id.in_(priority_product_order), 0), else_=1)
+        pinned_at = literal(None, type_=DateTime(timezone=True))
+        pinned_order = (
+            case(
+                *[(ProductRow.id == value, index) for index, value in enumerate(priority_product_order)],
+                else_=len(priority_product_order),
+            )
+            if priority_product_order else literal(0)
+        )
     popular_rank = case(
         (
             func.upper(
@@ -613,6 +630,28 @@ def _public_product_id_statement(
         ),
         else_=1,
     )
+    if priority_category_ids is not None:
+        # Include descendants and additional category memberships, not just
+        # products whose primary category happens to be the chosen category.
+        categories = session.execute(select(ProductCategoryRow.id, ProductCategoryRow.parent_id).where(
+            ProductCategoryRow.tenant_id == tenant_id, ProductCategoryRow.status == "ACTIVE",
+            ProductCategoryRow.deleted_at.is_(None),
+        )).all() if priority_category_ids else []
+        active_ids = {row.id for row in categories}
+        conditions = []
+        for index, category_id in enumerate(priority_category_ids):
+            descendants = {category_id} & active_ids
+            while True:
+                expanded = descendants | {row.id for row in categories if row.parent_id in descendants}
+                if expanded == descendants:
+                    break
+                descendants = expanded
+            additional = select(ProductCategoryMembershipRow.product_id).where(
+                ProductCategoryMembershipRow.tenant_id == tenant_id,
+                ProductCategoryMembershipRow.category_id.in_(descendants),
+            )
+            conditions.append((or_(ProductRow.category_id.in_(descendants), ProductRow.id.in_(additional)), index))
+        popular_rank = case(*conditions, else_=len(priority_category_ids)) if conditions else literal(0)
     product_name = func.lower(ProductRow.name)
     normalized = query.casefold().strip()
     match_rank = func.min(
@@ -637,6 +676,7 @@ def _public_product_id_statement(
             child_name.label("child_name"),
             pinned_rank.label("pinned_rank"),
             pinned_at.label("pinned_at"),
+            pinned_order.label("pinned_order"),
             popular_rank.label("popular_rank"),
             product_name.label("product_name"),
             match_rank.label("match_rank"),
@@ -651,11 +691,12 @@ def _public_product_id_statement(
             child_name,
             pinned_rank,
             pinned_at,
+            pinned_order,
             popular_rank,
             product_name,
         )
     )
-    if normalized:
+    if normalized and priority_product_order is None:
         return grouped.order_by(
             match_rank,
             pinned_rank,
@@ -742,6 +783,7 @@ def _public_product_id_statement(
         )
     return grouped.order_by(
         pinned_rank,
+        pinned_order,
         pinned_at.desc(),
         popular_rank,
         uncategorized,
@@ -767,6 +809,9 @@ def list_public_product_ids_page(
     product_ids: set[UUID] | None = None,
     excluded_product_ids: set[UUID] | None = None,
     hot: bool = False,
+    pinned_product_ids: set[UUID] | None = None,
+    priority_product_order: list[UUID] | None = None,
+    priority_category_ids: list[UUID] | None = None,
 ) -> list[UUID]:
     statement = _public_product_id_statement(
         session,
@@ -778,6 +823,9 @@ def list_public_product_ids_page(
         product_ids=product_ids,
         excluded_product_ids=excluded_product_ids,
         hot=hot,
+        pinned_product_ids=pinned_product_ids,
+        priority_product_order=priority_product_order,
+        priority_category_ids=priority_category_ids,
     )
     return [
         row.product_id
@@ -785,6 +833,60 @@ def list_public_product_ids_page(
             statement.offset((page - 1) * page_size).limit(page_size)
         ).all()
     ]
+
+
+def hot_product_candidates(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+    excluded_product_ids: set[UUID],
+    limit: int,
+) -> list[UUID]:
+    """Select positive-heat public products globally, before editor pagination."""
+    eligible = (
+        _public_catalog_statement(tenant_id=tenant_id, now=now, query="", category=None)
+        .with_only_columns(ProductRow.id).order_by(None).distinct()
+    )
+    if excluded_product_ids:
+        eligible = eligible.where(~ProductRow.id.in_(excluded_product_ids))
+    views = (
+        select(
+            StorefrontProductViewDailyRow.product_id,
+            func.sum(StorefrontProductViewDailyRow.view_count).label("views"),
+        ).where(
+            StorefrontProductViewDailyRow.tenant_id == tenant_id,
+            StorefrontProductViewDailyRow.viewed_on >= (now - timedelta(days=90)).date(),
+        ).group_by(StorefrontProductViewDailyRow.product_id).subquery()
+    )
+    orders = (
+        select(
+            PublicQuoteDraftItemRow.product_id_snapshot.label("product_id"),
+            func.count(func.distinct(PublicQuoteDraftRow.id)).label("orders"),
+        ).join(
+            PublicQuoteDraftRow,
+            (PublicQuoteDraftRow.id == PublicQuoteDraftItemRow.quote_draft_id)
+            & (PublicQuoteDraftRow.tenant_id == PublicQuoteDraftItemRow.tenant_id),
+        ).where(
+            PublicQuoteDraftItemRow.tenant_id == tenant_id,
+            PublicQuoteDraftRow.tenant_id == tenant_id,
+            PublicQuoteDraftItemRow.deleted_at.is_(None),
+            PublicQuoteDraftRow.deleted_at.is_(None),
+            PublicQuoteDraftRow.status.in_(("PENDING_CONFIRMATION", "CONFIRMED")),
+            PublicQuoteDraftRow.created_at >= now - timedelta(days=90),
+        ).group_by(PublicQuoteDraftItemRow.product_id_snapshot).subquery()
+    )
+    view_count, order_count = func.coalesce(views.c.views, 0), func.coalesce(orders.c.orders, 0)
+    score = view_count + order_count * 20
+    statement = (
+        select(ProductRow.id)
+        .outerjoin(views, views.c.product_id == ProductRow.id)
+        .outerjoin(orders, orders.c.product_id == ProductRow.id)
+        .where(ProductRow.tenant_id == tenant_id, ProductRow.id.in_(eligible), score > 0)
+        .order_by(score.desc(), order_count.desc(), view_count.desc(), ProductRow.id)
+        .limit(limit)
+    )
+    return list(session.scalars(statement))
 
 
 def count_public_catalog_products(

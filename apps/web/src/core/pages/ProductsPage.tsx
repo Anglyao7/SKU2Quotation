@@ -51,6 +51,7 @@ import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
 import type { ProductTag, StorefrontLocale } from "../../types";
 import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
+import { SearchableCategorySelect } from "../components/SearchableCategorySelect";
 import { useToast } from "../ToastContext";
 
 const emptyProductPage: ProductListPage = { items: [], page: 1, pageSize: 50, total: 0, pages: 0 };
@@ -393,6 +394,8 @@ export function ProductsPage() {
   const [bulkCategoryIds, setBulkCategoryIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [bulkCategoryQuery, setBulkCategoryQuery] = useState("");
+  const selectedSkuCountsRef = useRef(new Map<string, number>());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [deleteAllDialogOpen, setDeleteAllDialogOpen] = useState(false);
   const [deleteAllPassword, setDeleteAllPassword] = useState("");
@@ -408,6 +411,28 @@ export function ProductsPage() {
   const [translatingProductId, setTranslatingProductId] = useState<string>();
   const [shareTarget, setShareTarget] = useState<CatalogShareTarget>();
   const [imageEnhancementTargets, setImageEnhancementTargets] = useState<ImageEnhancementTarget[]>([]);
+  const requestedImportJob = params.get("job");
+  useEffect(() => {
+    if (!canImport || !requestedImportJob || params.get("import") !== "1") return;
+    let active = true;
+    let firstResult = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const job = await getImport(requestedImportJob);
+        if (!active) return;
+        const first = firstResult;
+        firstResult = false;
+        setLastImport((current) => first || current?.id === requestedImportJob ? job : current);
+        setImportError("");
+        if (["scanning", "parsing"].includes(job.status)) timer = setTimeout(() => void poll(), 4000);
+      } catch {
+        if (active) { setImportError(t("任务状态刷新失败")); timer = setTimeout(() => void poll(), 10_000); }
+      }
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, [canImport, requestedImportJob, params, t]);
   const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
@@ -601,7 +626,7 @@ export function ProductsPage() {
     setParams((current) => {
       const next = new URLSearchParams(current);
       if (open) next.set("import", "1");
-      else next.delete("import");
+      else { next.delete("import"); next.delete("job"); }
       return next;
     }, { replace: true });
   };
@@ -933,6 +958,11 @@ export function ProductsPage() {
     }, { replace: true });
     void load();
   };
+  for (const id of selectedSkuCountsRef.current.keys()) {
+    if (!selectedProductIds.has(id)) selectedSkuCountsRef.current.delete(id);
+  }
+  result.items.forEach((product) => selectedSkuCountsRef.current.set(product.id, product.skuCount));
+  const selectedSkuCount = [...selectedProductIds].reduce((total, id) => total + (selectedSkuCountsRef.current.get(id) ?? 0), 0);
   const currentPageProductIds = result.items.map((product) => product.id);
   const currentPageSelected = currentPageProductIds.filter((id) => selectedProductIds.has(id));
   const allCurrentPageSelected = currentPageProductIds.length > 0
@@ -969,23 +999,23 @@ export function ProductsPage() {
     setBulkError("");
   };
   const openImageEnhancementForProducts = () => {
-    if (!canEdit || !selectedProductIds.size) return;
+    if (!canEdit || !isPlatformAdmin || !selectedProductIds.size) return;
     setImageEnhancementTargets(
       [...selectedProductIds].map((productId) => ({ productId, skuIds: [] })),
     );
   };
   const openImageEnhancementForSkus = (productId: string, skuIds: string[]) => {
-    if (!canEdit || !skuIds.length) return;
+    if (!canEdit || !isPlatformAdmin || !skuIds.length) return;
     setImageEnhancementTargets([{ productId, skuIds }]);
   };
   const openImageEnhancementForProduct = (productId: string) => {
-    if (!canEdit) return;
+    if (!canEdit || !isPlatformAdmin) return;
     setImageEnhancementTargets([{ productId, skuIds: [] }]);
   };
   const openBulkAction = (action: BulkSkuAction) => {
     if (!canEdit || !selectedProductIds.size) return;
     setBulkError("");
-    if (action === "category") setBulkCategoryIds(new Set());
+    if (action === "category") { setBulkCategoryIds(new Set()); setBulkCategoryQuery(""); }
     setBulkAction(action);
   };
   const applyBulkAction = async () => {
@@ -1012,7 +1042,7 @@ export function ProductsPage() {
       const failedIds = new Set(response.failedItems.map((item) => item.skuId));
       const affectedProducts = response.affectedProductCount ?? response.successCount;
       const successMessage = bulkAction === "category"
-        ? t("已将 {products} 个商品加入 {categories} 个分类，原分类已保留。", {
+        ? t("已将 {products} 个商品移至 {categories} 个分类。", {
             products: affectedProducts,
             categories: bulkCategoryIds.size,
           })
@@ -1262,26 +1292,26 @@ export function ProductsPage() {
   );
   const hasActiveFilters = Boolean(query.trim() || categoryId || status || missingImagesOnly);
   const bulkActionTitle = bulkAction === "category"
-    ? t("批量修改商品分类")
+    ? t("移动分类")
     : bulkAction === "pin"
     ? t("置顶所选商品？")
     : bulkAction === "unpin"
     ? t("取消置顶所选商品？")
     : bulkAction === "activate"
-    ? t("上架所选 SKU？")
-    : t("下架所选 SKU？");
+    ? t("上架所选商品？")
+    : t("下架所选商品？");
   const bulkActionDescription = bulkAction === "category"
-    ? t("勾选一个或多个分类。商品会同时出现在这些分类中，现有分类不会被删除。")
+    ? t("移动后仅保留本次选中的分类。")
     : bulkAction === "pin" || bulkAction === "unpin"
     ? t("置顶状态会应用到商品。")
     : t("将更新 {count} 个商品。", { count: selectedProductIds.size });
   return (
-    <div className="core-workspace">
+    <div className="core-workspace admin-products-page">
       <CorePageHeading
         eyebrow={t("商品资料")}
         title={t("SKU 商品库")}
         actions={<>
-          <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出 SKU 数据")}</Button>
+          <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出商品与 SKU")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
           {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}
           {canImport || canDelete ? (
@@ -1314,10 +1344,7 @@ export function ProductsPage() {
       ) : null}
       <Card className="core-sku-toolbar">
         <TextField.Root value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder={t("搜索商品名称、产品编码或 SKU")} aria-label={t("搜索商品库")}><TextField.Slot><MagnifyingGlass /></TextField.Slot></TextField.Root>
-        <select value={categoryId} onChange={(event) => { setCategoryId(event.target.value); setPage(1); }} aria-label={t("按分类筛选")}>
-          <option value="">{t("全部分类")}</option>
-          {bulkCategoryOptions.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
-        </select>
+        <SearchableCategorySelect value={categoryId} onChange={(value) => { setCategoryId(value); setPage(1); }} options={bulkCategoryOptions} placeholder={t("全部分类")} label={t("按分类筛选")} />
         <select value={status} onChange={(event) => { setStatus(event.target.value as "" | ProductStatus); setPage(1); }} aria-label={t("按商品状态筛选")}>
           <option value="">{t("全部状态")}</option>
           <option value="ACTIVE">{t("在售")}</option>
@@ -1344,12 +1371,12 @@ export function ProductsPage() {
       {canSelect && selectedProductIds.size > 0 ? (
         <Card className="core-sku-bulk-bar">
           <div>
-            <Text size="2" weight="bold">{t("已选 {count} 个商品", { count: selectedProductIds.size })}</Text>
+            <Text size="2" weight="bold">{t("已选 {products} 个商品 · {skus} 个 SKU", { products: selectedProductIds.size, skus: selectedSkuCount })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
             {canShare ? <Button size="2" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [...selectedProductIds] })}>{t("分享商品")}</Button> : null}
-            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("修改分类")}</Button> : null}
-            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
+            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("移动分类")}</Button> : null}
+            {canEdit && isPlatformAdmin ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
             {canDelete ? <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button> : null}
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
@@ -1475,7 +1502,7 @@ export function ProductsPage() {
                         const format = (value: number) => value.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                         return `${product.currency ?? ""} ${from !== to ? `${format(from)} – ${format(to)}` : format(from)}`.trim();
                       })()}</strong>
-                      <small>{product.supplier === "—" ? t("子账号销售价") : product.supplierCount ? t("已有供应来源") : t("尚无供应来源")}</small>
+                      <small>{t("销售单价")}</small>
                     </td>
                     <td className="core-sku-status-column">
                       <Badge color={product.status === "ACTIVE" ? "jade" : product.status === "DRAFT" || product.status === "IN_REVIEW" ? "amber" : "gray"}>
@@ -1498,20 +1525,13 @@ export function ProductsPage() {
                       >
                         {t("商品详情")}
                       </Button>
-                      {canEdit && isPlatformAdmin ? (
-                        <Button
-                          size="1"
-                          variant="soft"
-                          color="blue"
-                          loading={translatingProductId === product.id}
-                          disabled={Boolean(translatingProductId)}
-                          onClick={() => void translateProduct(product)}
-                          aria-label={t("重新翻译商品 {name}", { name: product.name })}
-                        >
-                          <Translate />{t("翻译")}
-                        </Button>
-                      ) : null}
-                      {canShare ? <Button size="1" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [product.id] })}>{t("分享商品")}</Button> : null}
+                      {(canEdit && isPlatformAdmin) || canShare ? <DropdownMenu.Root>
+                        <DropdownMenu.Trigger><Button size="1" variant="ghost" color="gray" aria-label={t("更多商品操作")}><DotsThree /></Button></DropdownMenu.Trigger>
+                        <DropdownMenu.Content align="end">
+                          {canEdit && isPlatformAdmin ? <DropdownMenu.Item disabled={Boolean(translatingProductId)} onSelect={() => void translateProduct(product)}><Translate />{t("翻译")}</DropdownMenu.Item> : null}
+                          {canShare ? <DropdownMenu.Item onSelect={() => setShareTarget({ type: "PRODUCTS", productIds: [product.id] })}>{t("分享商品")}</DropdownMenu.Item> : null}
+                        </DropdownMenu.Content>
+                      </DropdownMenu.Root> : null}
                     </td>
                   </tr>
                 ))}
@@ -1595,7 +1615,10 @@ export function ProductsPage() {
                 <Badge color="blue" variant="soft">{t("已选 {count} 个", { count: bulkCategoryIds.size })}</Badge>
               </div>
               <div className="core-bulk-category-picker">
-                {bulkCategoryGroups.map(({ root, children }) => (
+                <TextField.Root value={bulkCategoryQuery} onChange={(event) => setBulkCategoryQuery(event.target.value)} placeholder={t("搜索分类")} aria-label={t("搜索分类")} />
+                {bulkCategoryGroups.map(({ root, children }) => ({ root, children: root.name.toLocaleLowerCase().includes(bulkCategoryQuery.trim().toLocaleLowerCase()) ? children : children.filter((child) => child.name.toLocaleLowerCase().includes(bulkCategoryQuery.trim().toLocaleLowerCase())) }))
+                  .filter(({ root, children }) => root.name.toLocaleLowerCase().includes(bulkCategoryQuery.trim().toLocaleLowerCase()) || children.length)
+                  .map(({ root, children }) => (
                   <div className="core-bulk-category-group" key={root.id}>
                     <label className="core-bulk-category-option core-bulk-category-option-root">
                       <Checkbox
@@ -2232,6 +2255,7 @@ function ManualProductDialog({
   const { t } = useLocale();
   const [publishToStorefront, setPublishToStorefront] = useState(true);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [selectedCategory, setSelectedCategory] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -2239,6 +2263,7 @@ function ManualProductDialog({
     if (!open) return;
     setPublishToStorefront(true);
     setSelectedTags([]);
+    setSelectedCategory("");
     setError("");
   }, [open]);
 
@@ -2326,13 +2351,11 @@ function ManualProductDialog({
                   <Text size="2" weight="medium">{t("商品名称")} *</Text>
                   <TextField.Root name="name" required maxLength={500} autoFocus placeholder={t("例如 多功能宠物旅行包")} />
                 </label>
-                <label>
+                <div className="core-product-create-category-field">
                   <Text size="2" weight="medium">{t("商品分类")}</Text>
-                  <select name="category_id" defaultValue="">
-                    <option value="">{t("未分类")}</option>
-                    {categories.map((category) => <option key={category.id} value={category.id}>{category.label}</option>)}
-                  </select>
-                </label>
+                  <input type="hidden" name="category_id" value={selectedCategory} />
+                  <SearchableCategorySelect value={selectedCategory} onChange={setSelectedCategory} options={categories} placeholder={t("未分类")} label={t("商品分类")} disabled={saving} />
+                </div>
               </div>
             </section>
 
@@ -2508,7 +2531,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const [categoryError, setCategoryError] = useState("");
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
-  const canEnhanceImages = canEdit;
+  const canEnhanceImages = canEdit && isPlatformAdmin;
 
   const categoryOptions = useMemo(
     () => categories.filter((category) => (
@@ -2803,10 +2826,10 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
   onChanged: () => Promise<void>;
 }) {
-  const { hasAnyPermission, hasPermission } = useCoreAuth();
+  const { hasAnyPermission, hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
-  const canEnhanceImages = canEdit;
+  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
   const canManageSku = canEdit || canPublish;

@@ -725,6 +725,38 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
   };
 }
 
+export interface StorefrontSortingSettings {
+  hot_products_enabled: boolean;
+  auto_hot_limit: number;
+  priority_category_ids: string[];
+  categories: Array<{ id: string; name: string; path: string }>;
+}
+
+export interface StorefrontSortingProductPage {
+  items: Array<{
+    id: string; name: string; product_code?: string; category?: string; image_url?: string;
+    is_prioritized: boolean; priority_source: "MANUAL" | "HOT" | null; is_hot_candidate: boolean;
+  }>;
+  total: number; page: number; page_size: number; pages: number;
+}
+
+export function getStorefrontSorting(): Promise<StorefrontSortingSettings> {
+  return request("/storefront/sorting", { cache: "no-store" });
+}
+
+export async function updateStorefrontCategoryPriority(ids: string[]): Promise<StorefrontSortingSettings> {
+  const result = await request<StorefrontSortingSettings>("/storefront/sorting", {
+    method: "PATCH", body: JSON.stringify({ priority_category_ids: ids }),
+  });
+  bumpPublicCatalogRevision();
+  return result;
+}
+
+export function listStorefrontSortingProducts(params: { q: string; page: number; pageSize: number }): Promise<StorefrontSortingProductPage> {
+  const query = new URLSearchParams({ q: params.q, page: String(params.page), page_size: String(params.pageSize) });
+  return request(`/storefront/sorting/products?${query}`, { cache: "no-store" });
+}
+
 export async function getMerchantSettings(): Promise<MerchantSettings> {
   return mapMerchantSettings(await request<ApiMerchantSettings>("/me/merchant"));
 }
@@ -2490,7 +2522,7 @@ export async function batchUpdateSkuCategory(
 ): Promise<SkuBatchOperationResult> {
   const row = await request<ApiSkuBatchOperationResult>("/skus/batch-update-category", {
     method: "POST",
-    body: JSON.stringify({ sku_ids: skuIds, category_ids: categoryIds, mode: "ADD" }),
+    body: JSON.stringify({ sku_ids: skuIds, category_ids: categoryIds, mode: "REPLACE" }),
   });
   bumpPublicCatalogRevision();
   return mapSkuBatchOperationResult(row);

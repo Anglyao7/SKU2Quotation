@@ -96,6 +96,7 @@ const PersonalCenterPage = recoverableLazy(() => import("./core/pages/PersonalCe
 const StorefrontManagementPage = recoverableLazy(() => import("./core/pages/StorefrontManagementPage").then((module) => ({ default: module.StorefrontManagementPage })));
 const ProductsPage = recoverableLazy(() => import("./core/pages/ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const QuotesPage = recoverableLazy(() => import("./core/pages/QuotesPage").then((module) => ({ default: module.QuotesPage })));
+const TaskRecordsPage = recoverableLazy(() => import("./core/pages/TaskRecordsPage").then((module) => ({ default: module.TaskRecordsPage })));
 const ResellerOrdersPage = recoverableLazy(() => import("./core/pages/ResellerOrdersPage").then((module) => ({ default: module.ResellerOrdersPage })));
 const ResellerProductsPage = recoverableLazy(() => import("./core/pages/ResellerProductsPage").then((module) => ({ default: module.ResellerProductsPage })));
 const QuoteWorkbenchPage = recoverableLazy(() => import("./core/pages/QuoteWorkbenchPage").then((module) => ({ default: module.QuoteWorkbenchPage })));
@@ -174,13 +175,14 @@ function ConsoleQuotesRoute() {
   const page = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT"
     ? <ResellerOrdersPage />
     : <QuotesPage />;
-  return <PermissionGate anyOf={["quotation.view", "customer_portal.order_view_self"]}>{page}</PermissionGate>;
+  return <PermissionGate anyOf={["quotation.view", "inquiry.view", "customer_portal.order_view_self"]}>{page}</PermissionGate>;
 }
 
-function PermissionGate({ anyOf, children }: { anyOf: string[]; children: ReactNode }) {
+function PermissionGate({ anyOf, children, allowOwnStorefront = false }: { anyOf: string[]; children: ReactNode; allowOwnStorefront?: boolean }) {
   const { hasAnyPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   if (hasAnyPermission(...anyOf)) return children;
+  if (allowOwnStorefront && profile?.context.accountScope === "CUSTOMER_SUBACCOUNT" && hasAnyPermission("customer_portal.access")) return children;
   if (profile?.context.accountScope === "CUSTOMER_SUBACCOUNT") {
     return <Navigate to="/console" replace />;
   }
@@ -467,20 +469,22 @@ const router = createBrowserRouter([{
         { path: "products", element: <ConsoleProductsRoute /> },
         { path: "products/categories", element: <PermissionGate anyOf={["product.edit"]}><CategoriesPage /></PermissionGate> },
         { path: "products/tags", element: <PermissionGate anyOf={["product.edit"]}><TagManagementPage /></PermissionGate> },
-        { path: "languages", element: <PermissionGate anyOf={["system.settings_manage"]}><MerchantLanguagesPage /></PermissionGate> },
+        { path: "languages", element: <PermissionGate anyOf={["system.settings_manage"]} allowOwnStorefront><MerchantLanguagesPage /></PermissionGate> },
         { path: "inventory", element: <PermissionGate anyOf={["inventory.view"]}><InventoryPage /></PermissionGate> },
         { path: "supply-chain", element: <PermissionGate anyOf={["supplier.view", "supplier.manage"]}><SupplyChainPage /></PermissionGate> },
         { path: "products/review", element: <Navigate to="/console/products" replace /> },
         { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <ConsoleQuotesRoute /> },
+        { path: "tasks", element: <PermissionGate anyOf={["product.import", "product.edit"]}><TaskRecordsPage /></PermissionGate> },
         { path: "quotes/:quoteDraftId/workbench", element: <PermissionGate anyOf={["quotation.create"]}><QuoteWorkbenchPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },
         { path: "customer-accounts/:membershipId", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerSubaccountDetailPage /></PermissionGate> },
         { path: "account", element: <AccountSettingsPage /> },
         { path: "personal-center", element: <PermissionGate anyOf={["support.settings_manage"]}><PersonalCenterPage /></PermissionGate> },
-        { path: "storefront", element: <PermissionGate anyOf={["system.settings_manage"]}><StorefrontManagementPage /></PermissionGate> },
+        { path: "storefront", element: <PermissionGate anyOf={["system.settings_manage"]} allowOwnStorefront><StorefrontManagementPage /></PermissionGate> },
+        { path: "storefront/brand", element: <PermissionGate anyOf={["system.settings_manage"]} allowOwnStorefront><AccountSettingsPage view="merchant" /></PermissionGate> },
         { path: "system/monitoring", element: <PlatformAdminGate><SystemMonitoringPage /></PlatformAdminGate> },
         { path: "system/usage", element: <PlatformAdminGate><PlatformUsageAnalyticsPage /></PlatformAdminGate> },
         { path: "system/configuration", element: <PlatformAdminGate><ConfigurationCenterPage /></PlatformAdminGate> },

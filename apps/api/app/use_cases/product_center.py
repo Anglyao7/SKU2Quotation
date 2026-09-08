@@ -826,6 +826,10 @@ def list_product_page(
         )
         for row in rows
     ]
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        from ..services.subaccount_storefront import pinned_product_ids
+        pinned_ids = pinned_product_ids(session, tenant_id=tenant_id, membership_id=membership_id)
+        items = [item.model_copy(update={"is_pinned": item.id in pinned_ids}) for item in items]
     return ProductListPage(
         items=items,
         page=page,
@@ -5094,7 +5098,9 @@ def batch_update_sku_pinned(
             )
         )
 
-    if products:
+    from ..services.storefront_sorting import record_hot_override
+    override_changed = record_hot_override(session, tenant_id=tenant_id, product_ids=list(products_by_id), pinned=pinned)
+    if products or override_changed:
         _commit(
             session,
             conflict_code="BATCH_PIN_UPDATE_FAILED",
@@ -5178,7 +5184,9 @@ def batch_update_products_pinned(
             )
         )
 
-    if changed_products:
+    from ..services.storefront_sorting import record_hot_override
+    override_changed = record_hot_override(session, tenant_id=tenant_id, product_ids=[product.id for product in products], pinned=pinned)
+    if changed_products or override_changed:
         _commit(
             session,
             conflict_code="BATCH_PIN_UPDATE_FAILED",

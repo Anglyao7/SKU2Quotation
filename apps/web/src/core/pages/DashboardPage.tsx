@@ -30,7 +30,7 @@ const destination: Record<string, string> = {
   today_inquiries: "/console/inquiries",
   inquiries_today: "/console/inquiries",
   open_inquiries: "/console/inquiries",
-  pending_quotations: "/console/quotes",
+  pending_quotations: "/console/quotes?tab=history",
 };
 
 const metricIcons: Record<string, typeof Cube> = {

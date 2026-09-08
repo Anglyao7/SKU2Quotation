@@ -21,7 +21,6 @@ import {
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLoaderData, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
@@ -86,13 +85,9 @@ function productViewEventId(locationKey: string, productId: string) {
 
 export function ProductDetailPage() {
   const { store, product } = useLoaderData() as ProductDetailLoaderData;
-  const { profile } = useCoreAuth();
   const { accountKey } = useParams<{ accountKey?: string }>();
   const accountId = storefrontAccountMembershipId(accountKey) || store.account_id || undefined;
   const storageScope = storefrontStorageScope(store.slug, accountId);
-  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
-    ? profile.user.displayName
-    : undefined;
   const locale: StorefrontLocale = normalizeStorefrontLocale(store.locale);
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
@@ -266,7 +261,7 @@ export function ProductDetailPage() {
                   </span>
                 )}
                 <span>
-                  <strong>{store.storefront_scope === "CUSTOMER_SUBACCOUNT" ? (accountName || store.name) : store.name}</strong>
+                  <strong>{store.name}</strong>
                   <small>{t("商品目录")}</small>
                 </span>
               </Link>

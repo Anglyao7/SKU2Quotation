@@ -117,6 +117,7 @@ def _catalog_subaccount(
         storefront_slug.casefold().strip()
     ] = alias_account[0].tenant_id if alias_account is not None else None
     if expected_membership_id is None:
+        public_session.info["public_storefront_account"] = alias_account[0] if alias_account else None
         return alias_account
     explicit_account = use_cases.public_customer_subaccount_membership(
         identity_session,
@@ -128,6 +129,7 @@ def _catalog_subaccount(
             "子账号前台路径与账号不匹配。",
             kind="not_found",
         )
+    public_session.info["public_storefront_account"] = explicit_account[0]
     return explicit_account
 
 

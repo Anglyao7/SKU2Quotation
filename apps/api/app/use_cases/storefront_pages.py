@@ -17,6 +17,7 @@ from ..domain.errors import ApplicationError
 from ..identity_models import TenantRow
 from ..repositories import public_catalog_repository
 from ..services.auth.dependencies import RequestContext
+from ..services.subaccount_storefront import require_manage_storefront
 from ..storefront_page_models import StorefrontCustomPageRow
 from ..storefront_page_schemas import (
     MAX_STOREFRONT_CUSTOM_PAGES,
@@ -34,12 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 def _require_manage(context: RequestContext) -> None:
-    if "system.settings_manage" not in context.permissions:
-        raise ApplicationError(
-            "PERMISSION_REQUIRED",
-            "You do not have permission to manage storefront pages.",
-            kind="forbidden",
-        )
+    require_manage_storefront(context)
+
+
+def _page_owner(context: RequestContext) -> UUID | None:
+    return context.membership_id if context.account_scope == "CUSTOMER_SUBACCOUNT" else None
 
 
 def _page_response(row: StorefrontCustomPageRow) -> StorefrontCustomPageResponse:
@@ -65,11 +65,13 @@ def _tenant_page(
     *,
     tenant_id: UUID,
     page_id: UUID,
+    owner_membership_id: UUID | None,
 ) -> StorefrontCustomPageRow:
     row = session.scalar(
         select(StorefrontCustomPageRow).where(
             StorefrontCustomPageRow.tenant_id == tenant_id,
             StorefrontCustomPageRow.id == page_id,
+            StorefrontCustomPageRow.owner_membership_id == owner_membership_id,
             StorefrontCustomPageRow.deleted_at.is_(None),
         )
     )
@@ -147,6 +149,7 @@ def list_pages(
             select(StorefrontCustomPageRow)
             .where(
                 StorefrontCustomPageRow.tenant_id == context.tenant_id,
+                StorefrontCustomPageRow.owner_membership_id == _page_owner(context),
                 StorefrontCustomPageRow.deleted_at.is_(None),
             )
             .order_by(
@@ -191,6 +194,7 @@ def create_page(
     count = session.scalar(
         select(func.count(StorefrontCustomPageRow.id)).where(
             StorefrontCustomPageRow.tenant_id == context.tenant_id,
+            StorefrontCustomPageRow.owner_membership_id == _page_owner(context),
             StorefrontCustomPageRow.deleted_at.is_(None),
         )
     )
@@ -204,6 +208,7 @@ def create_page(
         select(StorefrontCustomPageRow.id).where(
             StorefrontCustomPageRow.tenant_id == context.tenant_id,
             StorefrontCustomPageRow.slug == normalized_slug,
+            StorefrontCustomPageRow.owner_membership_id == _page_owner(context),
         )
     )
     if duplicate is not None:
@@ -215,6 +220,7 @@ def create_page(
     max_order = session.scalar(
         select(func.max(StorefrontCustomPageRow.sort_order)).where(
             StorefrontCustomPageRow.tenant_id == context.tenant_id,
+            StorefrontCustomPageRow.owner_membership_id == _page_owner(context),
             StorefrontCustomPageRow.deleted_at.is_(None),
         )
     )
@@ -223,6 +229,7 @@ def create_page(
     row = StorefrontCustomPageRow(
         id=page_id,
         tenant_id=context.tenant_id,
+        owner_membership_id=_page_owner(context),
         title=normalized_title,
         slug=normalized_slug,
         object_key=object_key,
@@ -259,7 +266,7 @@ def update_page(
     request: StorefrontCustomPageUpdate,
 ) -> StorefrontCustomPageResponse:
     _require_manage(context)
-    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id)
+    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id, owner_membership_id=_page_owner(context))
     if row.version != request.expected_version:
         raise ApplicationError(
             "STOREFRONT_PAGE_VERSION_CONFLICT",
@@ -302,7 +309,7 @@ def replace_page_html(
 ) -> StorefrontCustomPageResponse:
     _require_manage(context)
     _validated_html(content, filename=filename)
-    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id)
+    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id, owner_membership_id=_page_owner(context))
     if row.version != expected_version:
         raise ApplicationError(
             "STOREFRONT_PAGE_VERSION_CONFLICT",
@@ -342,7 +349,7 @@ def delete_page(
     page_id: UUID,
 ) -> None:
     _require_manage(context)
-    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id)
+    row = _tenant_page(session, tenant_id=context.tenant_id, page_id=page_id, owner_membership_id=_page_owner(context))
     object_key = row.object_key
     session.delete(row)
     session.commit()
@@ -361,12 +368,14 @@ def public_navigation_pages(
     *,
     tenant_id: UUID,
     tenant_slug: str,
+    owner_membership_id: UUID | None = None,
 ) -> list[PublicStorefrontPageLink]:
     rows = list(
         session.scalars(
             select(StorefrontCustomPageRow)
             .where(
                 StorefrontCustomPageRow.tenant_id == tenant_id,
+                StorefrontCustomPageRow.owner_membership_id == owner_membership_id,
                 StorefrontCustomPageRow.deleted_at.is_(None),
                 StorefrontCustomPageRow.enabled.is_(True),
             )
@@ -394,6 +403,7 @@ def public_page(
     *,
     tenant_slug: str,
     page_slug: str,
+    owner_membership_id: UUID | None = None,
 ) -> PublicStorefrontPageDocument:
     normalized_store_slug = tenant_slug.casefold().strip()
     profile = public_catalog_repository.find_published_profile_by_slug(
@@ -431,6 +441,7 @@ def public_page(
     row = session.scalar(
         select(StorefrontCustomPageRow).where(
             StorefrontCustomPageRow.tenant_id == tenant.id,
+            StorefrontCustomPageRow.owner_membership_id == owner_membership_id,
             StorefrontCustomPageRow.slug == normalized_page_slug,
             StorefrontCustomPageRow.enabled.is_(True),
             StorefrontCustomPageRow.deleted_at.is_(None),

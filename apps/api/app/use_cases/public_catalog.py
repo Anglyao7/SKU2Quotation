@@ -132,6 +132,7 @@ from . import announcements as announcement_use_cases
 from . import quote_templates as quote_template_use_cases
 from . import support as support_use_cases
 from . import storefront_pages as storefront_page_use_cases
+from ..services.subaccount_storefront import account_profile, public_account_profile, pinned_product_ids
 
 
 MONEY = Decimal("0.01")
@@ -939,7 +940,7 @@ def _resolve_store(session: Session, *, slug: str):
     )
     if tenant is None:
         raise ApplicationError("STORE_NOT_FOUND", "Store was not found.", kind="not_found")
-    return tenant, profile
+    return tenant, public_account_profile(session, profile, slug=slug)
 
 
 def get_store(
@@ -959,7 +960,7 @@ def get_store(
     if subaccount is not None and (
         not str(subaccount[0].storefront_slug or "").strip()
         or subaccount[0].storefront_slug.casefold().strip()
-        in {tenant.slug.casefold(), profile.slug.casefold()}
+        == tenant.slug.casefold()
     ):
         # Older deployments could leave this column empty under FORCE RLS.
         # A legacy child URL must never canonicalize to its parent's store:
@@ -969,6 +970,8 @@ def get_store(
             "子账号前台地址尚未配置，请联系管理员修复。",
             kind="conflict",
         )
+    if subaccount is not None:
+        profile = account_profile(session, profile, subaccount[0], user=subaccount[1])
     source_locale, requested_locale, available_locales = (
         _requested_storefront_locale(
             session,
@@ -1020,6 +1023,7 @@ def get_store(
         custom_pages=storefront_page_use_cases.public_navigation_pages(
             session,
             tenant_id=tenant.id,
+            owner_membership_id=subaccount[0].id if subaccount else None,
             tenant_slug=(
                 subaccount[0].storefront_slug
                 if subaccount is not None
@@ -1040,16 +1044,16 @@ def get_store(
             # A customer subaccount is an independent sales identity. It shares
             # the merchant catalog, translations and pricing source only; it
             # must not expose the merchant's branding or storefront content.
-            "name": account_name or response.name,
+            "name": profile.name or account_name or membership.storefront_slug,
             "slug": membership.storefront_slug or response.slug,
-            "description": None,
-            "logo_url": None,
+            "description": profile.description,
+            "logo_url": storefront_logo_url(profile),
             "contact_email": None,
             "contact_phone": None,
             "all_products_position": 0,
-            "hot_products_enabled": False,
+            "hot_products_enabled": bool(profile.hot_products_enabled),
             "category_showcase_enabled": True,
-            "exchange_rates_enabled": False,
+            "exchange_rates_enabled": bool(profile.storefront_exchange_rates_enabled),
             "ai_search_questions": [],
             "popular_search_terms": [],
             "announcements": [],
@@ -1060,8 +1064,8 @@ def get_store(
                 ai_enabled=False,
                 custom_actions=[],
             ),
-            "footer_sections": [],
-            "custom_pages": [],
+            "footer_sections": storefront_footer_sections(profile.storefront_footer_config, merchant_name=profile.name, contact_email=None),
+            "custom_pages": response.custom_pages,
             "storefront_scope": "CUSTOMER_SUBACCOUNT",
             "account_id": membership.id,
         }
@@ -2548,6 +2552,9 @@ def list_public_products(
             product_ids=shared_product_ids,
             excluded_product_ids=hidden_product_ids,
         )
+        from ..services.storefront_sorting import ranking_plan
+        default_order = not query.strip() and not (category or "").strip() and not wanted_tags and not share_token
+        plan = ranking_plan(session, tenant_id=tenant.id, profile=profile, membership_id=subaccount_membership_id) if default_order else None
         selected_product_ids = repository.list_public_product_ids_page(
             session,
             tenant_id=tenant.id,
@@ -2559,7 +2566,11 @@ def list_public_products(
             page_size=page_size,
             product_ids=shared_product_ids,
             excluded_product_ids=hidden_product_ids,
-            hot=hot_sort_applied,
+            hot=False,
+            priority_product_order=plan.priority_ids if plan else None,
+            priority_category_ids=plan.category_ids if plan else None,
+            pinned_product_ids=(pinned_product_ids(session, tenant_id=tenant.id, membership_id=subaccount_membership_id)
+                                if subaccount_membership_id is not None else None),
         )
 
     selected_rows = repository.list_public_catalog_rows_by_product_ids(

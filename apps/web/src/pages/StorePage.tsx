@@ -29,7 +29,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { Link, useLoaderData, useLocation, useParams } from "react-router-dom";
 import { BRAND_NAME_ZH } from "../brand";
-import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { StorefrontCatalogImage } from "../components/StorefrontCatalogImage";
@@ -238,7 +237,6 @@ function CategoryScrollTrack({
 
 export function StorePage() {
   const loadedStore = useLoaderData() as Storefront;
-  const { profile } = useCoreAuth();
   const location = useLocation();
   const { shareId, accountKey } = useParams<{ shareId?: string; accountKey?: string }>();
   const accountId = storefrontAccountMembershipId(accountKey) || loadedStore.account_id || undefined;
@@ -266,9 +264,6 @@ export function StorePage() {
     ? `/${encodeURIComponent(tenantSlug)}/share/${encodeURIComponent(shareToken)}${storefrontLocaleQuery(locale)}`
     : `${storefrontRoot}${sharedQuery}`;
   const storageScope = storefrontStorageScope(tenantSlug, accountId);
-  const accountName = accountId && profile?.context.membershipId?.toLocaleLowerCase() === accountId
-    ? profile.user.displayName
-    : undefined;
   const [initialCatalogSnapshot] = useState(() => (
     shareToken || accountId
       ? null
@@ -1040,7 +1035,7 @@ export function StorePage() {
                   <span className="store-identity-mark"><StoreIcon size={21} weight="duotone" /></span>
                 )}
                 <span>
-                  <strong>{store.storefront_scope === "CUSTOMER_SUBACCOUNT" ? (accountName || store.name) : store.name}</strong>
+                  <strong>{store.name}</strong>
                   <small>{t("商品目录")}</small>
                 </span>
               </Link>

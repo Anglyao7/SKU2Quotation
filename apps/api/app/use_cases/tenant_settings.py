@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -23,6 +24,7 @@ from ..services.storefront_branding import (
     storefront_logo_url,
 )
 from ..services.storefront_paths import allocate_storefront_slug
+from ..services.subaccount_storefront import account_profile, own_membership, settings_row
 from ..storefront_footer import storefront_footer_config, storefront_footer_sections
 from ..storefront_locales import (
     effective_storefront_locales,
@@ -196,7 +198,47 @@ def get_merchant_settings(
             TenantPublicProfileRow.deleted_at.is_(None),
         )
     )
+    if context.account_scope == "CUSTOMER_SUBACCOUNT":
+        membership = own_membership(session, context)
+        profile = account_profile(session, profile, membership)
+        tenant = SimpleNamespace(id=tenant.id, name=profile.name, slug=profile.slug,
+                                 default_currency=tenant.default_currency, default_locale=tenant.default_locale)
     return _response(session, tenant, profile)
+
+
+def _update_account_settings(session: Session, *, context: RequestContext, request: MerchantSettingsUpdate):
+    membership = own_membership(session, context)
+    # An account's display controls never authorize changes to the merchant's
+    # business currency, warehouses or other shared operational settings.
+    if request.business_mode is not None or request.default_currency is not None:
+        raise ApplicationError("PERMISSION_REQUIRED", "Merchant business settings cannot be changed by this account.", kind="forbidden")
+    row = settings_row(session, membership, create=True)
+    current = get_merchant_settings(session, context=context)
+    config = dict(row.settings or {})
+    locales = request.storefront_locales if request.storefront_locales is not None else current.storefront_locales
+    tenant = session.get(TenantRow, context.tenant_id)
+    locales = effective_storefront_locales(locales, source_locale=tenant.default_locale)
+    if any(locale not in current.configured_storefront_locales for locale in locales):
+        raise ApplicationError("STOREFRONT_LANGUAGE_PACKAGE_NOT_CONFIGURED", "该语言包未配置，请联系管理员。", kind="conflict")
+    default_locale = request.storefront_default_locale or current.storefront_default_locale
+    if default_locale not in locales:
+        if request.storefront_default_locale is not None:
+            raise ApplicationError("STOREFRONT_DEFAULT_LOCALE_DISABLED", "默认语言必须是已启用的前台语言。")
+        default_locale = locales[0]
+    # Snapshot language selection on the first save, so later owner settings
+    # changes cannot silently change this storefront's language menu.
+    config.update(storefront_locales=locales, storefront_default_locale=default_locale)
+    for key in ("name", "hot_products_enabled", "storefront_exchange_rates_enabled"):
+        value = getattr(request, key)
+        if value is not None:
+            config[key] = value
+    if request.share_card_subtitle is not None:
+        config["description"] = request.share_card_subtitle or None
+    if request.storefront_footer_sections is not None:
+        config["storefront_footer_config"] = storefront_footer_config(request.storefront_footer_sections)
+    row.settings = config
+    session.commit()
+    return get_merchant_settings(session, context=context)
 
 
 def update_merchant_settings(
@@ -205,6 +247,8 @@ def update_merchant_settings(
     context: RequestContext,
     request: MerchantSettingsUpdate,
 ) -> MerchantSettingsResponse:
+    if context.account_scope == "CUSTOMER_SUBACCOUNT":
+        return _update_account_settings(session, context=context, request=request)
     _require_settings_permission(context)
     tenant = session.scalar(
         select(TenantRow).where(
@@ -378,6 +422,23 @@ def upload_merchant_logo(
     context: RequestContext,
     content: bytes,
 ) -> MerchantSettingsResponse:
+    if context.account_scope == "CUSTOMER_SUBACCOUNT":
+        membership = own_membership(session, context)
+        if not content or len(content) > MAX_MERCHANT_LOGO_BYTES:
+            raise ApplicationError("MERCHANT_LOGO_INVALID_SIZE", "请选择不超过 5 MB 的 Logo 图片。")
+        try:
+            normalized = normalize_storefront_logo(content)
+        except InvalidStorefrontLogo as exc:
+            raise ApplicationError("MERCHANT_LOGO_INVALID", "无法读取这张 Logo 图片。") from exc
+        object_key = f"tenants/{context.tenant_id}/storefront/accounts/{membership.id}/logos/{uuid4().hex}.webp"
+        with tempfile.TemporaryDirectory(prefix="atc-account-logo-") as directory:
+            path = Path(directory) / "logo.webp"
+            path.write_bytes(normalized)
+            get_object_storage().put_file(path, object_key=object_key, content_type="image/webp")
+        row = settings_row(session, membership, create=True)
+        row.settings = {**(row.settings or {}), "logo_object_key": object_key}
+        session.commit()
+        return get_merchant_settings(session, context=context)
     _require_settings_permission(context)
     if not content:
         raise ApplicationError("MERCHANT_LOGO_EMPTY", "请选择一张 Logo 图片。")

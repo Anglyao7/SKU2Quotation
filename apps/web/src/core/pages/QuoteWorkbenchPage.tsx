@@ -1,3 +1,5 @@
+import { useUnsavedChanges } from "../UnsavedChanges";
+import { acknowledgeEdits, saveState } from "../saveState";
 import {
   AlertDialog,
   Badge,
@@ -522,6 +524,11 @@ export function QuoteWorkbenchPage() {
   const autoSettingsTimer = useRef<number | undefined>(undefined);
   const autoItemsTimer = useRef<number | undefined>(undefined);
   const savedSettingsRef = useRef<QuoteSettingsPayload | undefined>(undefined);
+  const acknowledgedSettingsInputRef = useRef<QuoteSettingsPayload | undefined>(undefined);
+  const saveBusyRef = useRef(false);
+  const failedSettingsRef = useRef<QuoteSettingsPayload | undefined>(undefined);
+  const failedItemsRef = useRef<Record<string, QuoteItemEdit> | undefined>(undefined);
+  const [saveFailed, setSaveFailed] = useState(false);
   const loadedDraftIdRef = useRef<string | undefined>(undefined);
   const previewViewportRef = useRef<HTMLDivElement>(null);
   const previewSheetRef = useRef<HTMLDivElement>(null);
@@ -565,6 +572,8 @@ export function QuoteWorkbenchPage() {
     proformaInvoice: { ...proformaInvoice },
     packingList,
   }), [activeColumns, extraInformation, locale, packingList, proformaInvoice, quoteNumber, style, templateId]);
+  const latestSettingsRef = useRef(currentSettings);
+  latestSettingsRef.current = currentSettings;
   const previewGrid = useMemo(
     () => activeColumns.map((field) => `minmax(0, ${previewColumnWeights[field] ?? 1}fr)`).join(" "),
     [activeColumns],
@@ -605,6 +614,11 @@ export function QuoteWorkbenchPage() {
     : settings?.name || "";
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
+  const hasIncompleteExtraInformation = extraInformation.some((entry) => Boolean(entry.title.trim()) !== Boolean(entry.content.trim()));
+  const hasUnsavedSettings = !quoteSettingsEqual(savedSettingsRef.current, currentSettings) || hasIncompleteExtraInformation;
+  const documentSaveState = saveState({ readOnly: Boolean(draft?.readOnly), saving: saving || savingItems, dirty: hasUnsavedSettings || hasPendingItemEdits, failed: saveFailed });
+  const saveStatusText = t(({ READ_ONLY: "只读", SAVING: "正在保存…", FAILED: "保存失败", UNSAVED: "未保存", SAVED: "已保存" })[documentSaveState]);
+  useUnsavedChanges(Boolean(draft && canEditPrices && (hasUnsavedSettings || hasPendingItemEdits || saving || savingItems)));
   const currencyOptions = useMemo<QuoteCurrencyOption[]>(() => {
     const available = new Map<string, QuoteCurrencyOption>();
     available.set("CNY", { currency: "CNY", name: "人民币", symbol: "¥", rate: 1 });
@@ -892,18 +906,25 @@ export function QuoteWorkbenchPage() {
       payload.push(row);
     }
     if (!payload.length) return draft;
+    if (saveBusyRef.current) return undefined;
+    saveBusyRef.current = true;
     setSavingItems(true);
+    setSaveFailed(false);
     setError("");
     try {
       const next = await updatePublicQuoteDraftItems(draft.id, payload);
       setDraft(next);
       setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
-      setItemEdits({});
+      setItemEdits((current) => acknowledgeEdits(current, itemEdits));
+      failedItemsRef.current = undefined;
       return next;
     } catch (reason) {
+      failedItemsRef.current = itemEdits;
+      setSaveFailed(true);
       setError(reason instanceof Error ? reason.message : t("商品修改保存失败"));
       return undefined;
     } finally {
+      saveBusyRef.current = false;
       setSavingItems(false);
     }
   }, [canEditPrices, draft, itemEdits, t]);
@@ -931,12 +952,11 @@ export function QuoteWorkbenchPage() {
       if (!quiet) setError(`${proformaText(payload.locale, "issue_date")}不能为空。`);
       return undefined;
     }
-    const previous = savedSettingsRef.current;
-    savedSettingsRef.current = payload;
-    if (!quiet) {
-      setSaving(true);
-      setError("");
-    }
+    if (saveBusyRef.current) return undefined;
+    saveBusyRef.current = true;
+    setSaving(true);
+    setSaveFailed(false);
+    if (!quiet) setError("");
     try {
       const next = await updatePublicQuoteDraftSettings(target.id, {
         locale: payload.locale,
@@ -952,12 +972,17 @@ export function QuoteWorkbenchPage() {
         packingList: packingIsValid ? payload.packingList : undefined,
       });
       setDraft(next);
-      setQuoteNumber(next.quoteNumber);
       const nextVisibleColumns = (next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns).slice(0, MAX_PDF_COLUMNS);
-      setVisibleColumns(nextVisibleColumns);
-      setExtraInformation(next.extraInformation ?? payload.extraInformation);
-      setProformaInvoice(next.proformaInvoice);
-      setPackingList(next.packingList);
+      // Preserve changes typed while this request was in flight.
+      if (quoteSettingsEqual(latestSettingsRef.current, payload)) {
+        setQuoteNumber(next.quoteNumber);
+        setVisibleColumns(nextVisibleColumns);
+        setExtraInformation((current) => current.some((entry) => !entry.title.trim() || !entry.content.trim()) ? current : next.extraInformation ?? payload.extraInformation);
+        setProformaInvoice(next.proformaInvoice);
+        setPackingList(next.packingList);
+      }
+      failedSettingsRef.current = undefined;
+      acknowledgedSettingsInputRef.current = payload;
       savedSettingsRef.current = {
         ...payload,
         quoteNumber: next.quoteNumber.trim(),
@@ -968,28 +993,38 @@ export function QuoteWorkbenchPage() {
       };
       return next;
     } catch (reason) {
-      savedSettingsRef.current = previous;
+      failedSettingsRef.current = payload;
+      setSaveFailed(true);
       const message = reason instanceof Error ? reason.message : t("报价单设置保存失败");
       if (quiet) notify(message, { kind: "error" });
       else setError(message);
       return undefined;
     } finally {
-      if (!quiet) setSaving(false);
+      saveBusyRef.current = false;
+      setSaving(false);
     }
   }, [activeDocument, notify, t]);
 
   const save = useCallback(async () => {
     if (!draft) return draft;
     if (draft.readOnly) return draft;
+    if (hasIncompleteExtraInformation) {
+      setError(t("请完善额外信息的标题和内容。"));
+      return undefined;
+    }
     const edited = await saveAllItemEdits();
     if (!edited) return undefined;
     return persistSettings(edited, currentSettings);
-  }, [currentSettings, draft, persistSettings, saveAllItemEdits]);
+  }, [currentSettings, draft, persistSettings, saveAllItemEdits, hasIncompleteExtraInformation, t]);
 
   useEffect(() => {
     if (!draft || !canEditPrices || loadedDraftIdRef.current !== draft.id) return;
-    if (activeDocument === "packing-list" || activeDocument === "proforma") return;
+    if (saving || savingItems || hasPendingItemEdits || hasIncompleteExtraInformation) return;
     if (quoteSettingsEqual(savedSettingsRef.current, currentSettings)) return;
+    // The server may preserve an incomplete PI/packing section. Keep it dirty,
+    // but do not repeatedly save the same unchanged input while it is incomplete.
+    if (quoteSettingsEqual(acknowledgedSettingsInputRef.current, currentSettings)) return;
+    if (quoteSettingsEqual(failedSettingsRef.current, currentSettings)) return;
     if (autoSettingsTimer.current) window.clearTimeout(autoSettingsTimer.current);
     autoSettingsTimer.current = window.setTimeout(() => {
       void persistSettings(draft, currentSettings, true);
@@ -997,10 +1032,10 @@ export function QuoteWorkbenchPage() {
     return () => {
       if (autoSettingsTimer.current) window.clearTimeout(autoSettingsTimer.current);
     };
-  }, [activeDocument, canEditPrices, currentSettings, draft, persistSettings]);
+  }, [activeDocument, canEditPrices, currentSettings, draft, persistSettings, saving, savingItems, hasPendingItemEdits, hasIncompleteExtraInformation]);
 
   useEffect(() => {
-    if (!draft || !canEditPrices || !hasPendingItemEdits) return;
+    if (!draft || !canEditPrices || !hasPendingItemEdits || saving || savingItems || failedItemsRef.current === itemEdits) return;
     if (autoItemsTimer.current) window.clearTimeout(autoItemsTimer.current);
     autoItemsTimer.current = window.setTimeout(() => {
       void saveAllItemEdits();
@@ -1008,7 +1043,7 @@ export function QuoteWorkbenchPage() {
     return () => {
       if (autoItemsTimer.current) window.clearTimeout(autoItemsTimer.current);
     };
-  }, [canEditPrices, draft, hasPendingItemEdits, saveAllItemEdits]);
+  }, [canEditPrices, draft, hasPendingItemEdits, saveAllItemEdits, saving, savingItems, itemEdits]);
 
   const download = async (type: "pdf" | "xlsx") => {
     if (!draft) return;
@@ -1545,7 +1580,7 @@ export function QuoteWorkbenchPage() {
       <div className="quote-workbench-actions">
         <Button variant="soft" color="blue" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || converting} loading={converting} onClick={openCurrencyConversion}><CurrencyDollar />{t("币种")} · {normalizedCurrency(draft.currency)}</Button>
         <Button variant="soft" disabled={!canEditPrices || bulkSaving} onClick={() => setBulkPriceOpen(true)}><SlidersHorizontal />{t("一键调价")}</Button>
-        <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saving || savingItems ? t("正在自动保存…") : t("已自动保存")}</Text>
+        <Text size="1" color="gray" className="quote-autosave-status" aria-live="polite">{saveStatusText}</Text>
         <Button color="blue" disabled={!canEditPrices || saving || savingItems} loading={saving} onClick={() => void save()}><FloppyDisk />{activeDocument === "proforma" ? t("保存") : t("保存报价单")}</Button>
       </div>
       </section>
@@ -1559,7 +1594,7 @@ export function QuoteWorkbenchPage() {
           <Text size="1" color="gray">{activeDocument === "proforma" ? "PI" : t("报价单设置")}</Text>
           <Heading size="4">{activeDocument === "proforma" ? t("形式发票") : t("编辑报价单")}</Heading>
         </div>
-        <Badge color={saving || savingItems ? "amber" : "jade"}>{saving || savingItems ? t("保存中") : t("自动保存")}</Badge>
+        <Badge color={documentSaveState === "FAILED" ? "red" : documentSaveState === "SAVED" ? "jade" : "amber"}>{saveStatusText}</Badge>
       </div>
       {renderQuoteToolbar()}
       {renderCustomerRequest()}

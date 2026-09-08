@@ -128,8 +128,8 @@ export function PersonalCenterPage() {
   return (
     <div className="core-page personal-center-page">
       <CorePageHeading
-        eyebrow={t("个人设置")}
-        title={t("个人中心")}
+        eyebrow={t("店铺设置")}
+        title={t("客服入口")}
         description={t("集中管理常用账户入口与商品前台展示设置。")}
         actions={(
           <Button variant="soft" color="gray" onClick={() => void loadSettings()} disabled={loading || busy}>
@@ -167,7 +167,7 @@ export function PersonalCenterPage() {
                 setSaved(false);
                 setSettings({ ...settings, welcomeMessage: event.target.value });
               }} />
-              <small>{t("客户首次打开对话框时会看到这段内容；AI 自动回复暂未启用。 ")}</small>
+              <small>{t("客服欢迎语")}</small>
             </label>
 
             <div className="personal-action-settings-grid">

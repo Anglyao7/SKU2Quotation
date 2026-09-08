@@ -20,6 +20,7 @@ import {
   UploadSimple,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useCoreAuth } from "../AuthContext";
 import { ToastNotice } from "../ToastContext";
@@ -104,6 +105,9 @@ function completedSkuCount(job?: CatalogTranslationJob) {
 }
 
 export function LanguagePackagesPage() {
+  const [searchParams] = useSearchParams();
+  const requestedTenant = searchParams.get("tenant");
+  const requestedLanguage = searchParams.get("language");
   const { hasPermission } = useCoreAuth();
   const { t, locale: uiLocale } = useLocale();
   const automationCopy = automaticTranslationCopy(uiLocale);
@@ -112,7 +116,11 @@ export function LanguagePackagesPage() {
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [merchantsLoading, setMerchantsLoading] = useState(true);
   const [merchantsError, setMerchantsError] = useState("");
-  const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>("en-US");
+  const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>(() => TARGET_LANGUAGES.find((language) => language.code === requestedLanguage)?.code ?? "en-US");
+  useEffect(() => {
+    const requested = TARGET_LANGUAGES.find((language) => language.code === requestedLanguage);
+    if (requested) setSelectedLocale(requested.code);
+  }, [requestedLanguage]);
   const [status, setStatus] = useState<CatalogTranslationStatus>();
   const [job, setJob] = useState<CatalogTranslationJob>();
   const [automation, setAutomation] = useState<CatalogTranslationAutomation>();
@@ -149,13 +157,14 @@ export function LanguagePackagesPage() {
       .then((rows) => {
         if (!active) return;
         const available = rows.filter((tenant) => (
-          tenant.identity_code !== "ADMIN" && tenant.status !== "archived"
+          tenant.status !== "archived"
         ));
         setMerchants(available);
         const remembered = window.localStorage.getItem(
           TRANSLATION_TENANT_STORAGE_KEY,
         );
-        const initial = available.find((tenant) => tenant.id === remembered)
+        const initial = available.find((tenant) => tenant.id === requestedTenant)
+          ?? available.find((tenant) => tenant.id === remembered)
           ?? available.find((tenant) => tenant.status === "active")
           ?? available[0];
         setSelectedTenantId(initial?.id ?? "");
@@ -173,7 +182,7 @@ export function LanguagePackagesPage() {
     return () => {
       active = false;
     };
-  }, [t]);
+  }, [t, requestedTenant]);
 
   const selectedStatus = status?.targetLocale === selectedLocale
     ? status
@@ -812,7 +821,7 @@ export function LanguagePackagesPage() {
       ) : null}
 
       {selectedTenantId ? <AutomaticTranslationControls
-        key={`${selectedTenantId}:${selectedLocale}`}
+        key={`automation:${selectedTenantId}:${selectedLocale}`}
         tenantId={selectedTenantId}
         targetLocale={selectedLocale}
         canEdit={canEditProducts}
@@ -1054,7 +1063,7 @@ export function LanguagePackagesPage() {
 
       {selectedTenantId ? (
         <CatalogTranslationEditor
-          key={`${selectedTenantId}:${selectedLocale}`}
+          key={`editor:${selectedTenantId}:${selectedLocale}`}
           tenantId={selectedTenantId}
           locale={selectedLocale}
           packageVersion={selectedStatus?.package?.version}

@@ -49,11 +49,13 @@ export function ImageEnhancementDialog({
   targets,
   onOpenChange,
   onApplied,
+  initialTaskId,
 }: {
   open: boolean;
   targets: ImageEnhancementTarget[];
   onOpenChange: (open: boolean) => void;
   onApplied?: () => Promise<void>;
+  initialTaskId?: string;
 }) {
   const { t } = useLocale();
   const [task, setTask] = useState<ImageEnhancementTask>();
@@ -63,13 +65,14 @@ export function ImageEnhancementDialog({
   const [ratio, setRatio] = useState<ImageEnhancementRatio>("1:1");
   const [size, setSize] = useState<ImageEnhancementSize>("1K");
   const [retryDrafts, setRetryDrafts] = useState<Record<string, ImageEnhancementRetryDraft>>({});
+  const [reloadTask, setReloadTask] = useState(0);
   const targetKey = useMemo(
     () => targets.map((target) => `${target.productId}:${[...target.skuIds].sort().join(",")}`).sort().join("|")
     , [targets],
   );
 
   useEffect(() => {
-    if (!open || !targetKey) {
+    if (!open || (!targetKey && !initialTaskId)) {
       setTask(undefined);
       setError("");
       setBusy(false);
@@ -83,7 +86,15 @@ export function ImageEnhancementDialog({
     setRatio("1:1");
     setSize("1K");
     setRetryDrafts({});
-  }, [open, targetKey]);
+    if (initialTaskId) {
+      let active = true;
+      setBusy(true);
+      void getImageEnhancementTask(initialTaskId).then((next) => { if (active) setTask(next); })
+        .catch(() => { if (active) setError(t("任务状态刷新失败")); })
+        .finally(() => { if (active) setBusy(false); });
+      return () => { active = false; };
+    }
+  }, [open, targetKey, initialTaskId, reloadTask, t]);
 
   useEffect(() => {
     if (!open || !task || !["QUEUED", "RUNNING"].includes(task.status)) return;
@@ -214,7 +225,9 @@ export function ImageEnhancementDialog({
             <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}><X /></Button>
           </div>
           {error ? <div className="core-form-error" role="alert">{error}</div> : null}
-          {!task ? (
+          {!task && initialTaskId ? <div className="core-image-enhancement-settings">
+            {busy ? <Text role="status">{t("正在加载")}</Text> : <Button variant="soft" onClick={() => setReloadTask((value) => value + 1)}>{t("重试")}</Button>}
+          </div> : !task ? (
             <div className="core-image-enhancement-settings">
               <label>
                 <Text size="2" weight="medium">{t("系统提示词")}</Text>

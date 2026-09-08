@@ -5,6 +5,7 @@ import {
   Card,
   Heading,
   Text,
+  Tabs,
 } from "@radix-ui/themes";
 import {
   ArrowLeft,
@@ -142,7 +143,7 @@ export function CustomerSubaccountDetailPage() {
   const [error, setError] = useState("");
   const [actionBusy, setActionBusy] = useState(false);
   const [accessOpen, setAccessOpen] = useState(false);
-  const [pricingOpen, setPricingOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [orderDetail, setOrderDetail] = useState<CustomerSubaccountOrderDetail>();
@@ -248,7 +249,7 @@ export function CustomerSubaccountDetailPage() {
       actions={<div className="customer-subaccount-detail-actions">
         <Button asChild variant="soft" color="jade"><Link to={account.storefrontPath} target="_blank" rel="noreferrer"><Storefront />{t("打开前台")}</Link></Button>
         <Button variant="soft" color="gray" onClick={() => setAccessOpen(true)}><SlidersHorizontal />{t("权限")}</Button>
-        <Button variant="soft" color="gray" onClick={() => setPricingOpen(true)}><CurrencyDollar />{t("价格")}</Button>
+        <Button variant="soft" color="gray" onClick={() => setActiveTab("pricing")}><CurrencyDollar />{t("价格")}</Button>
         <Button variant="soft" color="gray" onClick={() => setPasswordOpen(true)}><Key />{t("改密码")}</Button>
         <Button variant="soft" color={account.status === "active" ? "gray" : "jade"} loading={actionBusy} onClick={() => void toggleStatus()}><Power />{t(account.status === "active" ? "停用" : "重新开通")}</Button>
         <Button variant="soft" color="red" disabled={actionBusy} onClick={() => setDeleteOpen(true)}><Trash />{t("删除")}</Button>
@@ -256,6 +257,9 @@ export function CustomerSubaccountDetailPage() {
     />
     {error ? <CoreError message={error} onRetry={() => void load()} /> : null}
 
+    <Tabs.Root className="admin-subaccount-tabs" value={activeTab} onValueChange={setActiveTab}>
+      <Tabs.List><Tabs.Trigger value="overview">{t("基础信息")}</Tabs.Trigger><Tabs.Trigger value="pricing">{t("商品与价格")}</Tabs.Trigger><Tabs.Trigger value="orders">{t("客户询价")}</Tabs.Trigger></Tabs.List>
+      <Tabs.Content value="overview">
     <section className="customer-subaccount-detail-metrics" aria-label={t("子账号经营概览")}>
       <DetailMetric icon={<FileText />} label={t("累计订单")} value={t("{count} 笔", { count: account.orderCount })} note={account.lastOrderAt ? t("最近 {date}", { date: coreDate(account.lastOrderAt) }) : t("尚未提交订单")} />
       <DetailMetric icon={<CurrencyDollar />} label={t("累计询价金额")} value={money(account.orderAmount, currency)} />
@@ -289,10 +293,15 @@ export function CustomerSubaccountDetailPage() {
           <span><b>{account.categoryOverrideCount ?? 0}</b><small>{t("分类规则")}</small></span>
           <span><b>{account.skuOverrideCount ?? 0}</b><small>{t("SKU 特价")}</small></span>
         </div>
-        <Button variant="soft" onClick={() => setPricingOpen(true)}><CurrencyDollar />{t("管理价格规则")}</Button>
+        <Button variant="soft" onClick={() => setActiveTab("pricing")}><CurrencyDollar />{t("管理价格规则")}</Button>
       </Card>
     </section>
 
+      </Tabs.Content>
+      <Tabs.Content value="pricing" forceMount hidden={activeTab !== "pricing"}>
+        <SubaccountPricingDialog embedded account={account} onClose={() => setActiveTab("overview")} onSaved={(policy) => setAccount((current) => current ? { ...current, markupPercent: policy.markupPercent, overrideCount: policy.overrideCount, categoryOverrideCount: policy.categoryOverrideCount, skuOverrideCount: policy.skuOverrideCount } : current)} />
+      </Tabs.Content>
+      <Tabs.Content value="orders">
     <Card className="customer-order-panel customer-subaccount-orders-panel">
       <div className="customer-account-panel-heading">
         <div><Text size="1" color="gray">{t("订单观察")}</Text><Heading size="5">{t("该子账号带来的客户报价")}</Heading></div>
@@ -340,8 +349,9 @@ export function CustomerSubaccountDetailPage() {
       </div> : null}
     </Card>
 
+      </Tabs.Content>
+    </Tabs.Root>
     {accessOpen ? <CustomerAccountAccessDialog account={account} onClose={() => setAccessOpen(false)} onSaved={(updated) => { setAccount(updated); setAccessOpen(false); notify(t("子账号权限已更新"), { kind: "success" }); }} /> : null}
-    {pricingOpen ? <SubaccountPricingDialog account={account} onClose={() => setPricingOpen(false)} onSaved={(policy) => setAccount((current) => current ? { ...current, markupPercent: policy.markupPercent, overrideCount: policy.overrideCount, categoryOverrideCount: policy.categoryOverrideCount, skuOverrideCount: policy.skuOverrideCount } : current)} /> : null}
     {passwordOpen ? <CustomerSubaccountPasswordDialog account={account} onClose={() => setPasswordOpen(false)} /> : null}
     {orderDetail || orderDetailLoading ? <CustomerSubaccountOrderDetailDialog detail={orderDetail} loading={orderDetailLoading} onClose={() => { setOrderDetail(undefined); setOrderDetailLoading(false); }} /> : null}
 

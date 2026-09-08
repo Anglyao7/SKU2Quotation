@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { getMerchantSettings, updateMerchantSettings } from "../api";
 import { CoreError, CoreLoading } from "../CoreUi";
 import { useCoreAuth } from "../AuthContext";
+import { canManageOwnStorefront } from "../storefrontPermissions";
 import { useLocale } from "../LocaleContext";
 import { useToast } from "../ToastContext";
 import type {
@@ -47,10 +48,10 @@ function normalizedSections(sections: StorefrontFooterSection[]) {
 }
 
 export function StorefrontFooterSettings() {
-  const { hasPermission } = useCoreAuth();
+  const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const { notify } = useToast();
-  const canManage = hasPermission("system.settings_manage");
+  const canManage = canManageOwnStorefront(profile?.context.accountScope, hasPermission);
   const [merchant, setMerchant] = useState<MerchantSettings>();
   const [sections, setSections] = useState<StorefrontFooterSection[]>([]);
   const [loading, setLoading] = useState(canManage);

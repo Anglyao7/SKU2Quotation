@@ -7,10 +7,12 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,10 +25,23 @@ class StorefrontCustomPageRow(AuditTimestampMixin, Base):
 
     __tablename__ = "storefront_custom_pages"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_storefront_custom_pages_owner_slug",
             "tenant_id",
             "slug",
-            name="uq_storefront_custom_pages_tenant_slug",
+            unique=True,
+            postgresql_where=text("owner_membership_id IS NULL"),
+            sqlite_where=text("owner_membership_id IS NULL"),
+        ),
+        UniqueConstraint(
+            "tenant_id", "owner_membership_id", "slug",
+            name="uq_storefront_custom_pages_account_slug",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "owner_membership_id"],
+            ["memberships.tenant_id", "memberships.id"],
+            name="fk_storefront_custom_pages_account",
+            ondelete="RESTRICT",
         ),
         UniqueConstraint(
             "tenant_id",
@@ -50,6 +65,7 @@ class StorefrontCustomPageRow(AuditTimestampMixin, Base):
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(80), nullable=False)
+    owner_membership_id: Mapped[UUID | None] = mapped_column(nullable=True)
     slug: Mapped[str] = mapped_column(String(80), nullable=False)
     object_key: Mapped[str] = mapped_column(String(1000), nullable=False)
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)

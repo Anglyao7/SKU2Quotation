@@ -16,18 +16,20 @@ from ..repositories import catalog_share_repository as repository
 from ..repositories import public_catalog_repository
 from ..services.storefront_branding import storefront_logo_url
 from ..services.subaccount_pricing import subaccount_price_rules
+from ..services.subaccount_storefront import account_profile
 
 
-def _store_branding(tenant, profile, subaccount=None) -> dict:
+def _store_branding(session: Session, tenant, profile, subaccount=None) -> dict:
     if subaccount is not None:
         membership, user = subaccount
         if membership.tenant_id != tenant.id or not membership.storefront_slug:
             raise ApplicationError("CATALOG_SHARE_NOT_FOUND", "分享内容不存在或已失效。", kind="not_found")
+        profile = account_profile(session, profile, membership, user=user)
         return dict(
-            store_name=user.display_name or membership.storefront_slug,
+            store_name=profile.name,
             store_slug=membership.storefront_slug,
-            store_subtitle=None,
-            store_logo_url=None,
+            store_subtitle=profile.description,
+            store_logo_url=storefront_logo_url(profile),
         )
     return dict(store_name=tenant.name, store_slug=profile.slug,
                 store_subtitle=profile.description, store_logo_url=storefront_logo_url(profile))
@@ -180,7 +182,7 @@ def create_share(
 ) -> CatalogShareResponse:
     _require_permission(permissions, "product.view" if subaccount is not None else "catalog.publish")
     tenant, profile = _published_store(session, tenant_id=tenant_id)
-    branding = _store_branding(tenant, profile, subaccount)
+    branding = _store_branding(session, tenant, profile, subaccount)
     logo_url = branding["store_logo_url"]
     membership_id = subaccount[0].id if subaccount is not None else None
     _, _, hidden_ids = subaccount_price_rules(
@@ -341,7 +343,7 @@ def resolve_share(
     return _response(
         session,
         row=row,
-        **_store_branding(tenant, profile, subaccount),
+        **_store_branding(session, tenant, profile, subaccount),
         subaccount_membership_id=subaccount[0].id if subaccount is not None else None,
     )
 

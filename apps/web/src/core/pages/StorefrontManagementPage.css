@@ -44,6 +44,38 @@
 
 .storefront-catalog-settings { display: grid; gap: 16px; }
 
+.storefront-category-priority {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--gray-a4);
+  border-radius: 20px;
+  background: var(--color-panel-solid);
+}
+.storefront-category-priority h3 { margin: 0 0 6px; font: 600 18px/1.25 var(--font-display); }
+.storefront-category-priority p { margin: 0; color: var(--gray-10); font-size: 12px; line-height: 1.6; }
+.storefront-category-priority-controls { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(300px, 2fr); gap: 12px; }
+.storefront-category-priority-controls select {
+  min-width: 0;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--gray-a6);
+  border-radius: 6px;
+  color: var(--gray-12);
+  background: var(--color-panel-solid);
+  font: inherit;
+  font-size: 13px;
+}
+.storefront-category-priority-controls select:focus-visible { outline: 2px solid var(--accent-8); outline-offset: 2px; }
+.storefront-category-priority-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.storefront-category-priority-list li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px; border: 1px solid var(--gray-a4); border-radius: 10px; }
+.storefront-category-priority-position { display: grid; place-items: center; width: 26px; height: 26px; background: var(--accent-a3); color: var(--accent-11); border-radius: 6px; font-size: 12px; }
+.storefront-category-priority-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.storefront-category-priority-list li > div { display: flex; gap: 14px; }
+.storefront-priority-source { display: flex; justify-content: flex-end; }
+.storefront-priority-source .rt-Badge { white-space: nowrap; }
+
 .storefront-catalog-intro {
   display: flex;
   align-items: center;

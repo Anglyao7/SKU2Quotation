@@ -12,6 +12,7 @@ from .routers.legacy_operations import router as legacy_operations_router
 from .routers.product_intelligence import router as product_intelligence_router
 from .routers.product_center import router as product_center_router
 from .routers import platform_admin, platform_usage, storefront_analytics, storefront_pages
+from .routers import storefront_sorting
 from .routers.system import router as system_router
 from .routers.support import router as support_router
 from .routers.support_ai import router as support_ai_router
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
         system_router,
         storefront_analytics.router,
         storefront_pages.router,
+        storefront_sorting.router,
         support_router,
         support_ai_router,
         tags_router,

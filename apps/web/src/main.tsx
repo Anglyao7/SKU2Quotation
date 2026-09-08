@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
 import "./styles.css";
 import "./core/core.css";
+import "./core/admin-workspace.css";
 import { App } from "./App";
 import { CoreAuthProvider } from "./core/AuthContext";
 import { LocaleProvider } from "./core/LocaleContext";

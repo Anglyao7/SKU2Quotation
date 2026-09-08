@@ -19,6 +19,7 @@ from ..storefront_page_schemas import (
 from ..use_cases import storefront_pages as use_cases
 from ..use_cases import public_catalog as public_catalog_use_cases
 from .errors import application_http_error
+from .public_catalog import _catalog_subaccount
 
 router = APIRouter(tags=["storefront-pages"])
 NO_STORE_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -159,22 +160,19 @@ def get_public_storefront_page(
         "X-Content-Type-Options": "nosniff",
     })
     try:
-        alias_account = (
-            public_catalog_use_cases.public_customer_subaccount_membership_by_storefront_slug(
-                identity_session,
-                storefront_slug=tenant_slug,
-            )
+        subaccount = _catalog_subaccount(
+            identity_session, public_session=session,
+            expected_membership_id=account, storefront_slug=tenant_slug,
         )
-        if account is not None or alias_account is not None:
-            raise ApplicationError(
-                "STOREFRONT_PAGE_NOT_FOUND",
-                "Storefront page was not found.",
-                kind="not_found",
-            )
+        if subaccount is not None:
+            response.headers.update(NO_STORE_HEADERS)
+            # Validate the public account/tenant pair before reading any page.
+            public_catalog_use_cases.get_store(session, slug=tenant_slug, subaccount=subaccount)
         return use_cases.public_page(
             session,
             tenant_slug=tenant_slug,
             page_slug=page_slug,
+            owner_membership_id=subaccount[0].id if subaccount else None,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

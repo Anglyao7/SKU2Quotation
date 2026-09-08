@@ -163,7 +163,7 @@ class MerchantSettingsUpdate(BaseModel):
     storefront_locales: list[StorefrontLocale] | None = Field(
         default=None,
         min_length=1,
-        max_length=8,
+        max_length=10,
     )
     storefront_default_locale: StorefrontLocale | None = None
     storefront_footer_sections: list[StorefrontFooterSection] | None = Field(

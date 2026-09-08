@@ -11819,6 +11819,56 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         str(alpha_product_id),
     }
 
+    # Product-first bulk moves must replace all memberships, not append to them.
+    move_product = client.post(
+        "/api/v1/skus/batch-update-category",
+        json={
+            "sku_ids": [str(alpha_product_id)],
+            "category_ids": [str(target_category_id)],
+            "mode": "REPLACE",
+        },
+    )
+    assert move_product.status_code == 200, move_product.text
+    assert move_product.json()["affected_product_count"] == 1
+    with SessionLocal() as session:
+        alpha = session.get(ProductRow, alpha_product_id)
+        zulu = session.get(ProductRow, zulu_product_id)
+        assert alpha.category_id == target_category_id
+        assert zulu.category_id == source_category_id
+        assert session.scalar(
+            select(ProductCategoryMembershipRow).where(
+                ProductCategoryMembershipRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductCategoryMembershipRow.product_id == alpha_product_id,
+            )
+        ) is None
+    for endpoint, params in [
+        ("/api/v1/product-center/products", {"q": suffix, "category_id": str(source_category_id)}),
+        ("/api/store/demo/products", {"category": f"Bulk Source {suffix}", "include_facets": "false"}),
+    ]:
+        old_category = client.get(endpoint, params=params)
+        assert old_category.status_code == 200, old_category.text
+        assert {item["id"] for item in old_category.json()["items"]} == {str(zulu_product_id)}
+
+    # Multiple selected destinations are retained without duplicating products.
+    move_multiple = client.post(
+        "/api/v1/skus/batch-update-category",
+        json={
+            "sku_ids": [str(alpha_product_id)],
+            "category_ids": [str(source_category_id), str(target_category_id)],
+            "mode": "REPLACE",
+        },
+    )
+    assert move_multiple.status_code == 200, move_multiple.text
+    replaced_products = client.get("/api/v1/product-center/products", params={"q": suffix})
+    assert replaced_products.status_code == 200, replaced_products.text
+    assert {item["id"] for item in replaced_products.json()["items"]} == {
+        str(alpha_product_id), str(zulu_product_id),
+    }
+    replaced_alpha = next(item for item in replaced_products.json()["items"] if item["id"] == str(alpha_product_id))
+    assert {item["id"] for item in replaced_alpha["categories"]} == {
+        str(source_category_id), str(target_category_id),
+    }
+
     pin_later_category = client.post(
         "/api/v1/skus/batch-update-pinned",
         json={"sku_ids": [str(alpha_sku_id)], "pinned": True},
@@ -11869,6 +11919,15 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         },
     )
     assert move_back.status_code == 200, move_back.text
+    with SessionLocal() as session:
+        alpha = session.get(ProductRow, alpha_product_id)
+        assert alpha.category_id == source_category_id
+        assert session.scalar(
+            select(ProductCategoryMembershipRow).where(
+                ProductCategoryMembershipRow.tenant_id == DEFAULT_TENANT_ID,
+                ProductCategoryMembershipRow.product_id == alpha_product_id,
+            )
+        ) is None
 
     pin = client.post(
         "/api/v1/skus/batch-update-pinned",
@@ -11992,6 +12051,72 @@ def test_batch_merchandising_updates_category_pin_status_and_storefront_order() 
         session.commit()
 
 
+def test_storefront_category_priorities_cover_descendants_and_additional_memberships() -> None:
+    suffix = uuid4().hex[:8]
+    root, child, other = uuid4(), uuid4(), uuid4()
+    public = client.get("/api/store/demo/products", params={"page_size": 100}).json()
+    ids = [UUID(item["id"]) for item in public["items"][:3]]
+    assert len(ids) == 3
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        original_config, original_hot = profile.storefront_sorting_config, profile.hot_products_enabled
+        profile.hot_products_enabled = False
+        profile.storefront_sorting_config = {"priority_category_ids": []}
+        products = [session.get(ProductRow, value) for value in ids]
+        original_products = {row.id: (row.category_id, row.storefront_pinned_at) for row in products}
+        session.add_all([
+            ProductCategoryRow(id=root, tenant_id=DEFAULT_TENANT_ID, name=f"Priority {suffix}", path=f"Priority {suffix}", code=f"PR-{suffix}", status="ACTIVE", sort_order=9000),
+            ProductCategoryRow(id=other, tenant_id=DEFAULT_TENANT_ID, name=f"Other {suffix}", path=f"Other {suffix}", code=f"OT-{suffix}", status="ACTIVE", sort_order=8000),
+        ])
+        session.flush()
+        session.add(ProductCategoryRow(id=child, parent_id=root, tenant_id=DEFAULT_TENANT_ID, name="Child", path=f"Priority {suffix}/Child", code=f"CH-{suffix}", status="ACTIVE"))
+        session.flush()
+        for index, row in enumerate(products):
+            row.category_id = child if index == 1 else other
+            row.storefront_pinned_at = None
+        session.add(ProductCategoryMembershipRow(tenant_id=DEFAULT_TENANT_ID, product_id=ids[2], category_id=child))
+        session.commit()
+    try:
+        baseline = client.get("/api/store/demo/products", params={"page_size": 100}).json()
+        baseline_category = client.get("/api/store/demo/products", params={"category": f"Other {suffix}", "page_size": 100}).json()["items"]
+        for ordering, expected in (([root, other], {ids[1], ids[2]}), ([other, root], {ids[0], ids[2]})):
+            response = client.patch("/api/v1/storefront/sorting", json={"priority_category_ids": [str(value) for value in ordering]})
+            assert response.status_code == 200, response.text
+            assert response.json()["priority_category_ids"] == [str(value) for value in ordering]
+            public_after = client.get("/api/store/demo/products", params={"page_size": 100}).json()
+            ordered_ids = [UUID(item["id"]) for item in public_after["items"]]
+            assert set(ordered_ids[:2]) == expected
+            assert len(ordered_ids) == len(set(ordered_ids))
+            assert public_after["categories"] == baseline["categories"]
+            editor = client.get("/api/v1/storefront/sorting/products", params={"page_size": 100})
+            assert editor.status_code == 200, editor.text
+            assert [item["id"] for item in editor.json()["items"]] == [str(value) for value in ordered_ids]
+            first_page = client.get("/api/v1/storefront/sorting/products", params={"page_size": 1}).json()["items"]
+            second_page = client.get("/api/v1/storefront/sorting/products", params={"page_size": 1, "page": 2}).json()["items"]
+            assert [first_page[0]["id"], second_page[0]["id"]] == [str(value) for value in ordered_ids[:2]]
+            # Category browsing and navigation retain their independent order.
+            category_after = client.get("/api/store/demo/products", params={"category": f"Other {suffix}", "page_size": 100}).json()["items"]
+            assert [item["id"] for item in category_after] == [item["id"] for item in baseline_category]
+        invalid = client.patch("/api/v1/storefront/sorting", json={"priority_category_ids": [str(uuid4())]})
+        assert invalid.status_code == 409, invalid.text
+        assert client.get("/api/v1/storefront/sorting").json()["priority_category_ids"] == [str(other), str(root)]
+        assert client.patch("/api/v1/storefront/sorting", json={"priority_category_ids": [str(root), str(root)]}).json()["priority_category_ids"] == [str(root)]
+        assert client.patch("/api/v1/storefront/sorting", json={"priority_category_ids": []}).status_code == 200
+        assert [item["id"] for item in client.get("/api/store/demo/products", params={"page_size": 100}).json()["items"]] == [item["id"] for item in baseline["items"]]
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            profile.storefront_sorting_config, profile.hot_products_enabled = original_config, original_hot
+            for product_id, (category_id, pin) in original_products.items():
+                row = session.get(ProductRow, product_id)
+                row.category_id, row.storefront_pinned_at = category_id, pin
+            session.flush()
+            session.execute(delete(ProductCategoryMembershipRow).where(ProductCategoryMembershipRow.category_id == child))
+            session.execute(delete(ProductCategoryRow).where(ProductCategoryRow.id == child))
+            session.execute(delete(ProductCategoryRow).where(ProductCategoryRow.id.in_([root, other])))
+            session.commit()
+
+
 def test_hot_product_merchandising_uses_recent_views_and_submitted_quotes() -> None:
     suffix = uuid4().hex[:8].upper()
     category_id = uuid4()
@@ -12014,6 +12139,8 @@ def test_hot_product_merchandising_uses_recent_views_and_submitted_quotes() -> N
         profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
         assert profile is not None
         original_hot_products_enabled = bool(profile.hot_products_enabled)
+        original_sorting_config = profile.storefront_sorting_config
+        profile.storefront_sorting_config = {}
         profile.hot_products_enabled = True
         session.add(
             ProductCategoryRow(
@@ -12183,11 +12310,47 @@ def test_hot_product_merchandising_uses_recent_views_and_submitted_quotes() -> N
         pinned_names = [item["name"] for item in pinned_listing.json()["items"]]
         assert pinned_names.index(alpha_name) < pinned_names.index(ordered_name)
         assert pinned_names.index(ordered_name) < pinned_names.index(viewed_name)
+
+        from app.repositories import public_catalog_repository as sorting_repository
+        with SessionLocal() as session:
+            assert sorting_repository.hot_product_candidates(session, tenant_id=DEFAULT_TENANT_ID, now=now, excluded_product_ids=set(), limit=1) == [ordered_product_id]
+            assert sorting_repository.hot_product_candidates(session, tenant_id=DEFAULT_TENANT_ID, now=now, excluded_product_ids={ordered_product_id}, limit=1) == [viewed_product_id]
+            candidates = sorting_repository.hot_product_candidates(session, tenant_id=DEFAULT_TENANT_ID, now=now, excluded_product_ids=set(), limit=20)
+            assert alpha_product_id not in candidates  # no views or submitted inquiries
+
+        # Editor and public use one global ordering, before pagination.
+        editor = client.get("/api/v1/storefront/sorting/products", params={"q": suffix, "page_size": 2})
+        assert editor.status_code == 200, editor.text
+        assert editor.json()["total"] == 3
+        assert [row["id"] for row in editor.json()["items"]] == [str(alpha_product_id), str(ordered_product_id)]
+        assert [row["priority_source"] for row in editor.json()["items"]] == ["MANUAL", "HOT"]
+        assert all(row["is_prioritized"] for row in editor.json()["items"])
+        page_two = client.get("/api/v1/storefront/sorting/products", params={"q": suffix, "page_size": 2, "page": 2})
+        assert [row["id"] for row in page_two.json()["items"]] == [str(viewed_product_id)]
+        # Unchecking an automatic pick persists even though ProductRow was not pinned.
+        unpin = client.post("/api/v1/products/batch-update-pinned", json={"product_ids": [str(ordered_product_id)], "pinned": False})
+        assert unpin.status_code == 200, unpin.text
+        for enabled in (True, False, True):
+            updated = client.patch("/api/v1/me/merchant", json={"hot_products_enabled": enabled})
+            assert updated.status_code == 200, updated.text
+            rows = client.get("/api/v1/storefront/sorting/products", params={"q": suffix}).json()["items"]
+            by_id = {row["id"]: row for row in rows}
+            assert by_id[str(alpha_product_id)]["is_prioritized"] is True
+            assert by_id[str(alpha_product_id)]["priority_source"] == "MANUAL"
+            assert by_id[str(ordered_product_id)]["is_prioritized"] is False
+            assert by_id[str(viewed_product_id)]["is_prioritized"] is enabled
+        public_after = client.get("/api/store/demo/products", params={"page_size": 100, "include_facets": "false"}).json()["items"]
+        assert [row["id"] for row in public_after if row["id"] in {str(value) for value in product_ids}] == [str(alpha_product_id), str(viewed_product_id), str(ordered_product_id)]
+        repin = client.post("/api/v1/products/batch-update-pinned", json={"product_ids": [str(ordered_product_id)], "pinned": True})
+        assert repin.status_code == 200, repin.text
+        rows = client.get("/api/v1/storefront/sorting/products", params={"q": suffix}).json()["items"]
+        assert next(row for row in rows if row["id"] == str(ordered_product_id))["priority_source"] == "MANUAL"
     finally:
         with SessionLocal() as session:
             profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
             assert profile is not None
             profile.hot_products_enabled = original_hot_products_enabled
+            profile.storefront_sorting_config = original_sorting_config
             session.execute(
                 delete(PublicQuoteDraftItemRow).where(
                     PublicQuoteDraftItemRow.quote_draft_id == quote_id
@@ -12207,6 +12370,7 @@ def test_hot_product_merchandising_uses_recent_views_and_submitted_quotes() -> N
                 )
             )
             session.execute(delete(SkuRow).where(SkuRow.id.in_(sku_ids)))
+            session.execute(delete(ProductAuditEventRow).where(ProductAuditEventRow.product_id.in_(product_ids)))
             session.execute(delete(ProductRow).where(ProductRow.id.in_(product_ids)))
             session.execute(
                 delete(ProductCategoryRow).where(ProductCategoryRow.id == category_id)
@@ -24532,6 +24696,192 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                 },
             )
             assert login.status_code == 401, login.text
+
+
+def test_subaccounts_manage_independent_storefronts_with_shared_language_packs(monkeypatch: pytest.MonkeyPatch) -> None:
+    suffix = uuid4().hex[:10]
+    accounts = []
+    for label in ("first", "second"):
+        created = client.post("/api/v1/customer-accounts", json={
+            "display_name": f"{label} reseller {suffix}",
+            "login_identifier": f"{label}-{suffix}", "password": "975310",
+            "email": f"{label}-{suffix}@storefront.test",
+            "modules": ["products", "quotations"],
+        })
+        assert created.status_code == 201, created.text
+        accounts.append(created.json())
+    original = client.get("/api/v1/me/merchant").json()
+    parent_sorting = client.get("/api/v1/storefront/sorting").json()
+    parent_page = client.post("/api/v1/storefront/pages", data={"title": "Parent only", "slug": f"shared-{suffix}"},
+                              files={"html_file": ("page.html", b"<main>Parent private branding</main>", "text/html")})
+    assert parent_page.status_code == 201, parent_page.text
+    pack_id = uuid4()
+    payload = gzip.compress(json.dumps({"locale": "fr", "products": {"example": {"name": "Produit"}}}).encode())
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        original_locales, original_default = profile.storefront_locales, profile.storefront_default_locale
+        profile.storefront_locales, profile.storefront_default_locale = ["zh-CN"], "zh-CN"
+        session.add(CatalogLanguagePackRow(
+            id=pack_id, tenant_id=DEFAULT_TENANT_ID, source_locale="zh-CN", target_locale="fr",
+            version=1, object_key=f"test-shared-{suffix}.gz", content_sha256="a" * 64,
+            source_digest="b" * 64, storage_fingerprint="c" * 64, byte_size=len(payload),
+            provider="test", provider_version="test", source_cutoff_at=datetime.now(UTC), published_at=datetime.now(UTC),
+        ))
+        session.commit()
+    from app.use_cases import catalog_translations as translations
+    monkeypatch.setattr(translations, "configured_language_package_storage", lambda: SimpleNamespace(get=lambda _key: payload))
+    try:
+        with monkeypatch.context() as auth_environment:
+            auth_environment.setenv("AUTH_TEST_BYPASS", "false")
+            headers = []
+            for account in accounts:
+                login = client.post("/api/v1/auth/login", json={"grant_type": "password", "identifier": account["login_identifier"], "password": "975310"})
+                assert login.status_code == 200, login.text
+                assert "system.settings_manage" not in login.json()["data"]["permissions"]
+                headers.append({"Authorization": "Bearer " + login.json()["data"]["access_token"]})
+            first, second = headers
+            initial = client.get("/api/v1/me/merchant", headers=first)
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["name"] == accounts[0]["display_name"]
+            assert initial.json()["slug"] == accounts[0]["storefront_slug"]
+            assert initial.json()["storefront_footer_sections"] == []
+            assert "fr" in initial.json()["configured_storefront_locales"]
+            assert client.get("/api/v1/storefront/pages", headers=first).json()["items"] == []
+
+            saved = client.patch("/api/v1/me/merchant", headers=first, json={
+                "name": "Independent store", "share_card_subtitle": "Our own storefront",
+                "storefront_locales": ["zh-CN", "fr"], "storefront_default_locale": "fr",
+                "hot_products_enabled": True, "storefront_exchange_rates_enabled": True,
+                "storefront_footer_sections": [{"title": "Our contact", "links": [{"label": "Email", "url": "mailto:own@storefront.test"}]}],
+                "membership_id": accounts[1]["id"],  # never a writable scope selector
+            })
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["storefront_path"] == accounts[0]["storefront_path"]
+            assert saved.json()["name"] == "Independent store"
+            persisted = client.get("/api/v1/me/merchant", headers=first).json()
+            assert persisted["storefront_default_locale"] == "fr"
+            assert persisted["hot_products_enabled"] is True
+            other = client.get("/api/v1/me/merchant", headers=second).json()
+            assert other["storefront_locales"] == ["zh-CN"]
+            assert other["name"] == accounts[1]["display_name"]
+            for field in ({"default_currency": "USD"}, {"business_mode": "EXPORT"}):
+                assert client.patch("/api/v1/me/merchant", headers=first, json=field).status_code == 403
+            invalid = client.patch("/api/v1/me/merchant", headers=first, json={"storefront_locales": ["zh-CN", "ja"]})
+            assert invalid.status_code == 409, invalid.text
+            assert "未配置" in invalid.text
+            assert client.patch("/api/v1/me/merchant", headers=first, json={"storefront_default_locale": "ja"}).status_code == 422
+            assert client.get("/api/v1/suppliers", headers=first).status_code == 403
+            assert client.get("/api/v1/product-center/products", headers=first).status_code == 200
+
+            visible = client.get(f"/api/store/{accounts[0]['storefront_slug']}/products", params={"locale": "zh-CN", "page_size": 20}).json()["items"]
+            pinned_id = visible[-1]["id"]
+            with SessionLocal() as session:
+                source_product = session.get(ProductRow, UUID(pinned_id))
+                original_pin, original_version = source_product.storefront_pinned_at, source_product.current_version
+            pin = client.post("/api/v1/products/batch-update-pinned", headers=first, json={"product_ids": [pinned_id], "pinned": True})
+            assert pin.status_code == 200, pin.text
+            assert pin.json()["affected_product_count"] == 1
+            first_cards = client.get("/api/v1/product-center/products", headers=first).json()["items"]
+            assert next(item for item in first_cards if item["id"] == pinned_id)["is_pinned"] is True
+            second_cards = client.get("/api/v1/product-center/products", headers=second).json()["items"]
+            assert next(item for item in second_cards if item["id"] == pinned_id)["is_pinned"] is False
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}/products", params={"locale": "zh-CN"}).json()["items"][0]["id"] == pinned_id
+            with SessionLocal() as session:
+                source_product = session.get(ProductRow, UUID(pinned_id))
+                assert (source_product.storefront_pinned_at, source_product.current_version) == (original_pin, original_version)
+            assert client.post("/api/v1/products/batch-update-pinned", headers=first, json={"product_ids": [str(uuid4())], "pinned": True}).json()["failed_count"] == 1
+
+            sibling_sorting = client.get("/api/v1/storefront/sorting", headers=second).json()
+            chosen_category = parent_sorting["categories"][-1]["id"]
+            ordered = client.patch("/api/v1/storefront/sorting", headers=first, json={"priority_category_ids": [chosen_category]})
+            assert ordered.status_code == 200, ordered.text
+            assert ordered.json()["priority_category_ids"] == [chosen_category]
+            assert client.get("/api/v1/storefront/sorting", headers=second).json() == sibling_sorting
+            own_products = client.get("/api/v1/storefront/sorting/products", headers=first, params={"page_size": 100})
+            assert own_products.status_code == 200, own_products.text
+            assert own_products.json()["items"][0]["id"] == pinned_id
+            assert own_products.json()["items"][0]["priority_source"] == "MANUAL"
+            assert all("supplier" not in row and "cost" not in row for row in own_products.json()["items"])
+            assert client.post("/api/v1/products/batch-update-pinned", headers=first, json={"product_ids": [pinned_id], "pinned": False}).status_code == 200
+            # A pin change must preserve the independent category preference.
+            assert client.get("/api/v1/storefront/sorting", headers=first).json()["priority_category_ids"] == [chosen_category]
+
+            child_pages = []
+            for index, header in enumerate(headers):
+                created_page = client.post("/api/v1/storefront/pages", headers=header,
+                    data={"title": f"Own page {index}", "slug": f"shared-{suffix}"},
+                    files={"html_file": ("page.html", f"<main>Own page {index}</main>".encode(), "text/html")})
+                assert created_page.status_code == 201, created_page.text
+                child_pages.append(created_page.json())
+            listing = client.get("/api/v1/storefront/pages", headers=first).json()
+            assert [row["id"] for row in listing["items"]] == [child_pages[0]["id"]]
+            for target in (parent_page.json(), child_pages[1]):
+                endpoint = f"/api/v1/storefront/pages/{target['id']}"
+                assert client.patch(endpoint, headers=first, json={"title": "Not mine", "expected_version": target["version"]}).status_code == 404
+                assert client.delete(endpoint, headers=first).status_code == 404
+                assert client.put(endpoint + "/html", headers=first, data={"expected_version": target["version"]},
+                    files={"html_file": ("page.html", b"<main>Not mine</main>", "text/html")}).status_code == 404
+            assert client.patch(f"/api/v1/storefront/pages/{child_pages[0]['id']}", headers=first,
+                                json={"title": "Own updated", "expected_version": 1}).status_code == 200
+            logo_bytes = BytesIO()
+            Image.new("RGB", (20, 20), "green").save(logo_bytes, format="PNG")
+            logo = client.post("/api/v1/me/merchant/logo", headers=first, files={"logo": ("logo.png", logo_bytes.getvalue(), "image/png")})
+            assert logo.status_code == 200, logo.text
+            assert accounts[0]["storefront_slug"] in logo.json()["logo_url"]
+            assert client.get(logo.json()["logo_url"]).status_code == 200
+            assert client.get("/api/v1/me/merchant", headers=second).json()["logo_url"] is None
+            share = client.post("/api/v1/catalog-shares", headers=first, json={"target_type": "PRODUCTS", "product_ids": [pinned_id]})
+            assert share.status_code == 201, share.text
+            assert share.json()["store_name"] == "Independent store"
+            assert share.json()["store_logo_url"] == logo.json()["logo_url"]
+
+            store = client.get(f"/api/store/{accounts[0]['storefront_slug']}")
+            assert store.status_code == 200, store.text
+            public = store.json()
+            assert public["locale"] == "fr"
+            assert public["name"] == "Independent store"
+            assert public["available_locales"] == ["zh-CN", "fr"]
+            assert public["hot_products_enabled"] is True
+            assert public["exchange_rates_enabled"] is True
+            assert public["footer_sections"][0]["title"] == "Our contact"
+            assert [page["title"] for page in public["custom_pages"]] == ["Own updated"]
+            assert public["custom_pages"][0]["path"].startswith(accounts[0]["storefront_path"] + "/pages/")
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}/pages/shared-{suffix}").json()["html"] == "<main>Own page 0</main>"
+            assert client.get(f"/api/store/{accounts[1]['storefront_slug']}/pages/shared-{suffix}").json()["html"] == "<main>Own page 1</main>"
+            assert client.get(f"/api/store/demo/pages/shared-{suffix}").json()["html"] == "<main>Parent private branding</main>"
+            assert client.get(f"/api/store/demo/pages/shared-{suffix}", params={"account": accounts[0]["id"]}).json()["html"] == "<main>Own page 0</main>"
+            # Parent's language menu is independent; the same tenant's published
+            # package must still be downloadable through the reseller's URL.
+            assert client.get("/api/store/demo/language-packages/fr").status_code == 404
+            descriptor = client.get(f"/api/store/{accounts[0]['storefront_slug']}/language-packages/fr")
+            assert descriptor.status_code == 200, descriptor.text
+            assert descriptor.json()["version"] == 1
+            assert accounts[0]["storefront_slug"] in descriptor.json()["download_url"]
+            download = client.get(descriptor.json()["download_url"])
+            assert download.status_code == 200, download.text
+            assert download.json()["products"]["example"]["name"] == "Produit"
+            assert client.get(f"/api/store/{accounts[1]['storefront_slug']}/language-packages/fr").status_code == 404
+            assert client.get("/api/store/demo").json()["available_locales"] == ["zh-CN"]
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}/products", params={"locale": "fr"}).status_code == 200
+            # A subsequent publisher update is shared immediately, not copied.
+            with SessionLocal() as session:
+                session.get(CatalogLanguagePackRow, pack_id).version = 2
+                session.commit()
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}/language-packages/fr").json()["version"] == 2
+            assert client.patch("/api/v1/me/merchant", headers=first, json={"storefront_locales": ["zh-CN"]}).status_code == 200
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}").json()["locale"] == "zh-CN"
+            assert client.get(f"/api/store/{accounts[0]['storefront_slug']}/language-packages/fr").status_code == 404
+        assert client.get("/api/v1/storefront/sorting").json() == parent_sorting
+        parent_after = client.get("/api/v1/me/merchant").json()
+        for field in ("name", "slug", "logo_url", "default_currency", "hot_products_enabled", "storefront_footer_sections"):
+            assert parent_after[field] == original[field]
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            profile.storefront_locales, profile.storefront_default_locale = original_locales, original_default
+            session.execute(delete(CatalogLanguagePackRow).where(CatalogLanguagePackRow.id == pack_id))
+            session.commit()
+        client.delete(f"/api/v1/storefront/pages/{parent_page.json()['id']}")
 
 
 def test_customer_subaccount_permission_resolution_uses_business_session(

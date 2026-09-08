@@ -6,6 +6,7 @@
 
 | 文档 | 用途 | 状态 |
 |---|---|---|
+| [后台操作整理](./BACKEND_USABILITY_2026-09-07.md) | 桌面导航、客户询价、商品库、子账号、任务记录与保存反馈 | 本地实现，待合并发布 |
 | [性能与商家公告](./PERFORMANCE_AND_ANNOUNCEMENTS.md) | 登录、商品加载、页面切换优化；公告发布与排障 | 当前 |
 | [外部商品图片迁移](./EXTERNAL_PRODUCT_IMAGE_MIGRATION.md) | 把历史第三方图片迁入自己的对象存储 | 当前 |
 | [图床、CDN 与独立域名](./FUTURE_INFRASTRUCTURE_ROADMAP.md) | TB 级图片、静态加速和商家自有域名 | 后续规划 |

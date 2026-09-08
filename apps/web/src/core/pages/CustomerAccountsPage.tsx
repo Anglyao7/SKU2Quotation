@@ -52,6 +52,7 @@ import {
 } from "../api";
 import { CoreEmpty, CoreError, CoreLoading, CorePageHeading, coreDate } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import { useUnsavedChanges } from "../UnsavedChanges";
 import { useToast } from "../ToastContext";
 import { money } from "../../lib/format";
 import type {
@@ -174,7 +175,7 @@ export function CustomerAccountsPage() {
       <Card className="customer-account-panel">
         <div className="customer-account-panel-heading">
           <div><Text size="1" color="gray">{t("账号列表")}</Text><Heading size="5">{t("子账号列表")}</Heading></div>
-          <Text size="2" color="gray">{t("点击子账号进入详情，查看资料、价格和该账号订单")}</Text>
+
         </div>
         {data?.accounts.length ? <div className="customer-account-list">
           {data.accounts.map((account) => <article className="customer-account-row" key={account.id}>
@@ -211,17 +212,7 @@ export function CustomerAccountsPage() {
         />}
       </Card>
 
-      <Card className="customer-account-side-note">
-        <span className="customer-account-side-icon"><Eye size={24} /></span>
-        <Text size="1" color="gray">{t("主账号管理范围")}</Text>
-        <Heading size="4">{t("价格、商品和订单一处管理")}</Heading>
-        <Text size="2" color="gray">{t("主账号可以设置统一加价、单品价格，并查看每个子账号的访问与成交数据。")}</Text>
-        <ul>
-          <li>{t("子账号使用独立工作台，可处理自己的询价；原价格、供应商与供应链不显示")}</li>
-          <li>{t("订单和金额按照提交账号自动归属")}</li>
-          <li>{t("停用后立即失去门户访问")}</li>
-        </ul>
-      </Card>
+
     </section>
 
     {editorOpen ? <CustomerAccountCreateDialog
@@ -480,8 +471,10 @@ export function SubaccountPricingDialog({
   account,
   onClose,
   onSaved,
+  embedded = false,
 }: {
   account: CustomerSubaccount;
+  embedded?: boolean;
   onClose: () => void;
   onSaved: (policy: { markupPercent: number; overrideCount: number; categoryOverrideCount?: number; skuOverrideCount?: number }) => void;
 }) {
@@ -553,6 +546,7 @@ export function SubaccountPricingDialog({
     return Number(rawValue) !== savedValue;
   });
   const hasPricingChanges = hasGlobalPricingChange || hasCategoryPricingChange;
+  useUnsavedChanges(!loading && (hasPricingChanges || saving));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -746,10 +740,9 @@ export function SubaccountPricingDialog({
     }
   };
 
-  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}>
-    <Dialog.Content className="customer-account-dialog subaccount-pricing-dialog">
-      <Dialog.Title>{t("{name} 的价格设置", { name: account.displayName })}</Dialog.Title>
-      <Dialog.Description>{t("最终价格按 SKU 计算：SKU 特价 > 商品规则 > 分类规则 > 统一加价。子账号只会看到最终销售价。")}</Dialog.Description>
+  const content = <>
+      {embedded ? <Heading size="5">{t("{name} 的价格设置", { name: account.displayName })}</Heading> : <Dialog.Title>{t("{name} 的价格设置", { name: account.displayName })}</Dialog.Title>}
+      <Text size="2" color="gray" className="subaccount-pricing-description">{t("最终价格按 SKU 计算：SKU 特价 > 商品规则 > 分类规则 > 统一加价。子账号只会看到最终销售价。")}</Text>
       <section className="subaccount-pricing-policy">
         <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkupDraft(event.target.value)} /></label>
         <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价；整体和分类改动统一保存。", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
@@ -835,8 +828,9 @@ export function SubaccountPricingDialog({
         </div>
       </div> : null}
       <div className="core-dialog-actions"><Button variant="soft" color="gray" disabled={saving} onClick={onClose}>{t("关闭")}</Button></div>
-    </Dialog.Content>
-  </Dialog.Root>;
+  </>;
+  if (embedded) return <section className="admin-pricing-workspace">{content}</section>;
+  return <Dialog.Root open onOpenChange={(open) => { if (!open) onClose(); }}><Dialog.Content className="customer-account-dialog subaccount-pricing-dialog" aria-describedby={undefined}>{content}</Dialog.Content></Dialog.Root>;
 }
 
 function SubaccountPricingRow({

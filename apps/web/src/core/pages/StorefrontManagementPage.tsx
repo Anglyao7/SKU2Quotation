@@ -25,13 +25,13 @@ export function StorefrontManagementPage() {
     <div className="core-page storefront-management-page">
       <CorePageHeading
         eyebrow={t("客户前台")}
-        title={t("前台管理")}
+        title={t("页面与展示")}
         description={t("统一管理客户在商品前台看到的商家品牌内容、导航与联系入口。")}
       />
       <Tabs.Root className="storefront-management-tabs" value={activeTab} onValueChange={changeTab}>
         <Tabs.List aria-label={t("前台管理功能")}>
           <Tabs.Trigger value="pages"><FileCode />{t("页面与导航")}</Tabs.Trigger>
-          <Tabs.Trigger value="catalog"><Storefront />{t("商品展示")}</Tabs.Trigger>
+          <Tabs.Trigger value="catalog"><Storefront />{t("商品排序")}</Tabs.Trigger>
           <Tabs.Trigger value="footer"><LinkSimple />{t("页脚与联系")}</Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="pages" className="storefront-management-tab-panel">

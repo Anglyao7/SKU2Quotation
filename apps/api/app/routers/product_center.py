@@ -986,6 +986,11 @@ def batch_update_products_pinned(
 
     context = _context(session)
     try:
+        if context.account_scope == "CUSTOMER_SUBACCOUNT":
+            from ..services.subaccount_storefront import update_pinned_products
+            return SkuBatchOperationResponse(**update_pinned_products(
+                session, context=context, product_ids=request.product_ids, pinned=request.pinned,
+            ))
         result = use_cases.batch_update_products_pinned(
             session,
             tenant_id=context.tenant_id,

@@ -2761,6 +2761,9 @@ def _resolve_public_language_pack(
             "Store was not found.",
             kind="not_found",
         )
+    from ..services.subaccount_storefront import public_account_profile
+
+    profile = public_account_profile(session, profile, slug=slug)
     locale = normalize_storefront_locale(target_locale)
     source_locale = normalize_storefront_locale(tenant.default_locale) or _SOURCE_LOCALE
     enabled = effective_storefront_locales(
@@ -2798,7 +2801,7 @@ def public_language_pack(
         slug=slug,
         target_locale=target_locale,
     )
-    response = _language_pack_response(pack, tenant_slug=tenant.slug)
+    response = _language_pack_response(pack, tenant_slug=slug)
     assert response is not None
     return response
 
