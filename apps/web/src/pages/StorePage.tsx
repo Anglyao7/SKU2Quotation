@@ -13,12 +13,10 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
-  Columns,
   Fire,
   FolderOpen,
   ImageSquare,
   MagnifyingGlass,
-  Rows,
   ShareNetwork,
   Storefront as StoreIcon,
   WarningCircle,
@@ -299,9 +297,9 @@ export function StorePage() {
   const [imageSearchState, setImageSearchState] = useState<StorefrontImageSearchState>(
     EMPTY_IMAGE_SEARCH_STATE,
   );
-  const [categoryLayout, setCategoryLayout] = useState<"horizontal" | "vertical">(
-    initialView?.categoryLayout ?? "horizontal",
-  );
+  const [isMobileViewport, setIsMobileViewport] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+  ));
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     () => new Set(initialView?.expandedCategories ?? []),
   );
@@ -395,7 +393,6 @@ export function StorePage() {
     setPrimaryCategory(restoredView?.primaryCategory ?? "");
     setSecondaryCategory(restoredView?.secondaryCategory ?? "");
     setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
-    setCategoryLayout(restoredView?.categoryLayout ?? "horizontal");
     setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
     if (tenantChanged || accountChanged) {
       setCart(readStoreCart(storageScope));
@@ -425,6 +422,14 @@ export function StorePage() {
     setPageTransitioning(false);
     setPageTransitionError("");
   }, [accountId, loadedStore, locale, shareToken, storageScope]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const updateViewport = () => setIsMobileViewport(mediaQuery.matches);
+    updateViewport();
+    mediaQuery.addEventListener?.("change", updateViewport);
+    return () => mediaQuery.removeEventListener?.("change", updateViewport);
+  }, []);
 
   useEffect(() => {
     // Keep one marker per browser tab/session. The server deduplicates the
@@ -574,6 +579,13 @@ export function StorePage() {
       .filter(Boolean),
   )).slice(0, 5), [store.popular_search_terms]);
   const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
+  const categoryLayout: "horizontal" | "vertical" = store.category_layout_mode === "VERTICAL"
+    ? "vertical"
+    : store.category_layout_mode === "HORIZONTAL"
+      ? "horizontal"
+      : isMobileViewport
+        ? "vertical"
+        : "horizontal";
   const showCategoryShowcase = Boolean(
     !shareToken
     && !imageSearchActive
@@ -1113,34 +1125,7 @@ export function StorePage() {
                   <Text size="2" weight="medium">{t("查找商品")}</Text>
                   <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
-                <div className="filter-panel-actions">
-                  {!shareToken ? (
-                    <div className="category-layout-toggle" role="group" aria-label={t("分类展示方式")}>
-                      <Button
-                        type="button"
-                        size="1"
-                        variant={categoryLayout === "horizontal" ? "soft" : "ghost"}
-                        color={categoryLayout === "horizontal" ? "jade" : "gray"}
-                        aria-pressed={categoryLayout === "horizontal"}
-                        onClick={() => setCategoryLayout("horizontal")}
-                      >
-                        <Rows size={15} weight="duotone" />
-                        {t("横向展示")}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="1"
-                        variant={categoryLayout === "vertical" ? "soft" : "ghost"}
-                        color={categoryLayout === "vertical" ? "jade" : "gray"}
-                        aria-pressed={categoryLayout === "vertical"}
-                        onClick={() => setCategoryLayout("vertical")}
-                      >
-                        <Columns size={15} weight="duotone" />
-                        {t("竖向展示")}
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
+                <div className="filter-panel-actions" />
               </div>
               <div className="search-row">
                 <TextField.Root

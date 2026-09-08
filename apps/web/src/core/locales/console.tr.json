@@ -3844,5 +3844,13 @@
   "暂无可展示商品": "Gösterilecek ürün yok",
   "正在加载商品清单": "Ürün listesi yükleniyor",
   "正在加载商品展示设置": "Ürün gösterim ayarları yükleniyor",
-  "自动爆款排序": "Otomatik popüler ürün sıralaması"
+  "自动爆款排序": "Otomatik popüler ürün sıralaması",
+  "按设备自动": "Cihaza göre otomatik",
+  "当前设置仅影响客户前台的分类导航，不影响后台操作界面。": "Bu ayar yalnızca müşteri mağazasındaki kategori gezinmesini etkiler, yönetim panelini etkilemez.",
+  "分类展示": "Kategori görünümü",
+  "前台分类布局": "Mağaza kategori düzeni",
+  "前台展示方式保存失败，请重试。": "Mağaza görünüm modu kaydedilemedi. Lütfen tekrar deneyin.",
+  "始终横向": "Her zaman yatay",
+  "始终竖向": "Her zaman dikey",
+  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。": "Otomatik mod telefonda dikey, bilgisayarda yatay kategoriler kullanır; bir düzeni sabitleyebilirsiniz."
 }

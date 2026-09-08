@@ -2,6 +2,7 @@ import type { StorefrontLocale, TenantSubscriptionTier } from "../types";
 
 export type UiLocale = StorefrontLocale;
 export type BusinessMode = "DOMESTIC" | "EXPORT";
+export type StorefrontCategoryLayoutMode = "AUTO" | "HORIZONTAL" | "VERTICAL";
 
 export interface AuthUser {
   id: string;
@@ -64,6 +65,7 @@ export interface MerchantSettings {
   storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
   exchangeRatesEnabled: boolean;
+  storefrontCategoryLayoutMode: StorefrontCategoryLayoutMode;
   storefrontFooterSections: StorefrontFooterSection[];
 }
 

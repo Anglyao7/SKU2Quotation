@@ -124,6 +124,23 @@
 }
 
 .storefront-display-strategy-icon svg { width: 23px; height: 23px; }
+
+.storefront-category-layout-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--gray-a4);
+  border-radius: 18px;
+  background: var(--color-panel-solid);
+}
+.storefront-category-layout-settings h3 { margin: 3px 0 5px; font: 600 17px/1.25 var(--font-display); }
+.storefront-category-layout-settings p { max-width: 700px; margin: 0; color: var(--gray-10); font-size: 12px; line-height: 1.55; }
+.storefront-category-layout-options { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.storefront-category-layout-options .rt-Button { min-height: 35px; }
+.storefront-category-layout-note { grid-column: 1 / -1; display: inline-flex; align-items: center; gap: 6px; color: var(--gray-10); font-size: 11px; }
+.storefront-category-layout-note svg { width: 15px; height: 15px; color: var(--accent-11); }
 .storefront-display-strategy > div { min-width: 0; display: grid; gap: 5px; }
 .storefront-display-strategy-heading { display: flex; align-items: center; gap: 8px; }
 .storefront-display-strategy p { margin: 0; color: var(--gray-10); font-size: 12px; line-height: 1.55; }

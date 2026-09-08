@@ -39,6 +39,10 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
             "all_products_position >= 0",
             name="all_products_position_nonnegative",
         ),
+        CheckConstraint(
+            "storefront_category_layout_mode IN ('AUTO', 'HORIZONTAL', 'VERTICAL')",
+            name="storefront_category_layout_mode_allowed",
+        ),
         UniqueConstraint("slug", name="uq_tenant_public_profiles_slug"),
         Index(
             "ix_tenant_public_profiles_publication_slug",
@@ -88,6 +92,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
     storefront_exchange_rates_enabled: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
+        nullable=False,
+    )
+    storefront_category_layout_mode: Mapped[str] = mapped_column(
+        String(20),
+        default="AUTO",
         nullable=False,
     )
     ai_search_questions: Mapped[list[str]] = mapped_column(

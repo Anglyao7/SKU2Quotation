@@ -160,6 +160,7 @@ class MerchantSettingsUpdate(BaseModel):
     default_currency: str | None = Field(default=None, min_length=3, max_length=3)
     hot_products_enabled: bool | None = None
     storefront_exchange_rates_enabled: bool | None = None
+    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL"] | None = None
     storefront_locales: list[StorefrontLocale] | None = Field(
         default=None,
         min_length=1,
@@ -220,6 +221,7 @@ class MerchantSettingsUpdate(BaseModel):
             and self.default_currency is None
             and self.hot_products_enabled is None
             and self.storefront_exchange_rates_enabled is None
+            and self.storefront_category_layout_mode is None
             and self.storefront_locales is None
             and self.storefront_default_locale is None
             and self.storefront_footer_sections is None
@@ -241,6 +243,7 @@ class MerchantSettingsResponse(BaseModel):
     storefront_default_locale: StorefrontLocale
     hot_products_enabled: bool
     storefront_exchange_rates_enabled: bool
+    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL"]
     storefront_footer_sections: list[StorefrontFooterSection]
 
 

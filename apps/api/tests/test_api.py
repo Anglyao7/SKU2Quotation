@@ -1069,6 +1069,37 @@ def test_merchant_controls_catalog_exchange_rate_component() -> None:
             session.commit()
 
 
+def test_merchant_controls_responsive_storefront_category_layout() -> None:
+    with SessionLocal() as session:
+        profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+        assert profile is not None
+        original = profile.storefront_category_layout_mode
+
+    try:
+        response = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_category_layout_mode": "VERTICAL"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["storefront_category_layout_mode"] == "VERTICAL"
+
+        store = client.get("/api/store/demo")
+        assert store.status_code == 200, store.text
+        assert store.json()["category_layout_mode"] == "VERTICAL"
+
+        invalid = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_category_layout_mode": "DIAGONAL"},
+        )
+        assert invalid.status_code == 422, invalid.text
+    finally:
+        with SessionLocal() as session:
+            profile = session.get(TenantPublicProfileRow, DEFAULT_TENANT_ID)
+            assert profile is not None
+            profile.storefront_category_layout_mode = original
+            session.commit()
+
+
 def test_merchant_customizes_public_storefront_footer_links() -> None:
     sections = [
         {
@@ -23129,6 +23160,8 @@ def test_public_catalog_migration_is_reversible_on_sqlite(tmp_path: Path) -> Non
     assert profile_columns["storefront_footer_config"]["nullable"] is True
     assert "storefront_exchange_rates_enabled" in profile_columns
     assert profile_columns["storefront_exchange_rates_enabled"]["nullable"] is False
+    assert "storefront_category_layout_mode" in profile_columns
+    assert profile_columns["storefront_category_layout_mode"]["nullable"] is False
     storefront_page_columns = {
         column["name"]
         for column in inspect(upgraded_engine).get_columns("storefront_custom_pages")

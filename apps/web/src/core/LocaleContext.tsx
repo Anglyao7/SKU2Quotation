@@ -3472,6 +3472,16 @@ const english: Record<string, string> = {
   "预览商品前台": "Preview catalog",
   "正在加载商品展示设置": "Loading product display settings",
   "商品展示设置加载失败": "Could not load product display settings",
+  "分类展示": "Category display",
+  "前台分类布局": "Storefront category layout",
+  "按设备自动": "Automatic by device",
+  "始终横向": "Always horizontal",
+  "始终竖向": "Always vertical",
+  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。":
+    "Automatic mode uses vertical categories on phones and horizontal categories on computers; you can also lock one layout.",
+  "当前设置仅影响客户前台的分类导航，不影响后台操作界面。":
+    "This setting only affects category navigation on the customer storefront, not the admin workspace.",
+  "前台展示方式保存失败，请重试。": "Could not save the storefront display mode. Please try again.",
   "自动爆款排序": "Automatic bestseller ordering",
   "手动指定的商品始终排在自动爆款之前。":
     "Manually prioritized products always appear before automatic bestsellers.",

@@ -3844,5 +3844,13 @@
   "暂无可展示商品": "Aucun produit à afficher",
   "正在加载商品清单": "Chargement de la liste des produits",
   "正在加载商品展示设置": "Chargement des réglages de présentation",
-  "自动爆款排序": "Classement automatique par popularité"
+  "自动爆款排序": "Classement automatique par popularité",
+  "按设备自动": "Automatique selon l’appareil",
+  "当前设置仅影响客户前台的分类导航，不影响后台操作界面。": "Ce réglage concerne uniquement la navigation des catégories dans la boutique client, pas l’espace d’administration.",
+  "分类展示": "Affichage des catégories",
+  "前台分类布局": "Mise en page des catégories de la boutique",
+  "前台展示方式保存失败，请重试。": "Impossible d’enregistrer le mode d’affichage de la boutique. Réessayez.",
+  "始终横向": "Toujours horizontal",
+  "始终竖向": "Toujours vertical",
+  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。": "Le mode automatique utilise des catégories verticales sur mobile et horizontales sur ordinateur ; vous pouvez aussi verrouiller une mise en page."
 }

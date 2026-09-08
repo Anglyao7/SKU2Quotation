@@ -693,6 +693,7 @@ interface ApiMerchantSettings {
   storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
   storefront_exchange_rates_enabled: boolean;
+  storefront_category_layout_mode: MerchantSettings["storefrontCategoryLayoutMode"];
   storefront_footer_sections?: Array<{
     title: string;
     title_url?: string | null;
@@ -714,6 +715,7 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
     exchangeRatesEnabled: row.storefront_exchange_rates_enabled,
+    storefrontCategoryLayoutMode: row.storefront_category_layout_mode || "AUTO",
     storefrontFooterSections: row.storefront_footer_sections?.map((section) => ({
       title: section.title,
       titleUrl: defined(section.title_url),
@@ -770,6 +772,7 @@ export async function updateMerchantSettings(input: {
   storefrontDefaultLocale?: MerchantSettings["storefrontDefaultLocale"];
   hotProductsEnabled?: boolean;
   exchangeRatesEnabled?: boolean;
+  storefrontCategoryLayoutMode?: MerchantSettings["storefrontCategoryLayoutMode"];
   storefrontFooterSections?: MerchantSettings["storefrontFooterSections"];
 }): Promise<MerchantSettings> {
   const row = await request<ApiMerchantSettings>(
@@ -785,6 +788,7 @@ export async function updateMerchantSettings(input: {
         storefront_default_locale: input.storefrontDefaultLocale,
         hot_products_enabled: input.hotProductsEnabled,
         storefront_exchange_rates_enabled: input.exchangeRatesEnabled,
+        storefront_category_layout_mode: input.storefrontCategoryLayoutMode,
         storefront_footer_sections: input.storefrontFooterSections?.map((section) => ({
           title: section.title,
           title_url: section.titleUrl || null,

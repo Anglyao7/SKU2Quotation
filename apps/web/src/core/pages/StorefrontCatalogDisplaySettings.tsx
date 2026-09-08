@@ -1,5 +1,5 @@
 import { Badge, Button, Switch, Text, TextField } from "@radix-ui/themes";
-import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Fire, MagnifyingGlass, Package, PushPin, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Columns, Desktop, DeviceMobile, Fire, MagnifyingGlass, Package, PushPin, Rows, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -92,6 +92,17 @@ export function StorefrontCatalogDisplaySettings() {
     } finally { setBusy(""); }
   };
 
+  const saveCategoryLayoutMode = async (mode: MerchantSettings["storefrontCategoryLayoutMode"]) => {
+    if (!merchant || busy || !canManage || mode === merchant.storefrontCategoryLayoutMode) return;
+    setBusy("category-layout");
+    try {
+      setMerchant(await updateMerchantSettings({ storefrontCategoryLayoutMode: mode }));
+      notify(t("已保存并更新前台"), { kind: "success" });
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : t("前台展示方式保存失败，请重试。"), { kind: "error" });
+    } finally { setBusy(""); }
+  };
+
   const togglePinnedProduct = async (productId: string, pinned: boolean) => {
     if (!canEditProducts || busy) return;
     setBusy(productId);
@@ -153,6 +164,46 @@ export function StorefrontCatalogDisplaySettings() {
           </div>
           <Switch checked={merchant.hotProductsEnabled} disabled={Boolean(busy) || !canManage} onCheckedChange={(enabled) => void toggleHotProducts(enabled)} aria-label={t("爆款优先展示")} />
         </article>
+        <section className="storefront-category-layout-settings" aria-labelledby="storefront-category-layout-title">
+          <div>
+            <Text size="1" color="gray">{t("分类展示")}</Text>
+            <h3 id="storefront-category-layout-title">{t("前台分类布局")}</h3>
+            <p>{t("自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。")}</p>
+          </div>
+          <div className="storefront-category-layout-options" role="group" aria-label={t("前台分类布局") }>
+            <Button
+              type="button"
+              variant={merchant.storefrontCategoryLayoutMode === "AUTO" ? "soft" : "ghost"}
+              color={merchant.storefrontCategoryLayoutMode === "AUTO" ? "jade" : "gray"}
+              disabled={Boolean(busy) || !canManage}
+              aria-pressed={merchant.storefrontCategoryLayoutMode === "AUTO"}
+              onClick={() => void saveCategoryLayoutMode("AUTO")}
+            >
+              <DeviceMobile />{t("按设备自动")}
+            </Button>
+            <Button
+              type="button"
+              variant={merchant.storefrontCategoryLayoutMode === "HORIZONTAL" ? "soft" : "ghost"}
+              color={merchant.storefrontCategoryLayoutMode === "HORIZONTAL" ? "jade" : "gray"}
+              disabled={Boolean(busy) || !canManage}
+              aria-pressed={merchant.storefrontCategoryLayoutMode === "HORIZONTAL"}
+              onClick={() => void saveCategoryLayoutMode("HORIZONTAL")}
+            >
+              <Rows />{t("始终横向")}
+            </Button>
+            <Button
+              type="button"
+              variant={merchant.storefrontCategoryLayoutMode === "VERTICAL" ? "soft" : "ghost"}
+              color={merchant.storefrontCategoryLayoutMode === "VERTICAL" ? "jade" : "gray"}
+              disabled={Boolean(busy) || !canManage}
+              aria-pressed={merchant.storefrontCategoryLayoutMode === "VERTICAL"}
+              onClick={() => void saveCategoryLayoutMode("VERTICAL")}
+            >
+              <Columns />{t("始终竖向")}
+            </Button>
+          </div>
+          <small className="storefront-category-layout-note"><Desktop />{t("当前设置仅影响客户前台的分类导航，不影响后台操作界面。")}</small>
+        </section>
         <section className="storefront-category-priority" aria-labelledby="category-priority-title">
           <header><h3 id="category-priority-title">{t("优先分类")}</h3><p>{t("只调整全部商品中的顺序，包含子分类和额外关联分类，不改变分类导航。")}</p></header>
           <div className="storefront-category-priority-controls">
