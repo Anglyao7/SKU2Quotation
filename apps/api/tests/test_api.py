@@ -22388,6 +22388,14 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         sku.name = "MUTATED AFTER SUBMISSION"
         offer.unit_price = Decimal("9999.00")
         session.commit()
+        # Extended document exports are an Elite-only feature. This snapshot
+        # test exercises PI and packing-list rendering, so temporarily upgrade
+        # the seeded tenant and restore its original plan in the cleanup below.
+        subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+        assert subscription is not None
+        original_subscription_tier = subscription.subscription_tier
+        subscription.subscription_tier = "ELITE"
+        session.commit()
     try:
         pdf_response = client.get(draft["pdf_url"], headers=download_headers)
         assert pdf_response.status_code == 200, pdf_response.text
@@ -22622,6 +22630,9 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             assert sku is not None and offer is not None
             sku.name = original_name
             offer.unit_price = original_price
+            subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+            assert subscription is not None
+            subscription.subscription_tier = original_subscription_tier
             session.commit()
 
     forged_tenant_token = f"{uuid4()}.{raw_token.split('.', 1)[1]}"

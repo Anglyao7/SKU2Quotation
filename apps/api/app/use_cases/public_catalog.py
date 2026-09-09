@@ -27,6 +27,7 @@ from ..identity_models import (
     CustomerAccountAccessEventRow,
     MembershipRow,
     TenantRow,
+    TenantSubscriptionRow,
     UserRow,
 )
 from ..knowledge_embedding_schemas import DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS
@@ -133,6 +134,23 @@ from . import quote_templates as quote_template_use_cases
 from . import support as support_use_cases
 from . import storefront_pages as storefront_page_use_cases
 from ..services.subaccount_storefront import account_profile, public_account_profile, pinned_product_ids
+
+
+def _tenant_has_extended_quote_documents(session: Session, tenant_id: UUID) -> bool:
+    """Return whether the merchant can use documents beyond quotations."""
+
+    subscription = session.get(TenantSubscriptionRow, tenant_id)
+    return bool(subscription and subscription.subscription_tier == "ELITE")
+
+
+def _require_extended_quote_documents(session: Session, tenant_id: UUID) -> None:
+    if _tenant_has_extended_quote_documents(session, tenant_id):
+        return
+    raise ApplicationError(
+        "QUOTE_DOCUMENT_TIER_REQUIRED",
+        "当前档位仅支持报价单，形式发票、装箱单及其他单证需要 Elite 档位。",
+        kind="forbidden",
+    )
 
 
 MONEY = Decimal("0.01")
@@ -5279,6 +5297,11 @@ def update_tenant_quote_draft_settings(
         membership_id=membership_id,
         mutate=True,
     )
+    # The quotation is available to every plan. Any attempt to persist an
+    # additional trade document is gated server-side as well as in the UI so
+    # a basic-plan client cannot bypass the hidden document tabs via the API.
+    if request.proforma_invoice is not None or request.packing_list is not None:
+        _require_extended_quote_documents(session, tenant_id)
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
     profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
     if tenant is None or profile is None:
@@ -6017,6 +6040,7 @@ def get_tenant_quote_document(
     tenant_id: UUID,
     permissions: frozenset[str],
     quote_draft_id: UUID,
+    document_type: str = "quotation",
     account_scope: str = "STAFF",
     membership_id: UUID | None = None,
 ) -> PublicQuoteDocument:
@@ -6041,6 +6065,8 @@ def get_tenant_quote_document(
         membership_id=membership_id,
         mutate=False,
     )
+    if document_type != "quotation":
+        _require_extended_quote_documents(session, tenant_id)
     profile = repository.find_profile_by_tenant(session, tenant_id=tenant_id)
     seller_name = tenant.name
     seller_email = profile.contact_email if profile else None

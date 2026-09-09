@@ -38,3 +38,15 @@ export const SUBSCRIPTION_TIER_PRESENTATION: Record<
 export function subscriptionTierLabel(tier: TenantSubscriptionTier): string {
   return SUBSCRIPTION_TIER_PRESENTATION[tier].label;
 }
+
+/**
+ * The document workbench is deliberately split by plan.  Every plan can
+ * prepare a quotation; the additional trade documents are an Elite feature.
+ * Keep this check in one place so navigation and page-level guards cannot
+ * drift apart.
+ */
+export function canUseExtendedQuoteDocuments(
+  tier: TenantSubscriptionTier | null | undefined,
+): boolean {
+  return tier === "ELITE";
+}

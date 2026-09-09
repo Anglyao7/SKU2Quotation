@@ -12,6 +12,7 @@ from PIL import Image as PillowImage
 from pydantic import ValidationError
 from pypdf import PdfReader
 
+from app.domain.errors import ApplicationError
 from app.public_catalog_schemas import (
     PublicQuoteDocument,
     PublicQuoteDraftItemResponse,
@@ -33,6 +34,29 @@ from app.services.public_quote_documents import (
 from app.use_cases import public_catalog as public_catalog_use_cases
 from app.public_catalog_schemas import PublicPackingListItem, PublicPackingListSettings
 from app.services.packing_lists import default_item, dimensions, number, packing_rows, packing_settings
+
+
+class _SubscriptionLookupSession:
+    def __init__(self, tier: str):
+        self.tier = tier
+
+    def get(self, _model, _tenant_id):
+        return SimpleNamespace(subscription_tier=self.tier)
+
+
+def test_extended_quote_documents_require_elite_subscription():
+    with pytest.raises(ApplicationError) as error:
+        public_catalog_use_cases._require_extended_quote_documents(
+            _SubscriptionLookupSession("TRIAL"),
+            uuid4(),
+        )
+    assert error.value.code == "QUOTE_DOCUMENT_TIER_REQUIRED"
+    assert error.value.kind == "forbidden"
+
+    public_catalog_use_cases._require_extended_quote_documents(
+        _SubscriptionLookupSession("ELITE"),
+        uuid4(),
+    )
 
 
 def _image_bytes() -> bytes:

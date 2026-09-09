@@ -1217,6 +1217,7 @@ def download_tenant_quote_draft_pdf(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+            document_type=document_type,
             account_scope=context.account_scope,
             membership_id=context.membership_id,
         )
@@ -1258,6 +1259,7 @@ def download_tenant_quote_draft_xlsx(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             quote_draft_id=quote_draft_id,
+            document_type=document_type,
             account_scope=context.account_scope,
             membership_id=context.membership_id,
         )

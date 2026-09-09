@@ -41,6 +41,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { optionPackingQuantity } from "../../lib/cartonQuantity";
 import { storefrontText } from "../../lib/storefrontLocale";
+import { canUseExtendedQuoteDocuments } from "../../lib/subscriptionTier";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   CoreApiError,
@@ -459,8 +460,13 @@ export function QuoteWorkbenchPage() {
   const [templateId, setTemplateId] = useState<string>("");
   const [quoteNumber, setQuoteNumber] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
-  const activeDocument = quoteDocumentTab(searchParams);
+  const requestedDocument = quoteDocumentTab(searchParams);
+  const canUseExtendedDocuments = canUseExtendedQuoteDocuments(profile?.context.subscriptionTier);
+  // Fail closed while the authenticated profile is loading: only the basic
+  // quotation tab is rendered until an Elite subscription is confirmed.
+  const activeDocument = canUseExtendedDocuments ? requestedDocument : "quotation";
   const setActiveDocument = (document: QuoteDocumentTab) => {
+    if (!canUseExtendedDocuments && document !== "quotation") return;
     setSearchParams((current) => quoteDocumentSearch(current, document), { replace: true });
   };
   const [packingList, setPackingList] = useState<PackingListSettings>();
@@ -545,6 +551,12 @@ export function QuoteWorkbenchPage() {
     if (!allowed?.length) return locales;
     return locales.filter((row) => allowed.includes(row.value));
   }, [settings?.storefrontLocales]);
+
+  useEffect(() => {
+    if (!profile?.context.subscriptionTier || canUseExtendedDocuments) return;
+    if (requestedDocument === "quotation") return;
+    setSearchParams((current) => quoteDocumentSearch(current, "quotation"), { replace: true });
+  }, [canUseExtendedDocuments, profile?.context.subscriptionTier, requestedDocument, setSearchParams]);
 
   const readyTemplates = useMemo(() => templates.filter((row) => row.isReady), [templates]);
   const selectedTemplate = useMemo(
@@ -968,8 +980,8 @@ export function QuoteWorkbenchPage() {
         // A partially typed required PI field must not block unrelated
         // quotation edits. Leaving the nested object out preserves the last
         // valid PI snapshot on the server until the PI is valid again.
-        proformaInvoice: proformaIsValid ? payload.proformaInvoice : undefined,
-        packingList: packingIsValid ? payload.packingList : undefined,
+        proformaInvoice: canUseExtendedDocuments && proformaIsValid ? payload.proformaInvoice : undefined,
+        packingList: canUseExtendedDocuments && packingIsValid ? payload.packingList : undefined,
       });
       setDraft(next);
       const nextVisibleColumns = (next.visibleColumns.length ? next.visibleColumns : payload.visibleColumns).slice(0, MAX_PDF_COLUMNS);
@@ -1003,7 +1015,7 @@ export function QuoteWorkbenchPage() {
       saveBusyRef.current = false;
       setSaving(false);
     }
-  }, [activeDocument, notify, t]);
+  }, [activeDocument, canUseExtendedDocuments, notify, t]);
 
   const save = useCallback(async () => {
     if (!draft) return draft;
@@ -1665,11 +1677,13 @@ export function QuoteWorkbenchPage() {
       <div className="quote-workbench-header">
         <Tabs.List className="quote-workbench-document-tabs">
           <Tabs.Trigger value="quotation"><FileText />{t("报价单")}</Tabs.Trigger>
-          <Tabs.Trigger value="proforma"><FileText />{t("形式发票")}（PI）</Tabs.Trigger>
-          <Tabs.Trigger value="sales-contract"><LockKey />{t("销售合同")}</Tabs.Trigger>
-          <Tabs.Trigger value="commercial-invoice"><LockKey />{t("商业发票")}（CI）</Tabs.Trigger>
-          <Tabs.Trigger value="packing-list"><FileText />{t("装箱单")}</Tabs.Trigger>
-          <Tabs.Trigger value="customs-declaration"><LockKey />{t("报关单")}</Tabs.Trigger>
+          {canUseExtendedDocuments ? <>
+            <Tabs.Trigger value="proforma"><FileText />{t("形式发票")}（PI）</Tabs.Trigger>
+            <Tabs.Trigger value="sales-contract"><LockKey />{t("销售合同")}</Tabs.Trigger>
+            <Tabs.Trigger value="commercial-invoice"><LockKey />{t("商业发票")}（CI）</Tabs.Trigger>
+            <Tabs.Trigger value="packing-list"><FileText />{t("装箱单")}</Tabs.Trigger>
+            <Tabs.Trigger value="customs-declaration"><LockKey />{t("报关单")}</Tabs.Trigger>
+          </> : null}
         </Tabs.List>
         <div className="quote-workbench-header-actions">
           {activeDocument !== "packing-list" && activeDocument !== "proforma" ? <DropdownMenu.Root>
