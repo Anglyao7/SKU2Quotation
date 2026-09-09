@@ -16,8 +16,13 @@ from .. import db_models  # noqa: F401: register all ORM metadata without import
 from ..database import AuthSessionLocal, SessionLocal, engine, set_request_context
 from ..identity_models import MembershipRow, TenantRow, UserRow
 from ..catalog_translation_models import CatalogTranslationJobRow as Job
-from ..translation_automation_models import CatalogTranslationAutomationRow as Automation
+from ..translation_automation_models import (
+    CatalogTranslationAutomationRow as Automation,
+    CatalogTranslationAutomationTenantRow as MerchantAutomation,
+    CatalogTranslationChangeRow as Change,
+)
 from ..model_mixins import utcnow
+from ..services.catalog_automation import text_source_snapshot
 from ..services.auth.dependencies import RequestContext
 from ..services.rbac import list_permissions
 from ..use_cases import catalog_translations as translations
@@ -117,6 +122,72 @@ def execute_job(**kwargs):
             translations._run_translation_job(**kwargs)
 
 
+def ensure_published_language_configs(session, *, tenant_id, merchant, configs):
+    """Bring legacy/newly-published languages under the merchant switch.
+
+    Before the switch became merchant-wide, only languages explicitly toggled
+    in the console had a runtime row. Provision missing rows lazily in the
+    worker and snapshot the current catalog so enabling the new language never
+    schedules a historical full translation.
+    """
+    if merchant is None or not merchant.enabled:
+        return []
+    published = set(
+        translations.translation_repository.available_language_pack_locales(
+            session, tenant_id=tenant_id
+        )
+    )
+    if not published:
+        return [config for config in configs if config.enabled]
+    by_locale = {config.target_locale: config for config in configs}
+    actor_id = merchant.updated_by_user_id or next(
+        (config.approved_by_user_id for config in configs if config.approved_by_user_id),
+        None,
+    )
+    if actor_id is None:
+        return [config for config in configs if config.enabled]
+    needs_provision = any(
+        locale not in by_locale or not by_locale[locale].enabled
+        for locale in published
+    )
+    if not needs_provision:
+        return [config for config in configs if config.enabled]
+
+    rows = translations._status_rows(session, tenant_id=tenant_id)
+    snapshot = text_source_snapshot(rows)
+    change = session.get(Change, tenant_id)
+    generation = change.generation if change else 0
+    template = next(iter(configs), None)
+    now = utcnow()
+    for locale in sorted(published):
+        config = by_locale.get(locale)
+        was_enabled = bool(config and config.enabled)
+        if config is None:
+            config = Automation(
+                tenant_id=tenant_id,
+                target_locale=locale,
+                approved_by_user_id=actor_id,
+                observed_sources={},
+                observed_generation=0,
+                updated_at=now,
+            )
+            session.add(config)
+            by_locale[locale] = config
+        if not was_enabled:
+            config.observed_sources = snapshot
+            config.observed_generation = generation
+            config.pending_since = None
+            config.last_error = None
+        config.enabled = True
+        config.approved_by_user_id = actor_id
+        if template is not None:
+            config.auto_publish = template.auto_publish
+            config.debounce_seconds = template.debounce_seconds
+        config.updated_at = now
+    session.commit()
+    return [config for config in by_locale.values() if config.enabled]
+
+
 def run():
     interval = max(2, int(os.getenv("AUTOMATIC_TRANSLATION_POLL_SECONDS", "5")))
     recovered_tenants = set()
@@ -151,7 +222,14 @@ def run():
                                     session.commit()
                             session.commit()
                             recovered_tenants.add(tenant_id)
-                        configs = session.scalars(select(Automation).options(defer(Automation.observed_sources)).where(Automation.tenant_id == tenant_id, Automation.enabled.is_(True))).all()
+                        merchant_automation = session.get(MerchantAutomation, tenant_id)
+                        configs = session.scalars(select(Automation).options(defer(Automation.observed_sources)).where(Automation.tenant_id == tenant_id)).all()
+                        configs = ensure_published_language_configs(
+                            session,
+                            tenant_id=tenant_id,
+                            merchant=merchant_automation,
+                            configs=configs,
+                        )
                         for config in configs:
                             if not is_approved(config.approved_by_user_id):
                                 config.enabled = False

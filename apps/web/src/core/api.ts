@@ -3691,6 +3691,7 @@ export interface CatalogTranslationAutomation {
   tenant_id: string;
   target_locale: StorefrontLocale;
   enabled: boolean;
+  merchant_enabled: boolean;
   auto_publish: boolean;
   debounce_seconds: number;
   state: "DISABLED" | "IDLE" | "WAITING" | "QUEUED" | "RUNNING" | "PAUSED" | "ATTENTION" | "READY";

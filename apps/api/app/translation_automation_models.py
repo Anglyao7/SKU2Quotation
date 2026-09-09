@@ -1,4 +1,4 @@
-"""Durable, opt-in automatic translation state, isolated by merchant/language."""
+"""Durable, opt-in automatic translation state scoped to a merchant."""
 from datetime import datetime
 from uuid import UUID
 
@@ -15,6 +15,26 @@ class CatalogTranslationChangeRow(Base):
     tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CatalogTranslationAutomationTenantRow(Base):
+    """Merchant-level switch for automatic catalog translation.
+
+    Language rows below retain per-language runtime state (last job, baseline,
+    and publication preferences), but this row is the only source of truth for
+    whether automatic updates are enabled for the merchant.
+    """
+
+    __tablename__ = "catalog_translation_automation_tenants"
+
+    tenant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class CatalogTranslationAutomationRow(Base):

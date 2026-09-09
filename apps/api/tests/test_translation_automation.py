@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 from app import db_models  # noqa: F401
 from app.database import Base
 from app.catalog_translation_models import CatalogTranslationJobRow as Job
-from app.translation_automation_models import CatalogTranslationAutomationRow as Automation, CatalogTranslationChangeRow as Change
+from app.translation_automation_models import (
+    CatalogTranslationAutomationRow as Automation,
+    CatalogTranslationAutomationTenantRow as MerchantAutomation,
+    CatalogTranslationChangeRow as Change,
+)
 from app.model_mixins import utcnow
 from app.services.catalog_automation import text_source_snapshot, changed_source_ids
 from app.services import automatic_catalog_translation as runner, translation_concurrency as concurrency
@@ -82,6 +86,50 @@ def test_enable_creates_baseline_without_historical_retranslation(session, setup
     assert config.observed_sources == text_source_snapshot(rows)
     assert not config.auto_publish
     assert automation.status(session, tenant_id=context.tenant_id, locale="en-US")["state"] == "IDLE"
+
+
+def test_automatic_switch_is_merchant_wide(session, setup, monkeypatch):
+    context, rows = setup
+    monkeypatch.setattr(
+        translations.translation_repository,
+        "available_language_pack_locales",
+        lambda *a, **k: ["en-US", "es"],
+    )
+    monkeypatch.setattr(
+        translations.translation_repository,
+        "language_pack",
+        lambda *a, **k: SimpleNamespace(version=1),
+    )
+    # Turn the single switch on while viewing English; both published target
+    # languages receive a baseline and become eligible for automatic work.
+    automation.update_settings(
+        session,
+        context=context,
+        locale="en-US",
+        request=automation.AutomationUpdate(enabled=True, auto_publish=True),
+    )
+    merchant = session.get(MerchantAutomation, context.tenant_id)
+    assert merchant and merchant.enabled
+    configs = {
+        row.target_locale: row
+        for row in session.scalars(
+            select(Automation).where(Automation.tenant_id == context.tenant_id)
+        )
+    }
+    assert set(configs) == {"en-US", "es"}
+    assert all(row.enabled and row.auto_publish for row in configs.values())
+    assert automation.status(session, tenant_id=context.tenant_id, locale="es")["enabled"]
+
+    # Disabling from either language turns off the merchant, not just the
+    # currently selected language.
+    automation.update_settings(
+        session,
+        context=context,
+        locale="es",
+        request=automation.AutomationUpdate(enabled=False),
+    )
+    assert not session.get(MerchantAutomation, context.tenant_id).enabled
+    assert all(not row.enabled for row in configs.values())
 
 
 def test_settings_are_admin_only_and_require_initial_package(session, monkeypatch):
