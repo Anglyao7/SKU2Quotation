@@ -15,7 +15,10 @@ ENV VITE_PRIMARY_STOREFRONT_SLUG=$VITE_PRIMARY_STOREFRONT_SLUG
 ENV VITE_LEGAL_OPERATOR_NAME=$VITE_LEGAL_OPERATOR_NAME
 ENV VITE_PRIVACY_CONTACT_EMAIL=$VITE_PRIVACY_CONTACT_EMAIL
 ENV VITE_PRIVACY_EFFECTIVE_DATE=$VITE_PRIVACY_EFFECTIVE_DATE
-RUN npm run build
+# The managed production host runs inside a tight nested pids cgroup. The
+# locale checker is synchronous, so avoid Node's default libuv worker pool
+# consuming build-time thread slots needed by the rest of the Compose stack.
+RUN UV_THREADPOOL_SIZE=1 npm run build
 
 FROM nginxinc/nginx-unprivileged:1.29.4-alpine
 USER root
