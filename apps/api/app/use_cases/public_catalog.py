@@ -153,6 +153,19 @@ def _require_extended_quote_documents(session: Session, tenant_id: UUID) -> None
     )
 
 
+def _sanitize_quote_document_response(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    response: PublicQuoteDraftResponse,
+) -> PublicQuoteDraftResponse:
+    """Do not expose legacy extended-document data to basic-plan accounts."""
+
+    if _tenant_has_extended_quote_documents(session, tenant_id):
+        return response
+    return response.model_copy(update={"proforma_invoice": None, "packing_list": None})
+
+
 MONEY = Decimal("0.01")
 PUBLIC_TOKEN_SEPARATOR = "."
 logger = logging.getLogger(__name__)
@@ -4994,7 +5007,11 @@ def update_tenant_quote_draft_status(
         # not yet have an order record.
         session.commit()
         session.refresh(draft)
-    return _draft_response(draft, items)
+    return _sanitize_quote_document_response(
+        session,
+        tenant_id=tenant_id,
+        response=_draft_response(draft, items),
+    )
 
 
 def _create_storefront_order_record(
@@ -5262,7 +5279,11 @@ def get_tenant_quote_draft(
         if tenant is not None
         else _draft_response(draft, items)
     )
-    return response.model_copy(update={"read_only": read_only})
+    return _sanitize_quote_document_response(
+        session,
+        tenant_id=tenant_id,
+        response=response.model_copy(update={"read_only": read_only}),
+    )
 
 
 def update_tenant_quote_draft_settings(
@@ -5404,11 +5425,15 @@ def update_tenant_quote_draft_settings(
         tenant_id=tenant_id,
         quote_draft_id=quote_draft_id,
     )
-    return _localized_quote_response(
+    return _sanitize_quote_document_response(
         session,
-        draft=draft,
-        items=updated_items,
-        tenant=tenant,
+        tenant_id=tenant_id,
+        response=_localized_quote_response(
+            session,
+            draft=draft,
+            items=updated_items,
+            tenant=tenant,
+        ),
     )
 
 
@@ -5762,10 +5787,15 @@ def _quote_draft_item_edit_response(
         quote_draft_id=draft.id,
     )
     tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
-    return (
+    response = (
         _localized_quote_response(session, draft=draft, items=items, tenant=tenant)
         if tenant is not None
         else _draft_response(draft, items)
+    )
+    return _sanitize_quote_document_response(
+        session,
+        tenant_id=tenant_id,
+        response=response,
     )
 
 
