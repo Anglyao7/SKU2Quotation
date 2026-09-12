@@ -31,6 +31,7 @@ interface StorefrontSupportWidgetProps {
   accountKey?: string;
   storeName: string;
   locale: StorefrontLocale;
+  showPrices?: boolean;
   config?: PublicSupportWidget;
 }
 
@@ -76,12 +77,14 @@ function SupportProductCard({
   citationNumber,
   detailsHref,
   locale,
+  showPrice,
   onOpen,
 }: {
   product: StoreProduct;
   citationNumber: number;
   detailsHref: string;
   locale: StorefrontLocale;
+  showPrice: boolean;
   onOpen: () => void;
 }) {
   const [imageFailed, setImageFailed] = useState(!product.image_url);
@@ -118,7 +121,7 @@ function SupportProductCard({
           {product.product_code ? ` · ${product.product_code}` : ""}
         </small>
         <strong dir="auto">{product.name}</strong>
-        <span>{supportProductPrice(product)}</span>
+        {showPrice ? <span>{supportProductPrice(product)}</span> : null}
         <em>
           {t("查看商品")}
           <ArrowRight weight="bold" aria-hidden="true" />
@@ -134,6 +137,7 @@ export function StorefrontSupportWidget({
   accountKey,
   storeName,
   locale,
+  showPrices = true,
   config,
 }: StorefrontSupportWidgetProps) {
   const storageScope = storefrontStorageScope(tenantSlug, accountId);
@@ -665,6 +669,7 @@ export function StorefrontSupportWidget({
                               + storefrontLocaleQuery(locale)
                             }
                             locale={locale}
+                            showPrice={showPrices}
                             onOpen={() => setOpen(false)}
                           />
                         );

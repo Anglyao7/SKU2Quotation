@@ -3852,5 +3852,11 @@
   "前台展示方式保存失败，请重试。": "No se pudo guardar el modo de visualización de la tienda. Inténtalo de nuevo.",
   "始终横向": "Siempre horizontal",
   "始终竖向": "Siempre vertical",
-  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。": "El modo automático usa categorías verticales en móviles y horizontales en ordenadores; también puedes fijar un diseño."
+  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。": "El modo automático usa categorías verticales en móviles y horizontales en ordenadores; también puedes fijar un diseño.",
+  "前台价格显示": "Visualización de precios en la tienda",
+  "显示价格": "Mostrar precios",
+  "暂不显示价格": "Ocultar precios por ahora",
+  "关闭后，客户前台不会显示商品价格，但仍可以选择商品并提交报价请求。": "Al desactivarlo, los precios se ocultan en la tienda, pero los visitantes aún pueden seleccionar productos y solicitar una cotización.",
+  "客户前台显示商品价格": "Mostrar precios de productos en la tienda",
+  "价格显示设置保存失败，请重试。": "No se pudo guardar la configuración de precios. Inténtalo de nuevo."
 }

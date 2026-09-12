@@ -3482,6 +3482,13 @@ const english: Record<string, string> = {
   "当前设置仅影响客户前台的分类导航，不影响后台操作界面。":
     "This setting only affects category navigation on the customer storefront, not the admin workspace.",
   "前台展示方式保存失败，请重试。": "Could not save the storefront display mode. Please try again.",
+  "前台价格显示": "Storefront price display",
+  "显示价格": "Show prices",
+  "暂不显示价格": "Hide prices for now",
+  "关闭后，客户前台不会显示商品价格，但仍可以选择商品并提交报价请求。":
+    "When disabled, product prices are hidden on the customer storefront, but visitors can still select products and submit quote requests.",
+  "客户前台显示商品价格": "Show product prices on the customer storefront",
+  "价格显示设置保存失败，请重试。": "Could not save the price display setting. Please try again.",
   "自动爆款排序": "Automatic bestseller ordering",
   "手动指定的商品始终排在自动爆款之前。":
     "Manually prioritized products always appear before automatic bestsellers.",

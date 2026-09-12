@@ -285,6 +285,7 @@ export function ProductDetailPage() {
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
+                showPrices={store.prices_visible !== false}
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
@@ -408,12 +409,12 @@ export function ProductDetailPage() {
                 </div>
               ) : null}
 
-              <div className="sku-detail-price">
+              {store.prices_visible !== false ? <div className="sku-detail-price">
                 <Text size="1" color="gray">
                   {t("参考单价")}
                 </Text>
                 <strong>{priceLabel}</strong>
-              </div>
+              </div> : null}
               <Text size="1" color="gray">
                 {t("选择规格组合后即可加入报价清单。")}
               </Text>
@@ -525,7 +526,7 @@ export function ProductDetailPage() {
           <div className="product-mobile-purchase-copy">
             <small>{t("已选 SKU")}</small>
             <strong>{selectedLabel}</strong>
-            <span>{priceLabel}</span>
+            {store.prices_visible !== false ? <span>{priceLabel}</span> : null}
           </div>
           <Button
             type="button"
@@ -545,6 +546,7 @@ export function ProductDetailPage() {
         accountKey={accountKey}
         storeName={store.name}
         locale={locale}
+        showPrices={store.prices_visible !== false}
         config={store.support_widget}
       />
 

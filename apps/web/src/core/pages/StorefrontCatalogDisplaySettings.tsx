@@ -1,5 +1,5 @@
 import { Badge, Button, Switch, Text, TextField } from "@radix-ui/themes";
-import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Columns, Desktop, DeviceMobile, Fire, MagnifyingGlass, Package, PushPin, Rows, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Columns, CurrencyDollar, Desktop, DeviceMobile, Fire, MagnifyingGlass, Package, PushPin, Rows, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -103,6 +103,17 @@ export function StorefrontCatalogDisplaySettings() {
     } finally { setBusy(""); }
   };
 
+  const togglePricesVisible = async (visible: boolean) => {
+    if (!merchant || busy || !canManage) return;
+    setBusy("prices");
+    try {
+      setMerchant(await updateMerchantSettings({ storefrontPricesVisible: visible }));
+      notify(t("已保存并更新前台"), { kind: "success" });
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : t("价格显示设置保存失败，请重试。"), { kind: "error" });
+    } finally { setBusy(""); }
+  };
+
   const togglePinnedProduct = async (productId: string, pinned: boolean) => {
     if (!canEditProducts || busy) return;
     setBusy(productId);
@@ -203,6 +214,14 @@ export function StorefrontCatalogDisplaySettings() {
             </Button>
           </div>
           <small className="storefront-category-layout-note"><Desktop />{t("当前设置仅影响客户前台的分类导航，不影响后台操作界面。")}</small>
+        </section>
+        <section className="storefront-display-strategy storefront-price-visibility-settings" aria-labelledby="storefront-price-visibility-title">
+          <span className="storefront-display-strategy-icon"><CurrencyDollar weight="duotone" /></span>
+          <div>
+            <div className="storefront-display-strategy-heading"><strong id="storefront-price-visibility-title">{t("前台价格显示")}</strong><Badge color={merchant.storefrontPricesVisible ? "jade" : "gray"}>{t(merchant.storefrontPricesVisible ? "显示价格" : "暂不显示价格")}</Badge></div>
+            <p>{t("关闭后，客户前台不会显示商品价格，但仍可以选择商品并提交报价请求。")}</p>
+          </div>
+          <Switch checked={merchant.storefrontPricesVisible} disabled={Boolean(busy) || !canManage} onCheckedChange={(visible) => void togglePricesVisible(visible)} aria-label={t("客户前台显示商品价格")} />
         </section>
         <section className="storefront-category-priority" aria-labelledby="category-priority-title">
           <header><h3 id="category-priority-title">{t("优先分类")}</h3><p>{t("只调整全部商品中的顺序，包含子分类和额外关联分类，不改变分类导航。")}</p></header>

@@ -162,6 +162,7 @@ export interface Storefront {
   hot_products_enabled?: boolean;
   category_showcase_enabled?: boolean;
   exchange_rates_enabled?: boolean;
+  prices_visible?: boolean;
   category_layout_mode?: "AUTO" | "HORIZONTAL" | "VERTICAL";
   popular_search_terms?: string[];
   announcements?: PublicAnnouncement[];

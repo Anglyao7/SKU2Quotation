@@ -1033,6 +1033,7 @@ def get_store(
         hot_products_enabled=bool(profile.hot_products_enabled),
         category_showcase_enabled=bool(profile.category_showcase_enabled),
         exchange_rates_enabled=bool(profile.storefront_exchange_rates_enabled),
+        prices_visible=bool(getattr(profile, "storefront_prices_visible", True)),
         category_layout_mode=getattr(profile, "storefront_category_layout_mode", "AUTO"),
         ai_search_questions=_public_ai_search_questions(
             getattr(profile, "ai_search_questions", None),
@@ -1086,6 +1087,7 @@ def get_store(
             "hot_products_enabled": bool(profile.hot_products_enabled),
             "category_showcase_enabled": True,
             "exchange_rates_enabled": bool(profile.storefront_exchange_rates_enabled),
+            "prices_visible": bool(getattr(profile, "storefront_prices_visible", True)),
             "category_layout_mode": getattr(profile, "storefront_category_layout_mode", "AUTO"),
             "ai_search_questions": [],
             "popular_search_terms": [],

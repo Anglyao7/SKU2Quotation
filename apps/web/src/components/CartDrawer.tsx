@@ -54,6 +54,7 @@ interface CartDrawerProps {
   storeName: string;
   contactEmail?: string | null;
   contactImages?: Array<Pick<StorefrontSupportAction, "image_url" | "label">>;
+  showPrices?: boolean;
   lines: CartLine[];
   onQuantity: (skuId: string, quantity: number) => void;
   onNote: (skuId: string, note: string) => void;
@@ -130,7 +131,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
   );
 }
 
-export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, lines, onQuantity, onNote, onClear, onRefreshSkus, locale }: CartDrawerProps) {
+export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, showPrices = true, lines, onQuantity, onNote, onClear, onRefreshSkus, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -287,7 +288,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
             <span className="floating-cart-icon"><ShoppingCartSimple size={21} weight="bold" /></span>
             <span className="floating-cart-copy">
               <small>{t("已选 {skus} 个 SKU · 共 {items} 件", { skus: lines.length, items: itemCount })}</small>
-              <strong>{money(knownTotal, currency)}</strong>
+              {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
             </span>
             <span className="floating-cart-action">{t("查看清单")}<ArrowRight size={17} /></span>
           </Button>
@@ -358,9 +359,9 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                     <div className="cart-line-copy">
                       <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
                       <Text size="1" color="gray" className="mono-text">{sku.sku_code}</Text>
-                      <Text size="1" color="gray">{money(sku.price, sku.currency)}</Text>
+                      {showPrices ? <Text size="1" color="gray">{money(sku.price, sku.currency)}</Text> : null}
                       {skuCartonSize(sku) ? <Text size="1" color="gray">{t("装箱数")} × {skuCartonSize(sku)} · {t("数量")} × {quantity} · {t("箱数")} × {cartCartons(sku, quantity)}</Text> : null}
-                      <Text size="2" weight="medium">{t("小计")} {money((Number(sku.price) || 0) * quantity, sku.currency)}</Text>
+                      {showPrices ? <Text size="2" weight="medium">{t("小计")} {money((Number(sku.price) || 0) * quantity, sku.currency)}</Text> : null}
                     </div>
                     <div className="quantity-control">
                       <Tooltip content={t("减少数量")}>
@@ -391,13 +392,13 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                 ))}
               </div>
 
-              <div className="quote-total-row">
+              {showPrices ? <div className="quote-total-row">
                 <Text color="gray" size="2">{t("商品参考合计")}</Text>
                 <div>
                   <Text color="gray" size="1" as="div">{t("按已选数量计算")}</Text>
                   <Text weight="bold" size="4">{money(knownTotal, currency)}</Text>
                 </div>
-              </div>
+              </div> : null}
 
               <div className="quote-customer-section">
                 <div className="cart-section-heading">
@@ -454,7 +455,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
               {error && <ToastNotice kind="error" message={error} />}
               <div className="quote-action-summary">
                 <span>{t("{skus} 个 SKU · {items} 件", { skus: lines.length, items: itemCount })}</span>
-                <strong>{money(knownTotal, currency)}</strong>
+                {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
               </div>
               <Button className="quote-submit" type="submit" size="3" loading={submitting || refreshing} disabled={!lines.length || Boolean(legacySkuIds)}>
                 {refreshing ? t("商品加载中") : t("提交并生成报价单")}<ArrowRight size={18} />

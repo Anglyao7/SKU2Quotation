@@ -15,6 +15,7 @@ export function ProductCard({
   onOpenDetails,
   onPrefetchDetails,
   locale,
+  showPrice = true,
   visualMatch,
   deferImages = false,
 }: {
@@ -24,6 +25,7 @@ export function ProductCard({
   onOpenDetails: () => void;
   onPrefetchDetails: () => void;
   locale: StorefrontLocale;
+  showPrice?: boolean;
   deferImages?: boolean;
   visualMatch?: {
     percent: number;
@@ -133,8 +135,8 @@ export function ProductCard({
             {product.name}
           </Link>
         </Text>
-        <div className="sku-card-footer">
-          <div className="sku-price-block">
+        <div className={`sku-card-footer${showPrice ? "" : " is-price-hidden"}`}>
+          {showPrice ? <div className="sku-price-block">
             <Text
               as="div"
               size="4"
@@ -144,7 +146,7 @@ export function ProductCard({
             >
               {priceLabel}
             </Text>
-          </div>
+          </div> : null}
           <Button asChild size="2" className="sku-add-button">
             <Link
               to={detailsHref}

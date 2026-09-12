@@ -65,6 +65,7 @@ export interface MerchantSettings {
   storefrontDefaultLocale: StorefrontLocale;
   hotProductsEnabled: boolean;
   exchangeRatesEnabled: boolean;
+  storefrontPricesVisible: boolean;
   storefrontCategoryLayoutMode: StorefrontCategoryLayoutMode;
   storefrontFooterSections: StorefrontFooterSection[];
 }

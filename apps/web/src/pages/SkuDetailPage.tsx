@@ -208,6 +208,7 @@ export function SkuDetailPage() {
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
+                showPrices={store.prices_visible !== false}
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
@@ -299,10 +300,10 @@ export function SkuDetailPage() {
                 </div>
               ) : null}
 
-              <div className="sku-detail-price">
+              {store.prices_visible !== false ? <div className="sku-detail-price">
                 <Text size="1" color="gray">{t("参考单价")}</Text>
                 <strong>{money(sku.price, sku.currency)}</strong>
-              </div>
+              </div> : null}
 
               <Button size="3" className="sku-detail-add" onClick={addToCart}>
                 {quantity ? <Check weight="bold" /> : <Plus weight="bold" />}
@@ -327,6 +328,7 @@ export function SkuDetailPage() {
         accountKey={accountKey}
         storeName={store.name}
         locale={locale}
+        showPrices={store.prices_visible !== false}
         config={store.support_widget}
       />
 

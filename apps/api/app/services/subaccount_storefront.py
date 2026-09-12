@@ -76,6 +76,10 @@ def account_profile(session: Session, profile, membership: MembershipRow, *, use
         hot_products_enabled=config.get("hot_products_enabled", False),
         category_showcase_enabled=True,
         storefront_exchange_rates_enabled=config.get("storefront_exchange_rates_enabled", False),
+        storefront_prices_visible=config.get(
+            "storefront_prices_visible",
+            getattr(profile, "storefront_prices_visible", True),
+        ),
         storefront_category_layout_mode=config.get("storefront_category_layout_mode", getattr(profile, "storefront_category_layout_mode", "AUTO")),
         storefront_footer_config=config.get("storefront_footer_config", {"sections": []}),
         storefront_sorting_config=config.get("storefront_sorting_config"),

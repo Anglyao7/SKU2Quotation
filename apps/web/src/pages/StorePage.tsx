@@ -1465,6 +1465,7 @@ export function StorePage() {
                             onOpenDetails={rememberCatalogPosition}
                             onPrefetchDetails={() => prefetchProductDetails(product.id)}
                             locale={locale}
+                            showPrice={store.prices_visible !== false}
                             visualMatch={{
                               percent: item.match_percent,
                               label: confidenceLabel,
@@ -1555,6 +1556,7 @@ export function StorePage() {
                         onOpenDetails={rememberCatalogPosition}
                         onPrefetchDetails={() => prefetchProductDetails(product.id)}
                         locale={locale}
+                        showPrice={store.prices_visible !== false}
                       />
                     ))}
                   </div>
@@ -1668,6 +1670,7 @@ export function StorePage() {
         accountKey={accountKey}
         storeName={store.name}
         locale={locale}
+        showPrices={store.prices_visible !== false}
         config={store.support_widget}
       />
       <StorefrontFooter store={store} t={t} accountKey={accountKey} />

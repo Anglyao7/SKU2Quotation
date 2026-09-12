@@ -171,6 +171,7 @@ export function StorefrontCustomPage() {
                 storeName={store.name}
                 contactEmail={store.contact_email}
                 contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))}
+                showPrices={store.prices_visible !== false}
                 lines={cartLines}
                 onQuantity={updateQuantity}
                 onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))}
@@ -189,7 +190,7 @@ export function StorefrontCustomPage() {
       <main className="storefront-custom-page-main">
         <ResponsiveHtmlFrame html={page.html} title={page.title} />
       </main>
-      <StorefrontSupportWidget tenantSlug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} locale={locale} config={store.support_widget} />
+      <StorefrontSupportWidget tenantSlug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} locale={locale} showPrices={store.prices_visible !== false} config={store.support_widget} />
       <StorefrontFooter store={store} t={t} accountKey={accountKey} />
     </div>
   );

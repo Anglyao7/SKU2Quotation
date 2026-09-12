@@ -94,6 +94,11 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
         default=True,
         nullable=False,
     )
+    storefront_prices_visible: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
     storefront_category_layout_mode: Mapped[str] = mapped_column(
         String(20),
         default="AUTO",

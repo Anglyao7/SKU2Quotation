@@ -96,6 +96,11 @@ def _response(
             if profile is not None
             else True
         ),
+        storefront_prices_visible=(
+            bool(getattr(profile, "storefront_prices_visible", True))
+            if profile is not None
+            else True
+        ),
         storefront_category_layout_mode=(
             getattr(profile, "storefront_category_layout_mode", "AUTO")
             if profile is not None
@@ -233,7 +238,7 @@ def _update_account_settings(session: Session, *, context: RequestContext, reque
     # Snapshot language selection on the first save, so later owner settings
     # changes cannot silently change this storefront's language menu.
     config.update(storefront_locales=locales, storefront_default_locale=default_locale)
-    for key in ("name", "hot_products_enabled", "storefront_exchange_rates_enabled", "storefront_category_layout_mode"):
+    for key in ("name", "hot_products_enabled", "storefront_exchange_rates_enabled", "storefront_prices_visible", "storefront_category_layout_mode"):
         value = getattr(request, key)
         if value is not None:
             config[key] = value
@@ -278,6 +283,7 @@ def update_merchant_settings(
         or request.storefront_default_locale is not None
         or request.hot_products_enabled is not None
         or request.storefront_exchange_rates_enabled is not None
+        or request.storefront_prices_visible is not None
         or request.storefront_category_layout_mode is not None
         or request.storefront_footer_sections is not None
     ):
@@ -386,6 +392,10 @@ def update_merchant_settings(
         profile.storefront_exchange_rates_enabled = (
             request.storefront_exchange_rates_enabled
         )
+
+    if request.storefront_prices_visible is not None:
+        assert profile is not None
+        profile.storefront_prices_visible = request.storefront_prices_visible
 
     if request.storefront_category_layout_mode is not None:
         assert profile is not None

@@ -77,7 +77,7 @@ function ProductRows({
       <div>
         <Link to={`${basePath}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`}><strong>{item.name}</strong></Link>
         <Text size="1" color="gray">{item.category || t("未分类")}</Text>
-        <Text size="2" weight="bold" color="blue">{money(item.priceFrom, item.currency)}</Text>
+        {store.prices_visible !== false ? <Text size="2" weight="bold" color="blue">{money(item.priceFrom, item.currency)}</Text> : null}
       </div>
       {removable ? <Button size="2" variant="ghost" color="gray" onClick={() => onRemove?.(item)} aria-label={t("取消收藏")}><Trash /></Button> : null}
     </Card>
@@ -212,7 +212,7 @@ export function StorefrontVisitorCenterPage() {
         <div className="header-actions">
           <StorefrontLanguageSwitch locale={locale} availableLocales={store.available_locales} />
           <ThemeToggle labels={{ toDark: t("切换深色模式"), toLight: t("切换浅色模式") }} />
-          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} lines={cartLines} onQuantity={updateQuantity} onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))} onNote={updateCartNote} onClear={() => setCart({})} locale={locale} />
+          <CartDrawer slug={store.slug} accountId={accountId} accountKey={accountKey} storeName={store.name} contactEmail={store.contact_email} contactImages={store.support_widget?.custom_actions?.filter((action) => Boolean(action.visible && action.image_url))} showPrices={store.prices_visible !== false} lines={cartLines} onQuantity={updateQuantity} onRefreshSkus={(skus) => setCart((current) => refreshCartSkus(current, skus))} onNote={updateCartNote} onClear={() => setCart({})} locale={locale} />
         </div>
       </div></Container>
     </header>

@@ -693,6 +693,7 @@ interface ApiMerchantSettings {
   storefront_default_locale: MerchantSettings["storefrontDefaultLocale"];
   hot_products_enabled: boolean;
   storefront_exchange_rates_enabled: boolean;
+  storefront_prices_visible: boolean;
   storefront_category_layout_mode: MerchantSettings["storefrontCategoryLayoutMode"];
   storefront_footer_sections?: Array<{
     title: string;
@@ -715,6 +716,7 @@ function mapMerchantSettings(row: ApiMerchantSettings): MerchantSettings {
     storefrontDefaultLocale: row.storefront_default_locale,
     hotProductsEnabled: row.hot_products_enabled,
     exchangeRatesEnabled: row.storefront_exchange_rates_enabled,
+    storefrontPricesVisible: row.storefront_prices_visible !== false,
     storefrontCategoryLayoutMode: row.storefront_category_layout_mode || "AUTO",
     storefrontFooterSections: row.storefront_footer_sections?.map((section) => ({
       title: section.title,
@@ -772,6 +774,7 @@ export async function updateMerchantSettings(input: {
   storefrontDefaultLocale?: MerchantSettings["storefrontDefaultLocale"];
   hotProductsEnabled?: boolean;
   exchangeRatesEnabled?: boolean;
+  storefrontPricesVisible?: boolean;
   storefrontCategoryLayoutMode?: MerchantSettings["storefrontCategoryLayoutMode"];
   storefrontFooterSections?: MerchantSettings["storefrontFooterSections"];
 }): Promise<MerchantSettings> {
@@ -788,6 +791,7 @@ export async function updateMerchantSettings(input: {
         storefront_default_locale: input.storefrontDefaultLocale,
         hot_products_enabled: input.hotProductsEnabled,
         storefront_exchange_rates_enabled: input.exchangeRatesEnabled,
+        storefront_prices_visible: input.storefrontPricesVisible,
         storefront_category_layout_mode: input.storefrontCategoryLayoutMode,
         storefront_footer_sections: input.storefrontFooterSections?.map((section) => ({
           title: section.title,
