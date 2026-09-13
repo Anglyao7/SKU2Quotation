@@ -1,9 +1,8 @@
 import { Button, Card, Text } from "@radix-ui/themes";
-import { ArrowRight, Heart, Image as ImageIcon } from "@phosphor-icons/react";
-import { useEffect, useRef, useState } from "react";
+import { ArrowRight, Image as ImageIcon } from "@phosphor-icons/react";
+import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { storefrontPriceLabel, storefrontText } from "../lib/storefrontLocale";
-import { isStorefrontFavorite, toggleStorefrontFavorite } from "../lib/storefrontVisitor";
 import type { StoreProduct, StorefrontLocale } from "../types";
 import { StorefrontCatalogImage } from "./StorefrontCatalogImage";
 
@@ -31,7 +30,6 @@ export function ProductCard({
     label: string;
   };
 }) {
-  const [favorite, setFavorite] = useState(() => isStorefrontFavorite(tenantSlug, product.id));
   const prefetchedDetails = useRef(false);
   const prefetchTimer = useRef<number | null>(null);
   const t = (source: string, values?: Record<string, string | number>) => (
@@ -43,10 +41,6 @@ export function ProductCard({
     product.price_to,
     product.currency,
   );
-
-  useEffect(() => {
-    setFavorite(isStorefrontFavorite(tenantSlug, product.id));
-  }, [product.id, product.image_url, tenantSlug]);
 
   useEffect(() => () => {
     if (prefetchTimer.current !== null) window.clearTimeout(prefetchTimer.current);
@@ -83,15 +77,6 @@ export function ProductCard({
       onFocus={() => prefetchDetails()}
       onBlur={cancelPrefetch}
     >
-      <button
-        type="button"
-        className={`product-favorite-button${favorite ? " is-active" : ""}`}
-        aria-label={favorite ? t("取消收藏") : t("收藏商品")}
-        aria-pressed={favorite}
-        onClick={() => setFavorite(toggleStorefrontFavorite(tenantSlug, product))}
-      >
-        <Heart size={18} weight={favorite ? "fill" : "bold"} />
-      </button>
       <Link
         to={detailsHref}
         state={{ fromStorefrontCatalog: true }}
