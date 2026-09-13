@@ -611,6 +611,8 @@ export function StorePage() {
       .filter(Boolean),
   )).slice(0, 5), [store.popular_search_terms]);
   const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
+  const fullStoreShare = catalogShare?.target_type === "STOREFRONT";
+  const shareHidesCatalogNavigation = Boolean(shareToken && !fullStoreShare);
   const visitorLayoutSelectionEnabled = store.category_layout_mode === "VISITOR";
   const categoryLayout: "horizontal" | "vertical" = store.category_layout_mode === "VERTICAL"
     ? "vertical"
@@ -627,7 +629,7 @@ export function StorePage() {
     writeStorefrontCategoryLayoutPreference(storageScope, layout);
   };
   const showCategoryShowcase = Boolean(
-    !shareToken
+    !shareHidesCatalogNavigation
     && !imageSearchActive
     && categoryShowcaseEnabled
     && Boolean(primaryCategory)
@@ -655,7 +657,7 @@ export function StorePage() {
   const prefetchCategory = (path: string) => {
     cancelCategoryPrefetch();
     const connection = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection;
-    if (connection?.saveData || deferredSearch || shareToken || imageSearchActive || path === category) return;
+    if (connection?.saveData || deferredSearch || shareHidesCatalogNavigation || imageSearchActive || path === category) return;
     if (categoryShowcaseEnabled && categoryTree.some((node) => node.path === path && node.children.length)) return;
     categoryPrefetchTimer.current = window.setTimeout(() => {
       if (categoryPrefetchCount.current >= 2 || document.visibilityState !== "visible") return;
@@ -1166,7 +1168,7 @@ export function StorePage() {
                   <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
                 <div className="filter-panel-actions">
-                  {!shareToken && visitorLayoutSelectionEnabled ? (
+                  {!shareHidesCatalogNavigation && visitorLayoutSelectionEnabled ? (
                     <div className="category-layout-toggle" role="group" aria-label={t("分类展示方式")}>
                       <Button
                         type="button"
@@ -1235,7 +1237,7 @@ export function StorePage() {
                   onStateChange={handleImageSearchState}
                 />
               </div>
-              {!shareToken && !imageSearchActive && !search.trim() && popularSearchTerms.length ? (
+              {!shareHidesCatalogNavigation && !imageSearchActive && !search.trim() && popularSearchTerms.length ? (
                 <div className="store-popular-searches" aria-label={t("热门搜索词")}>
                   <Text size="1" color="gray"><Fire size={13} weight="fill" />{t("热门搜索词")}</Text>
                   <div className="store-popular-search-list">
@@ -1257,7 +1259,7 @@ export function StorePage() {
                   </div>
                 </div>
               ) : null}
-              {!shareToken && !imageSearchActive && categoryLayout === "horizontal" ? (
+              {!shareHidesCatalogNavigation && !imageSearchActive && categoryLayout === "horizontal" ? (
                 <nav className="category-browser" aria-label={t("商品分类")}>
                   <div className="category-browser-row">
                     <span className="category-browser-label">{t("一级分类")}</span>
@@ -1337,8 +1339,8 @@ export function StorePage() {
               ) : null}
             </div>
 
-            <div className={`results-container${!shareToken && !imageSearchActive && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
-              {!shareToken && !imageSearchActive && categoryLayout === "vertical" && (
+            <div className={`results-container${!shareHidesCatalogNavigation && !imageSearchActive && categoryLayout === "vertical" ? " has-sidebar" : ""}`}>
+              {!shareHidesCatalogNavigation && !imageSearchActive && categoryLayout === "vertical" && (
                 <aside className="category-sidebar">
                   <div className="category-sidebar-header">
                     <Text size="2" weight="medium">{t("商品分类")}</Text>
@@ -1401,7 +1403,7 @@ export function StorePage() {
                 </aside>
               )}
               <div className="results-main">
-            {!shareToken && !imageSearchActive && categoryLayout === "vertical" && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
+            {!shareHidesCatalogNavigation && !imageSearchActive && categoryLayout === "vertical" && selectedPrimary && secondaryOptions.length > 0 && !showCategoryShowcase ? (
               <nav className="category-secondary-nav" aria-label={t("二级分类")}>
                 <CategoryScrollTrack
                   ariaLabel={t("二级分类")}

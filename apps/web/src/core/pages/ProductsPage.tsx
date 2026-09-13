@@ -1347,6 +1347,7 @@ export function ProductsPage() {
         eyebrow={t("商品资料")}
         title={t("SKU 商品库")}
         actions={<>
+          {canShare ? <Button variant="soft" onClick={() => setShareTarget({ type: "STOREFRONT" })}>{t("商品前台")} · {t("分享链接")}</Button> : null}
           <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出商品与 SKU")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
           {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}

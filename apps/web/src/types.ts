@@ -225,7 +225,7 @@ export interface StorefrontExchangeRateSnapshot {
   rate_source: string;
 }
 
-export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
+export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY" | "STOREFRONT";
 
 export interface CatalogSharePublic {
   id: string;

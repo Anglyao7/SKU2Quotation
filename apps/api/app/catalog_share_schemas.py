@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class CatalogShareCreate(BaseModel):
-    target_type: Literal["PRODUCTS", "CATEGORY"]
+    target_type: Literal["PRODUCTS", "CATEGORY", "STOREFRONT"]
     sku_ids: list[UUID] = Field(default_factory=list, max_length=500)
     product_ids: list[UUID] = Field(default_factory=list, max_length=500)
     category_id: UUID | None = None
@@ -23,15 +23,18 @@ class CatalogShareCreate(BaseModel):
         if self.target_type == "PRODUCTS":
             if bool(self.sku_ids) == bool(self.product_ids) or self.category_id is not None:
                 raise ValueError("product shares require either product_ids or sku_ids")
-        elif self.category_id is None or self.sku_ids or self.product_ids:
-            raise ValueError("category shares require category_id only")
+        elif self.target_type == "CATEGORY":
+            if self.category_id is None or self.sku_ids or self.product_ids:
+                raise ValueError("category shares require category_id only")
+        elif self.category_id is not None or self.sku_ids or self.product_ids:
+            raise ValueError("storefront shares cannot include a product or category")
         return self
 
 
 class CatalogShareResponse(BaseModel):
     id: UUID
     token: str
-    target_type: Literal["PRODUCTS", "CATEGORY"]
+    target_type: Literal["PRODUCTS", "CATEGORY", "STOREFRONT"]
     title: str
     item_count: int = Field(ge=0)
     category_id: UUID | None = None

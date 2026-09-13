@@ -2470,7 +2470,7 @@ def list_public_products(
         )
         if share_constraint.target_type == "CATEGORY":
             category = share_constraint.category_path
-        else:
+        elif share_constraint.target_type == "PRODUCTS":
             shared_product_ids = set(share_constraint.product_ids)
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
@@ -2793,7 +2793,7 @@ def search_public_products_by_image(
         )
         if share_constraint.target_type == "PRODUCTS":
             allowed_product_ids = set(share_constraint.product_ids)
-        else:
+        elif share_constraint.target_type == "CATEGORY":
             shared_category = share_constraint.category_path
 
     from .image_intelligence import search_public_image_matches
@@ -3412,7 +3412,7 @@ def get_public_sku(
         share_constraint = resolve_share_constraint(
             session, tenant_id=tenant.id, token=share_token
         )
-        allowed = row[2].id in set(share_constraint.product_ids)
+        allowed = share_constraint.target_type != "PRODUCTS" or row[2].id in set(share_constraint.product_ids)
         if share_constraint.target_type == "CATEGORY":
             allowed_rows = repository.list_public_catalog_rows_by_product_ids(
                 session,

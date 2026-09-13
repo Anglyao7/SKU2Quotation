@@ -17,7 +17,8 @@ import type { CatalogShare, CatalogShareLogoPosition } from "../types";
 
 export type CatalogShareTarget =
   | { type: "PRODUCTS"; productIds: string[] }
-  | { type: "CATEGORY"; categoryId: string; categoryName: string };
+  | { type: "CATEGORY"; categoryId: string; categoryName: string }
+  | { type: "STOREFRONT" };
 
 interface CatalogShareDialogProps {
   open: boolean;
@@ -99,9 +100,32 @@ function drawContainedImage(
   );
 }
 
+function drawCoverImage(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  width: number,
+  height: number,
+  opacity = 1,
+) {
+  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+  const drawWidth = image.naturalWidth * scale;
+  const drawHeight = image.naturalHeight * scale;
+  const previousAlpha = context.globalAlpha;
+  context.globalAlpha = opacity;
+  context.drawImage(
+    image,
+    (width - drawWidth) / 2,
+    (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
+  context.globalAlpha = previousAlpha;
+}
+
 async function downloadShareCard(
   share: CatalogShare,
   qrDataUrl: string,
+  backgroundImageUrl?: string,
 ) {
   const canvas = document.createElement("canvas");
   canvas.width = 1080;
@@ -109,12 +133,19 @@ async function downloadShareCard(
   const context = canvas.getContext("2d");
   if (!context) throw new Error("Canvas is unavailable");
 
-  const background = context.createLinearGradient(0, 0, 1080, 1350);
-  background.addColorStop(0, "#161121");
-  background.addColorStop(0.58, "#2d1b69");
-  background.addColorStop(1, "#20152f");
-  context.fillStyle = background;
-  context.fillRect(0, 0, canvas.width, canvas.height);
+  if (backgroundImageUrl) {
+    const backgroundImage = await imageFromUrl(backgroundImageUrl);
+    drawCoverImage(context, backgroundImage, canvas.width, canvas.height, 0.34);
+    context.fillStyle = "rgba(14, 10, 28, .58)";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    const background = context.createLinearGradient(0, 0, 1080, 1350);
+    background.addColorStop(0, "#161121");
+    background.addColorStop(0.58, "#2d1b69");
+    background.addColorStop(1, "#20152f");
+    context.fillStyle = background;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
 
   const glow = context.createRadialGradient(860, 110, 0, 860, 110, 520);
   glow.addColorStop(0, "rgba(212, 175, 55, .19)");
@@ -150,10 +181,10 @@ async function downloadShareCard(
     context.fillText(fitCanvasText(context, share.storeSubtitle, hasLogo ? 680 : 760), 946, merchantNameY + 52);
   }
 
-  context.fillStyle = "#ffffff";
-  context.fillRect(190, 355, 700, 700);
+  context.fillStyle = "rgba(255,255,255,.96)";
+  context.fillRect(250, 440, 580, 580);
   const qrImage = await imageFromUrl(qrDataUrl);
-  context.drawImage(qrImage, 222, 387, 636, 636);
+  context.drawImage(qrImage, 278, 468, 524, 524);
 
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
   if (!blob) throw new Error("Unable to create share card");
@@ -179,6 +210,8 @@ export function CatalogShareDialog({
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState("");
+  const [backgroundMode, setBackgroundMode] = useState<"color" | "image">("color");
   const [logoPosition, setLogoPosition] = useState<CatalogShareLogoPosition>("NONE");
   const [availableLogoUrl, setAvailableLogoUrl] = useState("");
   const shareUrl = useMemo(
@@ -190,6 +223,11 @@ export function CatalogShareDialog({
     if (!open) {
       setLogoPosition("NONE");
       setAvailableLogoUrl("");
+      setBackgroundMode("color");
+      setBackgroundImageUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return "";
+      });
     }
   }, [open]);
 
@@ -204,7 +242,9 @@ export function CatalogShareDialog({
     void createCatalogShare(
       target.type === "PRODUCTS"
         ? { targetType: "PRODUCTS", productIds: target.productIds, logoPosition }
-        : { targetType: "CATEGORY", categoryId: target.categoryId, logoPosition },
+        : target.type === "CATEGORY"
+        ? { targetType: "CATEGORY", categoryId: target.categoryId, logoPosition }
+        : { targetType: "STOREFRONT", logoPosition },
     )
       .then(async (created) => {
         const url = absoluteShareUrl(created.sharePath, locale);
@@ -245,12 +285,26 @@ export function CatalogShareDialog({
     setDownloading(true);
     setError("");
     try {
-      await downloadShareCard(share, qrDataUrl);
+      await downloadShareCard(share, qrDataUrl, backgroundMode === "image" ? backgroundImageUrl : undefined);
     } catch {
       setError(t("分享名片生成失败，请稍后重试。"));
     } finally {
       setDownloading(false);
     }
+  };
+
+  const handleBackgroundFile = (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("请选择图片文件作为名片背景。");
+      return;
+    }
+    setBackgroundImageUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return URL.createObjectURL(file);
+    });
+    setBackgroundMode("image");
+    setError("");
   };
 
   return (
@@ -259,8 +313,16 @@ export function CatalogShareDialog({
         <div className="core-dialog-heading">
           <div>
             <Text size="1" color="gray">{t("商品前台")}</Text>
-            <Dialog.Title>{t(target?.type === "CATEGORY" ? "分享分类" : "分享商品")}</Dialog.Title>
-            <Dialog.Description>{t("二维码和链接只展示本次选择的商品。")}</Dialog.Description>
+            <Dialog.Title>
+              {target?.type === "STOREFRONT"
+                ? `${t("商品前台")} · ${t("分享链接")}`
+                : t(target?.type === "CATEGORY" ? "分享分类" : "分享商品")}
+            </Dialog.Title>
+            <Dialog.Description>
+              {target?.type === "STOREFRONT"
+                ? "二维码和链接会展示当前商家前台的全部商品。"
+                : t("二维码和链接只展示本次选择的商品。")}
+            </Dialog.Description>
           </div>
           <Button variant="ghost" color="gray" onClick={() => onOpenChange(false)} aria-label={t("关闭")}>
             <X />
@@ -311,9 +373,37 @@ export function CatalogShareDialog({
         </section>
         ) : null}
 
+        {share ? (
+          <section className="core-catalog-share-background" aria-labelledby="catalog-share-background-title">
+            <div>
+              <Text id="catalog-share-background-title" size="2" weight="bold">名片背景</Text>
+              <Text size="1" color="gray">建议使用 4:5 图片（例如 1080×1350），图片会按比例裁切并置于底层，不遮挡商家名和二维码。</Text>
+            </div>
+            <div className="core-catalog-share-background-actions">
+              <label className={`core-catalog-share-background-option${backgroundMode === "color" ? " is-selected" : ""}`}>
+                <input type="radio" name="catalog-share-background" checked={backgroundMode === "color"} onChange={() => setBackgroundMode("color")} />
+                <span>色彩背景</span>
+              </label>
+              <label className={`core-catalog-share-background-option${backgroundMode === "image" ? " is-selected" : ""}`}>
+                <input type="radio" name="catalog-share-background" checked={backgroundMode === "image"} onChange={() => setBackgroundMode("image")} />
+                <span>上传图片</span>
+              </label>
+              <label className="core-catalog-share-background-upload">
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleBackgroundFile(event.target.files?.[0])} />
+                {backgroundImageUrl ? "更换背景图" : t("上传图片")}
+              </label>
+              {backgroundImageUrl ? <Button size="1" variant="ghost" color="gray" onClick={() => { URL.revokeObjectURL(backgroundImageUrl); setBackgroundImageUrl(""); setBackgroundMode("color"); }}>清除</Button> : null}
+            </div>
+          </section>
+        ) : null}
+
         {share && qrDataUrl ? (
           <div className="core-catalog-share-layout">
-            <section className="core-catalog-share-card" aria-label={t("二维码分享名片预览")}>
+            <section
+              className={`core-catalog-share-card${backgroundMode === "image" && backgroundImageUrl ? " has-background-image" : ""}`}
+              style={backgroundMode === "image" && backgroundImageUrl ? { backgroundImage: `url("${backgroundImageUrl}")` } : undefined}
+              aria-label={t("二维码分享名片预览")}
+            >
               {share.logoPosition !== "NONE" && share.storeLogoUrl ? (
                 <div className={`core-catalog-share-logo is-${share.logoPosition.toLowerCase().replace("_", "-")}`}>
                   <img src={share.storeLogoUrl} alt={t("{store} Logo", { store: share.storeName })} />
@@ -329,7 +419,7 @@ export function CatalogShareDialog({
             <section className="core-catalog-share-actions">
               <div>
                 <Text size="1" color="gray">{t("分享内容")}</Text>
-                <Text size="5" weight="bold" as="div">{share.targetType === "PRODUCTS" && share.itemCount > 1 ? t("{count} 件商品精选", { count: share.itemCount }) : share.title}</Text>
+                <Text size="5" weight="bold" as="div">{share.targetType === "PRODUCTS" && share.itemCount > 1 ? t("{count} 件商品精选", { count: share.itemCount }) : share.targetType === "STOREFRONT" ? t("商品前台") : share.title}</Text>
                 <Text size="2" color="gray">{t("共 {count} 件商品", { count: share.itemCount })}</Text>
               </div>
               <label className="core-catalog-share-link">

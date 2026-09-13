@@ -93,3 +93,12 @@ def test_product_shares_keep_legacy_sku_support_but_reject_mixed_targets():
     for payload in ({}, {"product_ids": [product, product]}, {"product_ids": [product], "sku_ids": [uuid4()]}, {"product_ids": [product], "category_id": uuid4()}):
         with pytest.raises(ValidationError):
             CatalogShareCreate(target_type="PRODUCTS", **payload)
+
+
+def test_storefront_share_has_no_product_scope():
+    share = CatalogShareCreate(target_type="STOREFRONT")
+    assert share.product_ids == []
+    assert share.sku_ids == []
+    assert share.category_id is None
+    with pytest.raises(ValidationError):
+        CatalogShareCreate(target_type="STOREFRONT", product_ids=[uuid4()])

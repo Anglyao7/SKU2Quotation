@@ -205,12 +205,12 @@ class PublicCatalogOfferRow(AuditTimestampMixin, Base):
 
 
 class CatalogShareRow(AuditTimestampMixin, Base):
-    """Tenant-scoped, opaque storefront share links for products or a category."""
+    """Tenant-scoped, opaque storefront share links for products, categories, or a whole storefront."""
 
     __tablename__ = "catalog_shares"
     __table_args__ = (
         CheckConstraint(
-            "target_type IN ('PRODUCTS', 'CATEGORY')",
+            "target_type IN ('PRODUCTS', 'CATEGORY', 'STOREFRONT')",
             name="target_type_allowed",
         ),
         CheckConstraint(
@@ -220,7 +220,7 @@ class CatalogShareRow(AuditTimestampMixin, Base):
         CheckConstraint("item_count > 0", name="item_count_positive"),
         CheckConstraint("length(fingerprint) = 64", name="fingerprint_sha256_length"),
         CheckConstraint(
-            "(target_type = 'PRODUCTS' AND category_id IS NULL) OR "
+            "(target_type IN ('PRODUCTS', 'STOREFRONT') AND category_id IS NULL) OR "
             "(target_type = 'CATEGORY' AND category_id IS NOT NULL)",
             name="target_shape_valid",
         ),

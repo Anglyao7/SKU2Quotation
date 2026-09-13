@@ -18,6 +18,8 @@ assert.match(categories, /onClick=\{\(\) => onShareCategory\(child\)\}/);
 assert.match(reseller, /onShare=\{\(\) => setShareTarget/);
 assert.match(reseller, /categoryId: item\.id/);
 assert.match(dialog, /productIds: target\.productIds/);
+assert.match(dialog, /targetType: "STOREFRONT"/);
+assert.match(products, /type: "STOREFRONT"/);
 assert.match(dialog, /url\.searchParams\.set\("lang", locale\)/);
 assert.match(api, /product_ids: input\.productIds \?\? \[\]/);
 assert.match(nginx, /\/api\/store\/\$1\/shares\/\$2\/preview break/);

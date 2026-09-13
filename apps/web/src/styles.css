@@ -119,6 +119,65 @@
   cursor: not-allowed;
 }
 
+.core-catalog-share-background {
+  margin-top: 18px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--gray-5);
+  border-radius: 14px;
+  background: var(--gray-2);
+}
+
+.core-catalog-share-background > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.core-catalog-share-background-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.core-catalog-share-background-option,
+.core-catalog-share-background-upload {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border: 1px solid var(--gray-6);
+  border-radius: 9px;
+  color: var(--gray-11);
+  background: var(--color-panel-solid);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.core-catalog-share-background-option.is-selected {
+  border-color: var(--accent-8);
+  color: var(--accent-11);
+  box-shadow: 0 0 0 1px var(--accent-7);
+}
+
+.core-catalog-share-background-option input,
+.core-catalog-share-background-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .core-catalog-share-logo-option-preview {
   position: relative;
   width: 34px;
@@ -159,6 +218,20 @@
     linear-gradient(145deg, #17112e 0%, #2d1b69 58%, #15111f 100%);
   box-shadow: 0 24px 56px rgba(30, 18, 65, 0.24);
   color: white;
+}
+
+.core-catalog-share-card.has-background-image {
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+.core-catalog-share-card.has-background-image::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(145deg, rgba(13, 10, 26, .72), rgba(37, 20, 82, .48) 58%, rgba(10, 9, 18, .72));
 }
 
 .core-catalog-share-card::after {
@@ -221,9 +294,9 @@
 .core-catalog-share-qr {
   position: relative;
   z-index: 1;
-  width: min(82%, 290px);
+  width: min(70%, 238px);
   aspect-ratio: 1;
-  margin: auto;
+  margin: auto auto 10px;
   padding: 12px;
   border-radius: 18px;
   background: #fff;

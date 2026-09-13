@@ -764,7 +764,7 @@ export interface ProductCategory {
   productCount: number;
 }
 
-export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY";
+export type CatalogShareTargetType = "PRODUCTS" | "CATEGORY" | "STOREFRONT";
 export type CatalogShareLogoPosition = "NONE" | "TOP_LEFT" | "TOP_RIGHT";
 
 export interface CatalogShare {

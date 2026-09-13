@@ -110,7 +110,17 @@ def _response(
         membership_id=subaccount_membership_id, product_ids=set(),
     )
     response_category_path = row.category_path
-    if row.target_type == "CATEGORY":
+    if row.target_type == "STOREFRONT":
+        current_item_count = public_catalog_repository.count_public_catalog_products(
+            session,
+            tenant_id=row.tenant_id,
+            now=utcnow(),
+            query="",
+            category=None,
+            tags=set(),
+            excluded_product_ids=hidden_ids,
+        )
+    elif row.target_type == "CATEGORY":
         current_category = (
             repository.get_category(
                 session, tenant_id=row.tenant_id, category_id=row.category_id
@@ -147,6 +157,8 @@ def _response(
             excluded_product_ids=hidden_ids,
         )
     title = _category_name(session, row) if row.target_type == "CATEGORY" else None
+    if row.target_type == "STOREFRONT":
+        title = "商品前台"
     if row.target_type == "PRODUCTS" and current_item_count == 1:
         visible_products = public_catalog_repository.list_public_catalog_rows_by_product_ids(
             session, tenant_id=row.tenant_id, now=utcnow(), category=None,
@@ -243,7 +255,7 @@ def create_share(
             sorted(str(product_id) for product_id in product_ids)
         )
         item_count = len(product_ids)
-    else:
+    elif request.target_type == "CATEGORY":
         category_id = request.category_id
         assert category_id is not None
         category = repository.get_category(
@@ -273,6 +285,24 @@ def create_share(
             )
         title = category.name
         fingerprint_source = f"CATEGORY:{category_id}"
+    else:
+        item_count = public_catalog_repository.count_public_catalog_products(
+            session,
+            tenant_id=tenant_id,
+            now=now,
+            query="",
+            category=None,
+            tags=set(),
+            excluded_product_ids=hidden_ids,
+        )
+        if item_count <= 0:
+            raise ApplicationError(
+                "CATALOG_SHARE_STOREFRONT_EMPTY",
+                "当前商家前台暂时没有已上架商品。",
+                kind="conflict",
+            )
+        title = "商品前台"
+        fingerprint_source = "STOREFRONT"
 
     if request.logo_position != "NONE":
         fingerprint_source = f"{fingerprint_source}:LOGO:{request.logo_position}"
