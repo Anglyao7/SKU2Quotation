@@ -79,6 +79,24 @@
   gap: 3px;
 }
 
+.core-catalog-share-language {
+  margin-top: 18px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(170px, 220px);
+  align-items: center;
+  gap: 16px;
+  border: 1px solid var(--gray-5);
+  border-radius: 14px;
+  background: var(--gray-2);
+}
+
+.core-catalog-share-language > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .core-catalog-share-logo-options {
   display: grid;
   grid-template-columns: repeat(3, minmax(88px, 1fr));
@@ -478,6 +496,7 @@
 @media (max-width: 760px) {
   .core-catalog-share-dialog { max-height: 92dvh; }
   .core-catalog-share-branding { grid-template-columns: 1fr; }
+  .core-catalog-share-language { grid-template-columns: 1fr; }
   .core-catalog-share-logo-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .core-catalog-share-logo-options > button { min-height: 58px; grid-template-columns: 28px minmax(0, 1fr); padding: 6px; }
   .core-catalog-share-logo-option-preview { width: 28px; height: 36px; }

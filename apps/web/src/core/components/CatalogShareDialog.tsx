@@ -1,4 +1,4 @@
-import { Button, Dialog, Spinner, Text } from "@radix-ui/themes";
+import { Button, Dialog, Select, Spinner, Text } from "@radix-ui/themes";
 import {
   ArrowSquareOut,
   Check,
@@ -14,6 +14,8 @@ import { createCatalogShare } from "../api";
 import { useLocale } from "../LocaleContext";
 import { ToastNotice } from "../ToastContext";
 import type { CatalogShare, CatalogShareLogoPosition } from "../types";
+import type { StorefrontLocale } from "../../types";
+import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
 
 export type CatalogShareTarget =
   | { type: "PRODUCTS"; productIds: string[] }
@@ -203,9 +205,10 @@ export function CatalogShareDialog({
   target,
   onOpenChange,
 }: CatalogShareDialogProps) {
-  const { locale, t } = useLocale();
+  const { t } = useLocale();
   const [share, setShare] = useState<CatalogShare>();
   const [qrDataUrl, setQrDataUrl] = useState("");
+  const [shareLocale, setShareLocale] = useState<StorefrontLocale>("en-US");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
@@ -215,14 +218,15 @@ export function CatalogShareDialog({
   const [logoPosition, setLogoPosition] = useState<CatalogShareLogoPosition>("NONE");
   const [availableLogoUrl, setAvailableLogoUrl] = useState("");
   const shareUrl = useMemo(
-    () => (share ? absoluteShareUrl(share.sharePath, locale) : ""),
-    [share, locale],
+    () => (share ? absoluteShareUrl(share.sharePath, shareLocale) : ""),
+    [share, shareLocale],
   );
 
   useEffect(() => {
     if (!open) {
       setLogoPosition("NONE");
       setAvailableLogoUrl("");
+      setShareLocale("en-US");
       setBackgroundMode("color");
       setBackgroundImageUrl((current) => {
         if (current) URL.revokeObjectURL(current);
@@ -246,18 +250,10 @@ export function CatalogShareDialog({
         ? { targetType: "CATEGORY", categoryId: target.categoryId, logoPosition }
         : { targetType: "STOREFRONT", logoPosition },
     )
-      .then(async (created) => {
-        const url = absoluteShareUrl(created.sharePath, locale);
-        const qr = await QRCode.toDataURL(url, {
-          width: 640,
-          margin: 2,
-          errorCorrectionLevel: "H",
-          color: { dark: "#17112eff", light: "#ffffffff" },
-        });
+      .then((created) => {
         if (!active) return;
         setAvailableLogoUrl(created.storeLogoUrl ?? "");
         setShare(created);
-        setQrDataUrl(qr);
       })
       .catch((reason) => {
         if (!active) return;
@@ -267,7 +263,29 @@ export function CatalogShareDialog({
         if (active) setLoading(false);
       });
     return () => { active = false; };
-  }, [logoPosition, open, target, locale, t]);
+  }, [logoPosition, open, target, t]);
+
+  useEffect(() => {
+    if (!share) {
+      setQrDataUrl("");
+      return;
+    }
+    let active = true;
+    setQrDataUrl("");
+    void QRCode.toDataURL(absoluteShareUrl(share.sharePath, shareLocale), {
+      width: 640,
+      margin: 2,
+      errorCorrectionLevel: "H",
+      color: { dark: "#17112eff", light: "#ffffffff" },
+    })
+      .then((qr) => {
+        if (active) setQrDataUrl(qr);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : t("分享名片生成失败，请稍后重试。"));
+      });
+    return () => { active = false; };
+  }, [share, shareLocale, t]);
 
   const handleCopy = async () => {
     if (!shareUrl) return;
@@ -337,6 +355,25 @@ export function CatalogShareDialog({
         ) : null}
 
         {error ? <ToastNotice kind="error" message={error} /> : null}
+
+        {share ? (
+          <section className="core-catalog-share-language" aria-labelledby="catalog-share-language-title">
+            <div>
+              <Text id="catalog-share-language-title" size="2" weight="bold">分享语言</Text>
+              <Text size="1" color="gray">默认使用 English；二维码、链接和打开后的商品前台都会使用这里的语言。</Text>
+            </div>
+            <Select.Root value={shareLocale} onValueChange={(value) => setShareLocale(value as StorefrontLocale)}>
+              <Select.Trigger aria-label="分享语言" />
+              <Select.Content position="popper">
+                {STOREFRONT_LANGUAGE_OPTIONS.map((language) => (
+                  <Select.Item key={language.code} value={language.code}>
+                    {language.flag} {language.label}
+                  </Select.Item>
+                ))}
+              </Select.Content>
+            </Select.Root>
+          </section>
+        ) : null}
 
         {availableLogoUrl ? (
         <section className="core-catalog-share-branding" aria-labelledby="catalog-share-branding-title">
