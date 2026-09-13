@@ -80,12 +80,13 @@ export function StorefrontVisitorEntry({
   }, [load, tenantSlug]);
 
   const centerHref = `${storefrontBasePath(tenantSlug)}/me${storefrontLocaleQuery(locale)}`;
+  const ordersHref = `${storefrontBasePath(tenantSlug)}/me/orders${storefrontLocaleQuery(locale)}`;
   const noticeTab = notice?.status === "COMPLETED"
     ? "completed"
     : notice?.status === "CANCELLED" || notice?.status === "EXPIRED"
-      ? "closed"
+      ? "issues"
       : "confirmed";
-  const noticeHref = `${centerHref}${centerHref.includes("?") ? "&" : "?"}tab=${noticeTab}`;
+  const noticeHref = `${ordersHref}${ordersHref.includes("?") ? "&" : "?"}tab=${noticeTab}`;
   const markRead = () => {
     markQuoteNotificationsSeen(
       tenantSlug,

@@ -18,9 +18,11 @@ import {
   Storefront as StoreIcon,
   Trash,
   UserCircle,
+  WarningCircle,
+  ClipboardText,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useLoaderData, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLoaderData, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
@@ -122,10 +124,21 @@ function QuoteRows({ quotes, locale, slug }: { quotes: StorefrontVisitorQuote[];
   ))}</div>;
 }
 
+type VisitorOrderTab = "submitted" | "confirmed" | "completed" | "issues";
+
+function normalizeVisitorOrderTab(value?: string | null): VisitorOrderTab {
+  if (value === "confirmed") return "confirmed";
+  if (value === "completed") return "completed";
+  if (value === "issues" || value === "closed") return "issues";
+  return "submitted";
+}
+
 export function StorefrontVisitorCenterPage() {
   const store = useLoaderData() as Storefront;
   const { profile } = useCoreAuth();
   const { accountKey } = useParams<{ accountKey?: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
   const accountId = storefrontAccountMembershipId(accountKey) || store.account_id || undefined;
   const basePath = storefrontBasePath(store.slug);
   const storageScope = storefrontStorageScope(store.slug, accountId);
@@ -143,6 +156,20 @@ export function StorefrontVisitorCenterPage() {
   const [cart, setCart] = useState<Record<string, CartLine>>(() => readStoreCart(storageScope));
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const storefrontHome = `${basePath}${storefrontLocaleQuery(locale)}`;
+  const ordersPath = `${basePath}/me/orders`;
+  const routeWithQuery = (path: string, entries: Array<[string, string]> = []) => {
+    const params = new URLSearchParams();
+    if (locale !== "zh-CN") params.set("lang", locale);
+    entries.forEach(([key, value]) => params.set(key, value));
+    const query = params.toString();
+    return `${path}${query ? `?${query}` : ""}`;
+  };
+  const requestedTab = searchParams.get("tab");
+  const ordersPage = location.pathname.endsWith("/orders")
+    || ["pending", "submitted", "confirmed", "completed", "closed", "issues"].includes(requestedTab || "");
+  const orderTab = normalizeVisitorOrderTab(requestedTab);
+  const activeView = ordersPage ? "" : searchParams.get("view");
+  const orderHref = (tab: VisitorOrderTab) => routeWithQuery(ordersPath, [["tab", tab]]);
 
   const loadQuotes = useCallback(async () => {
     setLoading(true);
@@ -179,23 +206,56 @@ export function StorefrontVisitorCenterPage() {
   const confirmed = quotes.filter((quote) => quote.status === "CONFIRMED");
   const completed = quotes.filter((quote) => quote.status === "COMPLETED");
   const closed = quotes.filter((quote) => quote.status === "CANCELLED" || quote.status === "EXPIRED");
-  const requestedTab = searchParams.get("tab");
-  const defaultTab = requestedTab && [
-    "history",
-    "favorites",
-    "pending",
-    "confirmed",
-    "completed",
-    "closed",
-  ].includes(requestedTab)
-    ? requestedTab
-    : requestedTab === "quotes" ? "pending" : "history";
   const updateQuantity = (skuId: string, quantity: number) => setCart((current) => setCartQuantity(current, skuId, quantity));
   const updateCartNote = (skuId: string, note: string) => setCart((current) => (
     current[skuId]
       ? { ...current, [skuId]: { ...current[skuId], note } }
       : current
   ));
+  const historyPanel = (
+    <div className="visitor-center-panel">
+      <div className="visitor-panel-heading">
+        <Heading size="5">{t("浏览记录")}</Heading>
+        {history.length ? <Button size="2" variant="ghost" color="gray" onClick={() => clearStorefrontHistory(storageScope)}><Trash />{t("清空")}</Button> : null}
+      </div>
+      <ProductRows items={history} store={store} locale={locale} basePath={basePath} />
+    </div>
+  );
+  const favoritesPanel = (
+    <div className="visitor-center-panel">
+      <div className="visitor-panel-heading"><Heading size="5">{t("我的收藏")}</Heading></div>
+      <ProductRows
+        items={favorites}
+        store={store}
+        locale={locale}
+        basePath={basePath}
+        removable
+        onRemove={(item) => {
+          toggleStorefrontFavorite(storageScope, {
+            id: item.id,
+            name: item.name,
+            image_url: item.imageUrl,
+            price_from: item.priceFrom,
+            price_to: item.priceTo,
+            currency: item.currency,
+            category: item.category,
+            tags: [],
+            unit_code: "piece",
+            sku_count: 0,
+            product_version: 1,
+          });
+        }}
+      />
+    </div>
+  );
+  const quotePanel = (title: string, rows: StorefrontVisitorQuote[]) => (
+    <Tabs.Content value={
+      rows === pending ? "submitted" : rows === confirmed ? "confirmed" : rows === completed ? "completed" : "issues"
+    }>
+      <div className="visitor-panel-heading"><Heading size="5">{title}</Heading></div>
+      {loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={rows} locale={locale} slug={store.slug} />}
+    </Tabs.Content>
+  );
 
   return <div
     className={`store-shell visitor-center-shell${cartLines.length ? " has-cart" : ""}`}
@@ -221,27 +281,54 @@ export function StorefrontVisitorCenterPage() {
       <Link to={storefrontHome} className="sku-detail-back"><ArrowLeft weight="bold" />{t("返回商品目录")}</Link>
       <section className="visitor-center-hero">
         <span><UserCircle weight="duotone" /></span>
-        <div><Text size="1" color="gray">{t("访客个人中心")}</Text><Heading size="7">{t("我的")}</Heading><Text size="2" color="gray">{t("记录仅保存在当前浏览器；商家确认询价或订单后会在这里通知你。")}</Text></div>
+        <div><Text size="1" color="gray">{t("访客个人中心")}</Text><Heading size="7">{t(ordersPage ? "我的订单" : "我的")}</Heading><Text size="2" color="gray">{t("记录仅保存在当前浏览器；商家确认询价或订单后会在这里通知你。")}</Text></div>
       </section>
       {error ? <Card className="visitor-center-error"><Text color="red">{error}</Text><Button size="2" variant="soft" onClick={() => void loadQuotes()}>{t("重试")}</Button></Card> : null}
-      <Tabs.Root defaultValue={defaultTab} className="visitor-center-tabs">
-        <Tabs.List>
-          <Tabs.Trigger value="history"><ClockCounterClockwise />{t("浏览记录")} <Badge>{history.length}</Badge></Tabs.Trigger>
-          <Tabs.Trigger value="favorites"><Heart />{t("我的收藏")} <Badge>{favorites.length}</Badge></Tabs.Trigger>
-          <Tabs.Trigger value="pending">{t("待确认询价单")} <Badge>{pending.length}</Badge></Tabs.Trigger>
-          <Tabs.Trigger value="confirmed">{t("已确认询价单")} <Badge>{confirmed.length}</Badge></Tabs.Trigger>
-          <Tabs.Trigger value="completed">{t("已成交订单")} <Badge>{completed.length}</Badge></Tabs.Trigger>
-          <Tabs.Trigger value="closed">{t("已关闭")} <Badge>{closed.length}</Badge></Tabs.Trigger>
-        </Tabs.List>
-        <div className="visitor-center-panel">
-          <Tabs.Content value="history"><div className="visitor-panel-heading"><Heading size="5">{t("浏览记录")}</Heading>{history.length ? <Button size="2" variant="ghost" color="gray" onClick={() => clearStorefrontHistory(storageScope)}><Trash />{t("清空")}</Button> : null}</div><ProductRows items={history} store={store} locale={locale} basePath={basePath} /></Tabs.Content>
-          <Tabs.Content value="favorites"><div className="visitor-panel-heading"><Heading size="5">{t("我的收藏")}</Heading></div><ProductRows items={favorites} store={store} locale={locale} basePath={basePath} removable onRemove={(item) => { toggleStorefrontFavorite(storageScope, { id: item.id, name: item.name, image_url: item.imageUrl, price_from: item.priceFrom, price_to: item.priceTo, currency: item.currency, category: item.category, tags: [], unit_code: "piece", sku_count: 0, product_version: 1 }); }} /></Tabs.Content>
-          <Tabs.Content value="pending"><div className="visitor-panel-heading"><Heading size="5">{t("待确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={pending} locale={locale} slug={store.slug} />}</Tabs.Content>
-          <Tabs.Content value="confirmed"><div className="visitor-panel-heading"><Heading size="5">{t("已确认询价单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={confirmed} locale={locale} slug={store.slug} />}</Tabs.Content>
-          <Tabs.Content value="completed"><div className="visitor-panel-heading"><Heading size="5">{t("已成交订单")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={completed} locale={locale} slug={store.slug} />}</Tabs.Content>
-          <Tabs.Content value="closed"><div className="visitor-panel-heading"><Heading size="5">{t("已关闭")}</Heading></div>{loading ? <div className="visitor-center-empty">{t("正在加载…")}</div> : <QuoteRows quotes={closed} locale={locale} slug={store.slug} />}</Tabs.Content>
-        </div>
-      </Tabs.Root>
+      {ordersPage ? (
+        <section className="visitor-orders-page">
+          <Link to={storefrontHome} className="visitor-orders-back"><ArrowLeft weight="bold" />{t("我的")}</Link>
+          <Tabs.Root
+            value={orderTab}
+            onValueChange={(value) => navigate(orderHref(normalizeVisitorOrderTab(value)), { replace: true })}
+            className="visitor-orders-tabs"
+          >
+            <Tabs.List>
+              <Tabs.Trigger value="submitted">{t("已提交订单")} <Badge>{pending.length}</Badge></Tabs.Trigger>
+              <Tabs.Trigger value="confirmed">{t("已确认订单")} <Badge>{confirmed.length}</Badge></Tabs.Trigger>
+              <Tabs.Trigger value="completed">{t("已成交订单")} <Badge>{completed.length}</Badge></Tabs.Trigger>
+              <Tabs.Trigger value="issues">{t("问题订单")} <Badge>{closed.length}</Badge></Tabs.Trigger>
+            </Tabs.List>
+            <div className="visitor-center-panel visitor-orders-panel">
+              {quotePanel(t("已提交订单"), pending)}
+              {quotePanel(t("已确认订单"), confirmed)}
+              {quotePanel(t("已成交订单"), completed)}
+              {quotePanel(t("问题订单"), closed)}
+            </div>
+          </Tabs.Root>
+        </section>
+      ) : (
+        <>
+          <div className="visitor-shortcut-grid">
+            <Link to={routeWithQuery(`${basePath}/me`, [["view", "history"]])} className="visitor-shortcut-card">
+              <span className="visitor-shortcut-icon"><ClockCounterClockwise weight="duotone" /></span>
+              <span className="visitor-shortcut-copy"><strong>{t("浏览记录")}</strong><small>{history.length}</small></span>
+            </Link>
+            <Link to={routeWithQuery(`${basePath}/me`, [["view", "favorites"]])} className="visitor-shortcut-card">
+              <span className="visitor-shortcut-icon"><Heart weight="duotone" /></span>
+              <span className="visitor-shortcut-copy"><strong>{t("我的收藏")}</strong><small>{favorites.length}</small></span>
+            </Link>
+            <Link to={orderHref("submitted")} className="visitor-shortcut-card">
+              <span className="visitor-shortcut-icon"><ClipboardText weight="duotone" /></span>
+              <span className="visitor-shortcut-copy"><strong>{t("我的订单")}</strong><small>{quotes.length}</small></span>
+            </Link>
+            <Link to={orderHref("issues")} className="visitor-shortcut-card">
+              <span className="visitor-shortcut-icon"><WarningCircle weight="duotone" /></span>
+              <span className="visitor-shortcut-copy"><strong>{t("关闭订单")}</strong><small>{closed.length}</small></span>
+            </Link>
+          </div>
+          {activeView === "history" ? historyPanel : activeView === "favorites" ? favoritesPanel : null}
+        </>
+      )}
     </Container></main>
     <StorefrontFooter store={store} t={t} accountKey={accountKey} />
   </div>;

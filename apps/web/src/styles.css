@@ -2145,6 +2145,60 @@ img { display: block; max-width: 100%; }
 .visitor-center-tabs .rt-TabsTrigger { flex: 0 0 auto; gap: 6px; white-space: nowrap; }
 .visitor-center-tabs .rt-TabsTrigger svg { width: 16px; height: 16px; }
 .visitor-center-tabs .rt-Badge { min-width: 20px; justify-content: center; }
+.visitor-shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.visitor-shortcut-card {
+  min-width: 0;
+  min-height: 132px;
+  padding: 22px 14px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.visitor-shortcut-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  background: var(--accent-soft);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.visitor-shortcut-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 15px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.visitor-shortcut-icon svg { width: 26px; height: 26px; }
+.visitor-shortcut-copy { display: inline-flex; align-items: center; gap: 7px; color: var(--text); }
+.visitor-shortcut-copy strong { font-size: 13px; font-weight: 650; }
+.visitor-shortcut-copy small { min-width: 20px; padding: 2px 6px; border-radius: 999px; color: var(--accent-strong); background: var(--surface-strong); font-size: 11px; line-height: 1.2; text-align: center; }
+.visitor-orders-page { display: grid; gap: 12px; }
+.visitor-orders-back { display: inline-flex; align-items: center; gap: 6px; width: fit-content; color: var(--text-soft); font-size: 12px; text-decoration: none; }
+.visitor-orders-back:hover { color: var(--accent-strong); }
+.visitor-orders-tabs > .rt-TabsList {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.visitor-orders-tabs .rt-TabsTrigger { flex: 0 0 auto; gap: 7px; white-space: nowrap; }
+.visitor-orders-tabs .rt-Badge { min-width: 20px; justify-content: center; }
+.visitor-orders-panel { margin-top: 0; }
 .visitor-center-panel {
   min-height: 360px;
   margin-top: 16px;
@@ -2873,6 +2927,22 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .visitor-center-hero > span { width: 48px; height: 48px; border-radius: 15px; }
   .visitor-center-hero > span svg { width: 26px; height: 26px; }
   .visitor-center-panel { min-height: 300px; margin-top: 12px; padding: 13px; border-radius: 16px; }
+  .visitor-shortcut-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .visitor-shortcut-card { min-height: 108px; padding: 15px 9px 13px; border-radius: 14px; }
+  .visitor-shortcut-icon { width: 40px; height: 40px; border-radius: 12px; }
+  .visitor-shortcut-icon svg { width: 22px; height: 22px; }
+  .visitor-shortcut-copy { gap: 5px; }
+  .visitor-shortcut-copy strong { font-size: 12px; }
+  .visitor-orders-tabs > .rt-TabsList {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    overflow: visible;
+    box-shadow: none;
+  }
+  .visitor-orders-tabs .rt-TabsTrigger { width: 100%; min-width: 0; min-height: 42px; padding-inline: 8px; justify-content: center; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .visitor-orders-tabs .rt-TabsTrigger[data-state="active"] { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--accent-strong); background: var(--accent-soft); }
   .visitor-center-tabs > .rt-TabsList {
     width: 100%;
     display: grid;
