@@ -89,6 +89,14 @@ function FlagArtwork({ locale }: { locale: StorefrontLocale }) {
           <path d="M3 5.05h18M3 10.95h18" stroke="#fff" strokeWidth=".34" strokeDasharray=".65 .45" />
         </svg>
       );
+    case "ru":
+      return (
+        <svg viewBox="0 0 24 16" focusable="false">
+          <rect width="24" height="5.34" fill="#fff" />
+          <rect y="5.33" width="24" height="5.34" fill="#0039a6" />
+          <rect y="10.66" width="24" height="5.34" fill="#d52b1e" />
+        </svg>
+      );
     case "zh-CN":
     default:
       return (

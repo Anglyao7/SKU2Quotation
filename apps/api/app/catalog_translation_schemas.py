@@ -17,6 +17,7 @@ CatalogTargetLocale = Literal[
     "pt",
     "fr",
     "fa",
+    "ru",
 ]
 
 

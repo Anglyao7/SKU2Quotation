@@ -22,6 +22,7 @@ export const STOREFRONT_LANGUAGE_OPTIONS: readonly StorefrontLanguageOption[] = 
   { code: "pt", label: "Português", shortLabel: "PT", flag: "🇵🇹", direction: "ltr" },
   { code: "fr", label: "Français", shortLabel: "FR", flag: "🇫🇷", direction: "ltr" },
   { code: "fa", label: "فارسی", shortLabel: "فا", flag: "🇮🇷", direction: "rtl" },
+  { code: "ru", label: "Русский", shortLabel: "RU", flag: "🇷🇺", direction: "ltr" },
 ] as const;
 
 const languageByCode = new Map(
@@ -50,6 +51,8 @@ const localeAliases: Record<string, StorefrontLocale> = {
   "fr-fr": "fr",
   fa: "fa",
   "fa-ir": "fa",
+  ru: "ru",
+  "ru-ru": "ru",
 };
 
 export function parseStorefrontLocale(value?: string | null): StorefrontLocale | undefined {

@@ -17,6 +17,7 @@ import type {
   PublicSupportMessage,
   PublicSupportStreamEvent,
   PlatformUsageResponse,
+  PlatformTenantStorefrontLanguages,
   Quote,
   Sku,
   SkuList,
@@ -1056,6 +1057,24 @@ export const api = {
     );
     return { ...detail, merchant: normalizeTenant(detail.merchant) };
   },
+  getTenantStorefrontLanguages: (tenantId: string) =>
+    request<PlatformTenantStorefrontLanguages>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/storefront-languages`,
+      { cache: "no-store" },
+      true,
+    ),
+  updateTenantStorefrontLanguages: (
+    tenantId: string,
+    enabledLocales: StorefrontLocale[],
+  ) =>
+    request<PlatformTenantStorefrontLanguages>(
+      `/api/admin/tenants/${encodeURIComponent(tenantId)}/storefront-languages`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ enabled_locales: enabledLocales }),
+      },
+      true,
+    ),
   async getTenantSubaccountDetail(
     tenantId: string,
     membershipId: string,

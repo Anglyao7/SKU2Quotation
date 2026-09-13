@@ -22,6 +22,7 @@ from .tenant_subscriptions import (
     TenantSubscriptionStatus,
     TenantSubscriptionTier,
 )
+from .storefront_locales import StorefrontLocale
 
 
 TenantStatus = Literal["active", "suspended", "archived"]
@@ -199,6 +200,21 @@ class PlatformTenantDetail(BaseModel):
     merchant: PlatformTenantSummary
     monitoring: PlatformMerchantMonitoring
     subaccounts: list[PlatformMerchantSubaccountSummary]
+
+
+class PlatformTenantStorefrontLanguages(BaseModel):
+    """The platform-controlled language menu for one merchant storefront."""
+
+    tenant_id: UUID
+    enabled_locales: list[StorefrontLocale]
+    default_locale: StorefrontLocale
+    published_locales: list[StorefrontLocale] = Field(default_factory=list)
+
+
+class PlatformTenantStorefrontLanguagesUpdate(BaseModel):
+    """Replace the enabled language list; the source language is always retained."""
+
+    enabled_locales: list[StorefrontLocale] = Field(min_length=1, max_length=12)
 
 
 class PlatformMerchantSubaccountDetail(BaseModel):

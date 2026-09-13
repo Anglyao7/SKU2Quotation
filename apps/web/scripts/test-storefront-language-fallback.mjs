@@ -172,7 +172,7 @@ assert.ok(
   source.includes("LANGUAGE_PACK_DESCRIPTOR_TIMEOUT_MS"),
   "A missing or unreachable language-pack descriptor must have a short timeout",
 );
-for (const locale of ["fr", "fa"]) {
+for (const locale of ["fr", "fa", "ru"]) {
   assert.ok(
     localeSource.includes(`code: "${locale}"`),
     `Storefront language options must include ${locale}`,

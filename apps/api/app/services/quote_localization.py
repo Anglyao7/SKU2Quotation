@@ -556,9 +556,9 @@ def quote_locale(value: str | None) -> str:
 
 def quote_text(locale: str | None, key: str) -> str:
     normalized = quote_locale(locale)
-    return _STRINGS.get(normalized, _STRINGS["zh-CN"]).get(
+    return _STRINGS.get(normalized, _STRINGS["en-US"]).get(
         key,
-        _STRINGS["zh-CN"].get(key, key),
+        _STRINGS["en-US"].get(key, _STRINGS["zh-CN"].get(key, key)),
     )
 
 
@@ -588,8 +588,8 @@ def proforma_text(locale: str | None, key: str) -> str:
 
 def quote_field_label(locale: str | None, field: str) -> str:
     if field == "carton_count":
-        labels = {"zh-CN": "箱数", "en-US": "Cartons", "es": "Cajas", "tr": "Koli sayısı", "ar": "عدد الكراتين", "ja": "箱数", "ko": "박스 수", "pt": "Caixas", "fr": "Cartons", "fa": "تعداد کارتن"}
-        return labels[quote_locale(locale)]
+        labels = {"zh-CN": "箱数", "en-US": "Cartons", "es": "Cajas", "tr": "Koli sayısı", "ar": "عدد الكراتين", "ja": "箱数", "ko": "박스 수", "pt": "Caixas", "fr": "Cartons", "fa": "تعداد کارتن", "ru": "Коробки"}
+        return labels.get(quote_locale(locale), labels["en-US"])
     return quote_text(locale, QUOTE_FIELD_LABEL_KEYS.get(field, field))
 
 

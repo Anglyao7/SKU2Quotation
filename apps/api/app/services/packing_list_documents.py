@@ -26,6 +26,7 @@ LABELS = {
     "pt": ("LISTA DE EMBALAGEM", "N.º do artigo", "Código de 13 dígitos", "Caixas", "Nome", "Quantidade total"),
     "fr": ("LISTE DE COLISAGE", "Réf. article", "Code à 13 chiffres", "Colis", "Nom", "Quantité totale"),
     "fa": ("فهرست بسته‌بندی", "شماره کالا", "کد ۱۳ رقمی", "تعداد کارتن", "نام", "تعداد کل"),
+    "ru": ("УПАКОВОЧНЫЙ ЛИСТ", "Артикул", "13-значный код", "Коробки", "Название", "Общее количество"),
 }
 FIELDS = ("image_url", "name", "article_number", "barcode", "packing_quantity", "carton_dimensions", "carton_volume", "gross_weight", "carton_count", "quantity", "total_volume", "total_gross_weight")
 

@@ -20,6 +20,8 @@ from ..platform_admin_schemas import (
     PlatformMerchantSubaccountDetail,
     PlatformTenantCreate,
     PlatformTenantDetail,
+    PlatformTenantStorefrontLanguages,
+    PlatformTenantStorefrontLanguagesUpdate,
     PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
@@ -136,6 +138,46 @@ def tenant_detail_endpoint(
             session,
             context=context,
             tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.get(
+    "/tenants/{tenant_id}/storefront-languages",
+    response_model=PlatformTenantStorefrontLanguages,
+)
+def tenant_storefront_languages_endpoint(
+    tenant_id: UUID,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformTenantStorefrontLanguages:
+    try:
+        return use_cases.get_tenant_storefront_languages(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/tenants/{tenant_id}/storefront-languages",
+    response_model=PlatformTenantStorefrontLanguages,
+)
+def update_tenant_storefront_languages_endpoint(
+    tenant_id: UUID,
+    request: PlatformTenantStorefrontLanguagesUpdate,
+    context: RequestContext = Depends(require_request_context),
+    session: Session = Depends(get_session),
+) -> PlatformTenantStorefrontLanguages:
+    try:
+        return use_cases.update_tenant_storefront_languages(
+            session,
+            context=context,
+            tenant_id=tenant_id,
+            request=request,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

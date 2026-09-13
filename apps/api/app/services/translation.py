@@ -43,6 +43,8 @@ SUPPORTED_LOCALE_CODES = {
     "fr-FR": "FR",
     "fa": "FA",
     "fa-IR": "FA",
+    "ru": "RU",
+    "ru-RU": "RU",
 }
 
 ALIYUN_LOCALE_CODES = {
@@ -68,6 +70,8 @@ ALIYUN_LOCALE_CODES = {
     "fr-FR": "fr",
     "fa": "fa",
     "fa-IR": "fa",
+    "ru": "ru",
+    "ru-RU": "ru",
 }
 
 DEFAULT_ALIYUN_ALIMT_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com"
@@ -96,6 +100,8 @@ LOCALE_NAMES = {
     "fr-FR": "French",
     "fa": "Persian",
     "fa-IR": "Persian",
+    "ru": "Russian",
+    "ru-RU": "Russian",
 }
 
 _CATALOG_BOUNDARY_PATTERN = re.compile(

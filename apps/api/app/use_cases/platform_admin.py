@@ -40,6 +40,8 @@ from ..platform_admin_schemas import (
     PlatformMerchantOwnerPasswordResetResponse,
     PlatformTenantCreate,
     PlatformTenantDetail,
+    PlatformTenantStorefrontLanguages,
+    PlatformTenantStorefrontLanguagesUpdate,
     PlatformTenantSubscriptionUpdate,
     PlatformTenantSummary,
     PlatformTenantUpdate,
@@ -47,6 +49,7 @@ from ..platform_admin_schemas import (
 from ..customer_accounts_schemas import CUSTOMER_SUBACCOUNT_MODULES, normalize_modules
 from ..public_catalog_models import TenantPublicProfileRow
 from ..repositories import platform_admin_repository as repository
+from ..repositories import catalog_translation_repository
 from ..saas_seed import ensure_tenant_rbac
 from ..inventory_seed import ensure_default_warehouse
 from ..services.auth.dependencies import RequestContext
@@ -81,6 +84,7 @@ from ..tenant_subscriptions import (
     normalized_utc,
     subscription_status,
 )
+from ..storefront_locales import effective_storefront_locales, normalize_storefront_locale
 
 
 def _require_platform_admin(context: RequestContext) -> None:
@@ -585,6 +589,103 @@ def get_tenant_detail(
         monitoring=monitoring,
         subaccounts=subaccounts,
     )
+
+
+def _tenant_storefront_languages_response(
+    session: Session,
+    *,
+    tenant: TenantRow,
+    profile: TenantPublicProfileRow,
+) -> PlatformTenantStorefrontLanguages:
+    source_locale = normalize_storefront_locale(tenant.default_locale) or "zh-CN"
+    enabled_locales = effective_storefront_locales(
+        profile.storefront_locales,
+        source_locale=source_locale,
+    )
+    published_locales = effective_storefront_locales(
+        catalog_translation_repository.available_language_pack_locales(
+            session,
+            tenant_id=tenant.id,
+        ),
+        source_locale=source_locale,
+    )
+    default_locale = normalize_storefront_locale(profile.storefront_default_locale)
+    if default_locale is None or default_locale not in enabled_locales:
+        default_locale = source_locale if source_locale in enabled_locales else enabled_locales[0]
+    return PlatformTenantStorefrontLanguages(
+        tenant_id=tenant.id,
+        enabled_locales=enabled_locales,
+        default_locale=default_locale,
+        published_locales=published_locales,
+    )
+
+
+def get_tenant_storefront_languages(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+) -> PlatformTenantStorefrontLanguages:
+    """Read the simple platform-owned storefront language assignment."""
+
+    _require_platform_admin(context)
+    tenant = _tenant_or_error(session, tenant_id)
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        profile = repository.get_public_profile(session, tenant.id)
+        if profile is None:
+            profile = TenantPublicProfileRow(
+                tenant_id=tenant.id,
+                slug=tenant.slug,
+                storefront_locales=[
+                    normalize_storefront_locale(tenant.default_locale) or "zh-CN"
+                ],
+                storefront_default_locale=normalize_storefront_locale(tenant.default_locale) or "zh-CN",
+                publication_status="PUBLISHED" if tenant.status == "active" else "SUSPENDED",
+            )
+        return _tenant_storefront_languages_response(
+            session,
+            tenant=tenant,
+            profile=profile,
+        )
+
+
+def update_tenant_storefront_languages(
+    session: Session,
+    *,
+    context: RequestContext,
+    tenant_id: UUID,
+    request: PlatformTenantStorefrontLanguagesUpdate,
+) -> PlatformTenantStorefrontLanguages:
+    """Replace one merchant's enabled storefront languages from the platform."""
+
+    _require_platform_admin(context)
+    tenant = _tenant_or_error(session, tenant_id)
+    with _tenant_scope(session, context=context, tenant_id=tenant.id):
+        profile = repository.get_public_profile(session, tenant.id)
+        if profile is None:
+            profile = TenantPublicProfileRow(
+                tenant_id=tenant.id,
+                slug=tenant.slug,
+                publication_status="PUBLISHED" if tenant.status == "active" else "SUSPENDED",
+            )
+            session.add(profile)
+            session.flush()
+        profile.storefront_locales = effective_storefront_locales(
+            request.enabled_locales,
+            source_locale=tenant.default_locale,
+        )
+        source_locale = normalize_storefront_locale(tenant.default_locale) or "zh-CN"
+        current_default = normalize_storefront_locale(profile.storefront_default_locale)
+        if current_default is None or current_default not in profile.storefront_locales:
+            profile.storefront_default_locale = source_locale
+        session.flush()
+        response = _tenant_storefront_languages_response(
+            session,
+            tenant=tenant,
+            profile=profile,
+        )
+    session.commit()
+    return response
 
 
 def get_tenant_subaccount_detail(

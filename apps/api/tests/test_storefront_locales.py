@@ -15,18 +15,19 @@ from app.storefront_locales import (
 )
 
 
-def test_french_and_persian_are_supported_storefront_locales() -> None:
+def test_french_persian_and_russian_are_supported_storefront_locales() -> None:
     assert normalize_storefront_locale("fr-FR") == "fr"
     assert normalize_storefront_locale("fa_IR") == "fa"
-    assert SUPPORTED_STOREFRONT_LOCALES[-2:] == ("fr", "fa")
+    assert normalize_storefront_locale("ru-RU") == "ru"
+    assert SUPPORTED_STOREFRONT_LOCALES[-3:] == ("fr", "fa", "ru")
     assert effective_storefront_locales(
         ["fa-IR", "fr-FR", "fa"],
         source_locale="zh-CN",
     ) == ["zh-CN", "fa", "fr"]
 
 
-def test_french_and_persian_can_start_qwen_batch_translation() -> None:
-    for locale in ("fr", "fa"):
+def test_french_persian_and_russian_can_start_qwen_batch_translation() -> None:
+    for locale in ("fr", "fa", "ru"):
         request = CatalogTranslationJobStartRequest(
             target_locale=locale,
             mode="FULL_REBUILD",
@@ -34,7 +35,7 @@ def test_french_and_persian_can_start_qwen_batch_translation() -> None:
             confirm_full_rebuild=True,
         )
         assert request.target_locale == locale
-        assert LOCALE_NAMES[locale] in {"French", "Persian"}
+        assert LOCALE_NAMES[locale] in {"French", "Persian", "Russian"}
 
 
 def test_quote_localization_supports_french_and_persian_rtl() -> None:

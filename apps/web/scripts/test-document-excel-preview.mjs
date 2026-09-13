@@ -40,7 +40,7 @@ assert.equal(excelCellText(missing.rows[5].cells[4]), "");
 assert.deepEqual(missing.rows[6].cells.slice(8).map((cell) => cell.value), [null, 100, null, null]);
 assert.ok(missing.rows[3].cells[0].value.includes("Ship To"));
 assert.equal(JSON.stringify({ draft, invoice, packing }), snapshot, "Preview must not modify persisted or editor state");
-for (const locale of ["zh-CN", "en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr", "fa"]) {
+for (const locale of ["zh-CN", "en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr", "fa", "ru"]) {
   for (const sheet of [buildProformaExcelSheet(draft, invoice, [order], locale, "Seller Co"), buildPackingExcelSheet(draft, packing, locale, "Seller Co")]) {
     assert.ok(sheet.name);
     assert.ok(excelSheetWidth(sheet) > 1000);
@@ -48,7 +48,7 @@ for (const locale of ["zh-CN", "en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr"
     for (const row of sheet.rows) assert.equal(row.cells.reduce((sum, cell) => sum + (cell.span ?? 1), 0), sheet.columns.length, "Merged cells must retain column alignment");
   }
 }
-console.log("Document Excel previews: layout, live edits, parties, images, leading zeros, totals, blanks and 10 locales passed");
+console.log("Document Excel previews: layout, live edits, parties, images, leading zeros, totals, blanks and 11 locales passed");
 
 const componentSource = await fs.readFile(new URL("../src/core/pages/DocumentExcelPreview.tsx", import.meta.url), "utf8");
 let componentCode = ts.transpileModule(componentSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;

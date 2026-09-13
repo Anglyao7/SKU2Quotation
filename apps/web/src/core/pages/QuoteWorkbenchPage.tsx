@@ -170,6 +170,7 @@ const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> =
   { value: "pt", label: "Português", flag: "🇵🇹" },
   { value: "fr", label: "Français", flag: "🇫🇷" },
   { value: "fa", label: "فارسی", flag: "🇮🇷" },
+  { value: "ru", label: "Русский", flag: "🇷🇺" },
 ];
 
 const styles: Array<{ value: QuoteDocumentStyle; label: string; color: string }> = [

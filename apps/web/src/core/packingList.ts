@@ -1,7 +1,7 @@
 import type { StorefrontLocale } from "../types";
 import type { PackingListItem, PackingListSettings, PublicQuoteDraft, PublicQuoteDraftItem } from "./types";
 
-const labels: Record<StorefrontLocale, string[]> = {
+const labels: Partial<Record<StorefrontLocale, string[]>> = {
   "zh-CN": ["装箱单", "货号", "13位编码", "箱数", "名称", "总数量", "每箱件数", "尾箱毛重（kg）", "按订单自动计算", "缺少包装资料", "补填后自动计算", "装箱资料", "恢复自动箱数", "数字必须有效且不能为负数；箱数必须为正整数。", "编码应为空或13位数字。", "箱数不足以容纳订单数量。", "装箱尺寸请填写完整的长、宽、高。", "已按整箱毛重估算尾箱，可填写实际尾箱毛重。"],
   "en-US": ["PACKING LIST", "Article No.", "13-digit code", "Cartons", "Name", "Total quantity", "Units per carton", "Last carton gross weight (kg)", "Calculated from order", "Missing packing details", "Calculated once completed", "Packing details", "Use automatic carton count", "Enter valid non-negative numbers; cartons must be a positive integer.", "Leave the code blank or enter 13 digits.", "Cartons cannot hold the ordered quantity.", "Enter all three carton dimensions.", "The last carton uses a full-carton weight estimate. Enter its actual weight if available."],
   es: ["LISTA DE EMPAQUE", "N.º de artículo", "Código de 13 dígitos", "Cajas", "Nombre", "Cantidad total", "Unidades por caja", "Peso bruto de última caja (kg)", "Calculado del pedido", "Faltan datos de embalaje", "Se calculará al completar", "Datos de embalaje", "Usar número automático de cajas", "Introduzca números válidos no negativos; las cajas deben ser un entero positivo.", "Deje el código vacío o introduzca 13 dígitos.", "Las cajas no admiten la cantidad pedida.", "Complete las tres dimensiones.", "La última caja usa el peso estimado de una caja completa; indique el peso real si lo conoce."],
@@ -12,8 +12,9 @@ const labels: Record<StorefrontLocale, string[]> = {
   pt: ["LISTA DE EMBALAGEM", "N.º do artigo", "Código de 13 dígitos", "Caixas", "Nome", "Quantidade total", "Unidades por caixa", "Peso bruto da última caixa (kg)", "Calculado pelo pedido", "Faltam dados de embalagem", "Calculado após preencher", "Dados de embalagem", "Usar quantidade automática de caixas", "Insira números válidos não negativos; caixas devem ser um inteiro positivo.", "Deixe o código vazio ou insira 13 dígitos.", "As caixas não comportam a quantidade pedida.", "Preencha as três dimensões.", "A última caixa usa o peso estimado de uma caixa cheia; informe o peso real, se disponível."],
   fr: ["LISTE DE COLISAGE", "Réf. article", "Code à 13 chiffres", "Colis", "Nom", "Quantité totale", "Unités par colis", "Poids brut du dernier colis (kg)", "Calculé selon la commande", "Données de colisage manquantes", "Calculé après saisie", "Données de colisage", "Calcul automatique des colis", "Saisissez des nombres valides non négatifs ; le nombre de colis doit être un entier positif.", "Laissez le code vide ou saisissez 13 chiffres.", "Les colis ne peuvent pas contenir la quantité commandée.", "Saisissez les trois dimensions du colis.", "Le dernier colis utilise le poids estimé d’un colis plein ; saisissez son poids réel si connu."],
   fa: ["فهرست بسته‌بندی", "شماره کالا", "کد ۱۳ رقمی", "تعداد کارتن", "نام", "تعداد کل", "تعداد در هر کارتن", "وزن ناخالص آخرین کارتن (کیلوگرم)", "محاسبه از سفارش", "اطلاعات بسته‌بندی ناقص", "محاسبه پس از تکمیل", "اطلاعات بسته‌بندی", "استفاده از تعداد خودکار کارتن", "اعداد معتبر نامنفی وارد کنید؛ تعداد کارتن باید عدد صحیح مثبت باشد.", "کد را خالی بگذارید یا ۱۳ رقم وارد کنید.", "کارتن‌ها برای تعداد سفارش کافی نیستند.", "هر سه بعد کارتن را وارد کنید.", "وزن آخرین کارتن برابر کارتن پر تخمین زده می‌شود؛ در صورت اطلاع وزن واقعی را وارد کنید."],
+  ru: ["УПАКОВОЧНЫЙ ЛИСТ", "Артикул", "13-значный код", "Коробки", "Название", "Общее количество", "Штук в коробке", "Вес последней коробки брутто (кг)", "Рассчитано по заказу", "Не хватает данных об упаковке", "Рассчитывается после заполнения", "Данные упаковки", "Использовать автоматический расчёт коробок", "Введите допустимые неотрицательные числа; количество коробок должно быть положительным целым.", "Оставьте код пустым или введите 13 цифр.", "Коробок недостаточно для количества в заказе.", "Введите все три размера коробки.", "Вес последней коробки оценён по полной коробке; при наличии укажите фактический вес."],
 };
-export function packingText(locale: StorefrontLocale, index: number) { return labels[locale]?.[index] ?? labels["en-US"][index]; }
+export function packingText(locale: StorefrontLocale, index: number) { return labels[locale]?.[index] ?? labels["en-US"]?.[index] ?? ""; }
 export function packingNumber(value: string, zero = false): number | null {
   if (!/^\d+(?:\.\d*)?$/.test(value.trim())) return null;
   const result = Number(value);
@@ -50,7 +51,7 @@ export function packingErrors(settings: PackingListSettings, orders: PublicQuote
 }
 export function packingFormat(value: number | null) { return value === null ? "—" : Number(value.toFixed(6)).toLocaleString("en-US", { maximumFractionDigits: 6 }); }
 
-const studioLabels: Record<StorefrontLocale, [string, string, string, string]> = {
+const studioLabels: Partial<Record<StorefrontLocale, [string, string, string, string]>> = {
   "zh-CN": ["单证设置", "卖方资料", "买方资料", "实时预览"],
   "en-US": ["Document settings", "Seller details", "Buyer details", "Live preview"],
   es: ["Ajustes del documento", "Datos del vendedor", "Datos del comprador", "Vista previa en vivo"],
@@ -61,8 +62,9 @@ const studioLabels: Record<StorefrontLocale, [string, string, string, string]> =
   pt: ["Configurações do documento", "Dados do vendedor", "Dados do comprador", "Prévia em tempo real"],
   fr: ["Paramètres du document", "Coordonnées du vendeur", "Coordonnées de l’acheteur", "Aperçu en direct"],
   fa: ["تنظیمات سند", "اطلاعات فروشنده", "اطلاعات خریدار", "پیش‌نمایش زنده"],
+  ru: ["Настройки документа", "Данные продавца", "Данные покупателя", "Предпросмотр в реальном времени"],
 };
-export function packingStudioText(locale: StorefrontLocale, index: number) { return studioLabels[locale]?.[index] ?? studioLabels["en-US"][index]; }
+export function packingStudioText(locale: StorefrontLocale, index: number) { return studioLabels[locale]?.[index] ?? studioLabels["en-US"]?.[index] ?? ""; }
 
 export function packingParties(value: PackingListSettings, draft: PublicQuoteDraft, sellerName: string) {
   return {

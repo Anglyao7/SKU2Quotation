@@ -13,11 +13,13 @@ import {
   ArrowsClockwise,
   CaretLeft,
   CaretRight,
+  LockSimple,
   Package,
   Pause,
   Play,
   Translate,
   UploadSimple,
+  X,
 } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -46,11 +48,16 @@ import type {
   CatalogTranslationStatus,
 } from "../types";
 import { useLocale } from "../LocaleContext";
+import { StorefrontFlag } from "../../components/StorefrontFlag";
 import {
   STOREFRONT_LANGUAGE_OPTIONS,
   storefrontLanguage,
 } from "../../lib/storefrontLocale";
-import type { StorefrontLocale, Tenant } from "../../types";
+import type {
+  PlatformTenantStorefrontLanguages,
+  StorefrontLocale,
+  Tenant,
+} from "../../types";
 import { CatalogTranslationEditor } from "./CatalogTranslationEditor";
 import { AutomaticTranslationControls } from "../components/AutomaticTranslationControls";
 import { automaticTranslationCopy } from "../automationMessages";
@@ -116,6 +123,11 @@ export function LanguagePackagesPage() {
   const [selectedTenantId, setSelectedTenantId] = useState("");
   const [merchantsLoading, setMerchantsLoading] = useState(true);
   const [merchantsError, setMerchantsError] = useState("");
+  const [storefrontLanguages, setStorefrontLanguages] = useState<PlatformTenantStorefrontLanguages>();
+  const [storefrontLanguagesLoading, setStorefrontLanguagesLoading] = useState(false);
+  const [storefrontLanguagesSaving, setStorefrontLanguagesSaving] = useState(false);
+  const [storefrontLanguagesError, setStorefrontLanguagesError] = useState("");
+  const [storefrontLanguagesSuccess, setStorefrontLanguagesSuccess] = useState("");
   const [selectedLocale, setSelectedLocale] = useState<StorefrontLocale>(() => TARGET_LANGUAGES.find((language) => language.code === requestedLanguage)?.code ?? "en-US");
   useEffect(() => {
     const requested = TARGET_LANGUAGES.find((language) => language.code === requestedLanguage);
@@ -183,6 +195,79 @@ export function LanguagePackagesPage() {
       active = false;
     };
   }, [t, requestedTenant]);
+
+  useEffect(() => {
+    if (!selectedTenantId) {
+      setStorefrontLanguages(undefined);
+      return;
+    }
+    let active = true;
+    setStorefrontLanguagesLoading(true);
+    setStorefrontLanguagesError("");
+    setStorefrontLanguagesSuccess("");
+    void api.getTenantStorefrontLanguages(selectedTenantId)
+      .then((settings) => {
+        if (active) setStorefrontLanguages(settings);
+      })
+      .catch((reason) => {
+        if (active) {
+          setStorefrontLanguagesError(
+            reason instanceof Error ? reason.message : t("语言配置读取失败。"),
+          );
+        }
+      })
+      .finally(() => {
+        if (active) setStorefrontLanguagesLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedTenantId, t]);
+
+  const addStorefrontLanguage = (locale: StorefrontLocale) => {
+    setStorefrontLanguages((current) => {
+      if (!current || current.enabled_locales.includes(locale)) return current;
+      return { ...current, enabled_locales: [...current.enabled_locales, locale] };
+    });
+    setStorefrontLanguagesError("");
+    setStorefrontLanguagesSuccess("");
+  };
+
+  const removeStorefrontLanguage = (locale: StorefrontLocale) => {
+    if (locale === "zh-CN") return;
+    setStorefrontLanguages((current) => {
+      if (!current) return current;
+      const enabled_locales = current.enabled_locales.filter((item) => item !== locale);
+      return {
+        ...current,
+        enabled_locales,
+        default_locale: current.default_locale === locale ? "zh-CN" : current.default_locale,
+      };
+    });
+    setStorefrontLanguagesError("");
+    setStorefrontLanguagesSuccess("");
+  };
+
+  const saveStorefrontLanguages = async () => {
+    if (!selectedTenantId || !storefrontLanguages || storefrontLanguagesSaving) return;
+    setStorefrontLanguagesSaving(true);
+    setStorefrontLanguagesError("");
+    setStorefrontLanguagesSuccess("");
+    try {
+      const saved = await api.updateTenantStorefrontLanguages(
+        selectedTenantId,
+        storefrontLanguages.enabled_locales,
+      );
+      setStorefrontLanguages(saved);
+      setStorefrontLanguagesSuccess(t("前台语言已保存。"));
+    } catch (reason) {
+      setStorefrontLanguagesError(
+        reason instanceof Error ? reason.message : t("前台语言保存失败。"),
+      );
+    } finally {
+      setStorefrontLanguagesSaving(false);
+    }
+  };
 
   const selectedStatus = status?.targetLocale === selectedLocale
     ? status
@@ -816,6 +901,77 @@ export function LanguagePackagesPage() {
       {merchantsError ? <ToastNotice kind="error" message={merchantsError} /> : null}
       {error ? <ToastNotice kind="error" message={error} /> : null}
       {success ? <ToastNotice kind="success" message={success} /> : null}
+      {selectedTenantId ? (
+        <Card className="platform-storefront-language-card">
+          <div className="platform-storefront-language-heading">
+            <div>
+              <Text size="1" color="gray">{t("前台语言")}</Text>
+              <Heading size="4">{t("客户可见语言")}</Heading>
+              <Text size="2" color="gray">
+                {t("从平台语言库为当前商家添加或移除前台语言。中文固定保留，未发布语言包的语言会在发布后显示给客户。")}
+              </Text>
+            </div>
+            <Button
+              size="2"
+              onClick={() => void saveStorefrontLanguages()}
+              disabled={storefrontLanguagesLoading || storefrontLanguagesSaving || !storefrontLanguages}
+            >
+              {storefrontLanguagesSaving ? <Spinner /> : null}
+              {t("保存语言")}
+            </Button>
+          </div>
+          {storefrontLanguagesError ? <ToastNotice kind="error" message={storefrontLanguagesError} /> : null}
+          {storefrontLanguagesSuccess ? <ToastNotice kind="success" message={storefrontLanguagesSuccess} /> : null}
+          {storefrontLanguagesLoading || !storefrontLanguages ? (
+            <div className="platform-storefront-language-loading"><Spinner /> <Text size="2">{t("正在读取语言配置…")}</Text></div>
+          ) : (
+            <>
+              <div className="platform-storefront-language-add">
+                <Text size="2" weight="medium">{t("语言库")}</Text>
+                <Select.Root value="" onValueChange={(value) => addStorefrontLanguage(value as StorefrontLocale)}>
+                  <Select.Trigger placeholder={t("添加语言")} />
+                  <Select.Content position="popper">
+                    {STOREFRONT_LANGUAGE_OPTIONS
+                      .filter((language) => !storefrontLanguages.enabled_locales.includes(language.code))
+                      .map((language) => (
+                        <Select.Item key={language.code} value={language.code}>
+                          {language.flag} {language.label}
+                        </Select.Item>
+                      ))}
+                  </Select.Content>
+                </Select.Root>
+              </div>
+              <div className="platform-storefront-language-list">
+                {STOREFRONT_LANGUAGE_OPTIONS
+                  .filter((language) => storefrontLanguages.enabled_locales.includes(language.code))
+                  .map((language) => {
+                    const published = storefrontLanguages.published_locales.includes(language.code);
+                    return (
+                      <div className="platform-storefront-language-item" key={language.code}>
+                        <StorefrontFlag locale={language.code} />
+                        <span>{language.label}</span>
+                        <Badge color={published ? "green" : "amber"}>
+                          {language.code === "zh-CN" ? t("固定") : published ? t("已发布") : t("待发布")}
+                        </Badge>
+                        {language.code !== "zh-CN" ? (
+                          <Button
+                            size="1"
+                            variant="ghost"
+                            color="gray"
+                            aria-label={`${t("移除")}${language.label}`}
+                            onClick={() => removeStorefrontLanguage(language.code)}
+                          >
+                            <X />
+                          </Button>
+                        ) : <span className="platform-storefront-language-lock"><LockSimple /></span>}
+                      </div>
+                    );
+                  })}
+              </div>
+            </>
+          )}
+        </Card>
+      ) : null}
       {!merchantsLoading && !merchants.length && !merchantsError ? (
         <ToastNotice kind="info" message={t("当前没有可翻译的商家。")} />
       ) : null}

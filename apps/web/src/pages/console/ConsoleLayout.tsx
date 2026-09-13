@@ -95,7 +95,7 @@ const navigationGroups: Array<{
     items: [
       { to: "/console/storefront/brand", label: "商家资料", mobileLabel: "资料", icon: StoreIcon, permissions: ["system.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/storefront", label: "页面与展示", mobileLabel: "前台", icon: StoreIcon, end: true, permissions: ["system.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
-      { to: "/console/languages", label: "多语言", mobileLabel: "语言", icon: Translate, permissions: ["system.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
+      { to: "/console/languages", label: "多语言", mobileLabel: "语言", icon: Translate, permissions: [], platformAdminOnly: true, mobilePrimary: false },
       { to: "/console/announcements", label: "公告管理", mobileLabel: "公告", icon: Megaphone, permissions: ["announcement.manage"], platformAdminOnly: false, mobilePrimary: false },
       { to: "/console/personal-center", label: "客服入口", mobileLabel: "我的", icon: UserCircle, permissions: ["support.settings_manage"], platformAdminOnly: false, mobilePrimary: false },
     ],
@@ -219,7 +219,7 @@ function ConsoleLayoutContent() {
           || hasAnyPermission(...item.permissions)
           || (isCustomerSubaccount && item.to === "/console/products" && hasPermission("customer_portal.access"))
           || (isCustomerSubaccount && item.to === "/console/quotes" && hasPermission("customer_portal.order_view_self"))
-          || (isCustomerSubaccount && ["/console/storefront", "/console/storefront/brand", "/console/languages"].includes(item.to) && hasPermission("customer_portal.access"))
+          || (isCustomerSubaccount && ["/console/storefront", "/console/storefront/brand"].includes(item.to) && hasPermission("customer_portal.access"))
         )
         // Supplier relationships are internal to the owner workspace. A child
         // account must not receive this navigation item; the API applies the

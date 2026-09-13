@@ -54,6 +54,13 @@ export interface Tenant {
   updated_at?: string;
 }
 
+export interface PlatformTenantStorefrontLanguages {
+  tenant_id: string;
+  enabled_locales: StorefrontLocale[];
+  default_locale: StorefrontLocale;
+  published_locales: StorefrontLocale[];
+}
+
 export interface MerchantOwnerAccount {
   user_id: string;
   membership_id: string;
@@ -316,7 +323,8 @@ export type StorefrontLocale =
   | "ko"
   | "pt"
   | "fr"
-  | "fa";
+  | "fa"
+  | "ru";
 
 export interface CatalogLanguagePackDescriptor {
   source_locale: StorefrontLocale;

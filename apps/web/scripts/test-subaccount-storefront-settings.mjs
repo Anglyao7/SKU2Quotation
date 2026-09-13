@@ -15,10 +15,12 @@ assert.equal(canManageOwnStorefront("STAFF", permissions("system.settings_manage
 assert.equal(canManageOwnStorefront(undefined, permissions()), false);
 
 const app = await read("../src/App.tsx");
-for (const path of ["languages", "storefront", "storefront/brand"]) {
+for (const path of ["storefront", "storefront/brand"]) {
   const route = app.split("\n").find(line => line.includes(`path: "${path}"`));
   assert.ok(route?.includes("allowOwnStorefront"), `${path} allows only the scoped storefront exception`);
 }
+const languagesRoute = app.split("\n").find(line => line.includes('path: "languages"'));
+assert.ok(languagesRoute?.includes("PlatformAdminGate"), "storefront language assignments are platform-admin managed");
 for (const path of ["products/categories", "supply-chain", "platform/translations"]) {
   const route = app.split("\n").find(line => line.includes(`path: "${path}"`));
   assert.ok(route && !route.includes("allowOwnStorefront"), `${path} retains existing permissions`);

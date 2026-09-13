@@ -15,6 +15,7 @@ StorefrontLocale: TypeAlias = Literal[
     "pt",
     "fr",
     "fa",
+    "ru",
 ]
 
 SUPPORTED_STOREFRONT_LOCALES: tuple[StorefrontLocale, ...] = (
@@ -28,6 +29,7 @@ SUPPORTED_STOREFRONT_LOCALES: tuple[StorefrontLocale, ...] = (
     "pt",
     "fr",
     "fa",
+    "ru",
 )
 DEFAULT_STOREFRONT_LOCALES: tuple[StorefrontLocale, ...] = (
     "zh-CN",
@@ -56,6 +58,8 @@ _LOCALE_ALIASES: dict[str, StorefrontLocale] = {
     "fr-fr": "fr",
     "fa": "fa",
     "fa-ir": "fa",
+    "ru": "ru",
+    "ru-ru": "ru",
 }
 
 

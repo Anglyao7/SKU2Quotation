@@ -8,7 +8,7 @@ import type { QuoteTemplateField } from "./types";
  * Keep this dictionary local so changing the document language never waits
  * for a translation request.
  */
-const STRINGS: Record<StorefrontLocale, Record<string, string>> = {
+const STRINGS: Partial<Record<StorefrontLocale, Record<string, string>>> = {
   "zh-CN": {
     document_title: "报价单",
     merchant: "商家",
@@ -451,7 +451,7 @@ const FIELD_KEYS: Partial<Record<QuoteTemplateField, string>> = {
   notes: "notes",
 };
 
-const PROFORMA_STRINGS: Record<StorefrontLocale, Record<string, string>> = {
+const PROFORMA_STRINGS: Partial<Record<StorefrontLocale, Record<string, string>>> = {
   "zh-CN": {
     title: "形式发票", sheet_name: "形式发票", invoice_number: "形式发票号", issue_date: "开票日期",
     seller: "卖方", buyer: "买方", seller_address: "卖方地址", buyer_address: "买方地址", valid_until: "有效期",
@@ -534,12 +534,12 @@ const PROFORMA_STRINGS: Record<StorefrontLocale, Record<string, string>> = {
   },
 };
 
-const UNIT_TRANSLATIONS: Record<string, Record<StorefrontLocale, string>> = {
-  piece: { "zh-CN": "件", "en-US": "pcs", es: "uds.", tr: "adet", ar: "قطعة", ja: "個", ko: "개", pt: "un.", fr: "pces", fa: "عدد" },
-  set: { "zh-CN": "套", "en-US": "sets", es: "juegos", tr: "set", ar: "طقم", ja: "セット", ko: "세트", pt: "conj.", fr: "ensembles", fa: "مجموعه" },
-  pair: { "zh-CN": "对", "en-US": "pairs", es: "pares", tr: "çift", ar: "زوج", ja: "組", ko: "쌍", pt: "pares", fr: "paires", fa: "جفت" },
-  box: { "zh-CN": "盒", "en-US": "boxes", es: "cajas", tr: "kutu", ar: "علبة", ja: "箱", ko: "상자", pt: "caixas", fr: "boîtes", fa: "جعبه" },
-  carton: { "zh-CN": "箱", "en-US": "cartons", es: "cartones", tr: "koli", ar: "كرتون", ja: "カートン", ko: "카톤", pt: "caixas", fr: "cartons", fa: "کارتن" },
+const UNIT_TRANSLATIONS: Record<string, Partial<Record<StorefrontLocale, string>>> = {
+  piece: { "zh-CN": "件", "en-US": "pcs", es: "uds.", tr: "adet", ar: "قطعة", ja: "個", ko: "개", pt: "un.", fr: "pces", fa: "عدد", ru: "шт." },
+  set: { "zh-CN": "套", "en-US": "sets", es: "juegos", tr: "set", ar: "طقم", ja: "セット", ko: "세트", pt: "conj.", fr: "ensembles", fa: "مجموعه", ru: "компл." },
+  pair: { "zh-CN": "对", "en-US": "pairs", es: "pares", tr: "çift", ar: "زوج", ja: "組", ko: "쌍", pt: "pares", fr: "paires", fa: "جفت", ru: "пар" },
+  box: { "zh-CN": "盒", "en-US": "boxes", es: "cajas", tr: "kutu", ar: "علبة", ja: "箱", ko: "상자", pt: "caixas", fr: "boîtes", fa: "جعبه", ru: "коробки" },
+  carton: { "zh-CN": "箱", "en-US": "cartons", es: "cartones", tr: "koli", ar: "كرتون", ja: "カートン", ko: "카톤", pt: "caixas", fr: "cartons", fa: "کارتن", ru: "коробки" },
 };
 
 const UNIT_ALIASES: Record<string, keyof typeof UNIT_TRANSLATIONS> = {
@@ -551,17 +551,17 @@ const UNIT_ALIASES: Record<string, keyof typeof UNIT_TRANSLATIONS> = {
 };
 
 export function quoteText(locale: StorefrontLocale, key: string): string {
-  return STRINGS[locale]?.[key] ?? STRINGS["zh-CN"][key] ?? key;
+  return STRINGS[locale]?.[key] ?? STRINGS["en-US"]?.[key] ?? STRINGS["zh-CN"]?.[key] ?? key;
 }
 
 export function proformaText(locale: StorefrontLocale, key: string): string {
-  return PROFORMA_STRINGS[locale]?.[key] ?? PROFORMA_STRINGS["en-US"][key] ?? key;
+  return PROFORMA_STRINGS[locale]?.[key] ?? PROFORMA_STRINGS["en-US"]?.[key] ?? key;
 }
 
 export function quoteFieldLabel(locale: StorefrontLocale, field: QuoteTemplateField, fallback?: string): string {
   if (field === "carton_count") {
-    const labels: Record<StorefrontLocale, string> = { "zh-CN": "箱数", "en-US": "Cartons", es: "Cajas", tr: "Koli sayısı", ar: "عدد الكراتين", ja: "箱数", ko: "박스 수", pt: "Caixas", fr: "Cartons", fa: "تعداد کارتن" };
-    return labels[locale];
+    const labels: Partial<Record<StorefrontLocale, string>> = { "zh-CN": "箱数", "en-US": "Cartons", es: "Cajas", tr: "Koli sayısı", ar: "عدد الكراتين", ja: "箱数", ko: "박스 수", pt: "Caixas", fr: "Cartons", fa: "تعداد کارتن", ru: "Коробки" };
+    return labels[locale] ?? labels["en-US"]!;
   }
   const key = FIELD_KEYS[field];
   return key ? quoteText(locale, key) : (fallback ?? field);
@@ -570,7 +570,7 @@ export function quoteFieldLabel(locale: StorefrontLocale, field: QuoteTemplateFi
 export function quoteUnit(locale: StorefrontLocale, unitCode: string | undefined): string {
   const raw = String(unitCode || "piece").trim() || "piece";
   const canonical = UNIT_ALIASES[raw.toLowerCase()];
-  return canonical ? UNIT_TRANSLATIONS[canonical][locale] : raw;
+  return canonical ? UNIT_TRANSLATIONS[canonical][locale] ?? UNIT_TRANSLATIONS[canonical]["en-US"] ?? raw : raw;
 }
 
 export function quoteSeparator(locale: StorefrontLocale): string {

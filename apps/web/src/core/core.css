@@ -280,6 +280,18 @@
 .language-merchant-selector { min-width: min(340px, 100%); display: grid; justify-items: stretch; gap: 5px; }
 .language-merchant-selector > .rt-SelectTrigger { width: 100%; min-height: 42px; justify-content: space-between; background: var(--core-surface); }
 .language-merchant-selector > .rt-Text:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.platform-storefront-language-card { padding: 18px 20px !important; display: grid; gap: 16px; }
+.platform-storefront-language-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+.platform-storefront-language-heading > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.platform-storefront-language-heading > div:first-child > .rt-Text:last-child { max-width: 820px; line-height: 1.55; }
+.platform-storefront-language-add { display: flex; align-items: center; gap: 12px; max-width: 420px; }
+.platform-storefront-language-add .rt-SelectTrigger { min-width: 220px; }
+.platform-storefront-language-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.platform-storefront-language-item { min-height: 38px; padding: 5px 7px 5px 9px; display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--core-line); border-radius: 10px; color: var(--core-ink); background: var(--core-surface); }
+.platform-storefront-language-item .storefront-flag { width: 24px; height: 16px; border-radius: 3px; }
+.platform-storefront-language-item .rt-Badge { margin-left: 2px; }
+.platform-storefront-language-lock { width: 24px; display: inline-grid; place-items: center; color: var(--core-muted); }
+.platform-storefront-language-loading { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; color: var(--core-muted); }
 .language-selection-card, .language-pack-status-card, .language-package-release-card, .language-job-card, .language-batch-history-card { padding: clamp(18px, 2.5vw, 26px) !important; }
 .language-selection-card { overflow: hidden; }
 .merchant-languages-page { width: 100%; max-width: 1180px; margin-inline: auto; }
@@ -452,6 +464,7 @@
   .catalog-translation-editor-tools { grid-column: 1 / -1; }
   .catalog-translation-mapping-grid { grid-template-columns: 1fr; }
   .language-merchant-selector { width: 100%; }
+  .platform-storefront-language-heading { align-items: flex-start; flex-direction: column; }
 }
 
 @media (max-width: 640px) {

@@ -20,7 +20,7 @@ assert.equal(custom.buyer.name, "Import Co");
 assert.equal(custom.buyer.email, "");
 assert.equal(custom.buyer.phone, "");
 assert.equal(draft.customerCompany, "Buyer Co");
-for (const locale of ["zh-CN", "en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr", "fa"]) {
+for (const locale of ["zh-CN", "en-US", "es", "tr", "ar", "ja", "ko", "pt", "fr", "fa", "ru"]) {
   assert.ok(invoiceLabel(locale, 0));
   assert.ok(invoiceLabel(locale, 1));
 }

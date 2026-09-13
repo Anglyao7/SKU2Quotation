@@ -3,7 +3,10 @@ import { frenchStorefrontMessages, persianStorefrontMessages } from "./storefron
 import { portugueseStorefrontMessages } from "./storefrontMessages.pt";
 
 type AdditionalLocale = Exclude<StorefrontLocale, "zh-CN" | "en-US">;
-type ExistingAdditionalLocale = Exclude<AdditionalLocale, "pt" | "fr" | "fa">;
+// Russian storefront chrome intentionally falls back to the English fixed
+// copy until its generated console dictionary is added; catalog translations
+// remain supplied by the published language package.
+type ExistingAdditionalLocale = Exclude<AdditionalLocale, "pt" | "fr" | "fa" | "ru">;
 
 const localizedStorefrontMessagesBase: Record<
   string,
