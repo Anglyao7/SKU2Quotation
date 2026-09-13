@@ -114,8 +114,17 @@ function paginationItems(currentPage: number, pageCount: number): PaginationItem
   return [1, "start-ellipsis", currentPage - 1, currentPage, currentPage + 1, "end-ellipsis", pageCount];
 }
 
-function hidePaginationItemOnMobile(index: number, currentPage: number, pageCount: number) {
+function hidePaginationItemOnMobile(
+  item: PaginationItem,
+  index: number,
+  currentPage: number,
+  pageCount: number,
+) {
   if (pageCount <= 7) return false;
+  // Keep the immediate neighbours visible on narrow layouts as well. The
+  // compact pagination used to hide one of these buttons based only on its
+  // array index, leaving visitors with just the active page.
+  if (typeof item === "number" && Math.abs(item - currentPage) === 1) return false;
   if (currentPage <= 4) return index === 3 || index === 4;
   if (currentPage >= pageCount - 3) return index === 2 || index === 3;
   return index === 2 || index === 4;
@@ -1663,7 +1672,7 @@ export function StorePage() {
                         typeof item === "number" ? (
                           <button
                             type="button"
-                            className={`store-pagination-page${item === page ? " is-active" : ""}${hidePaginationItemOnMobile(index, page, pages) ? " is-mobile-hidden" : ""}`}
+                            className={`store-pagination-page${item === page ? " is-active" : ""}${Math.abs(item - page) === 1 ? " is-adjacent" : ""}${hidePaginationItemOnMobile(item, index, page, pages) ? " is-mobile-hidden" : ""}`}
                             aria-label={t("第 {page} 页", { page: item })}
                             aria-current={item === page ? "page" : undefined}
                             disabled={loading || pageTransitioning}
