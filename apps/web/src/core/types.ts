@@ -553,6 +553,7 @@ export interface ProductSku {
   sourceSkuCode?: string;
   name?: string;
   optionValues: Record<string, string | number | boolean>;
+  variantOptionKeys?: string[];
   barcode?: string;
   defaultMoq?: number;
   moqUnit?: string;

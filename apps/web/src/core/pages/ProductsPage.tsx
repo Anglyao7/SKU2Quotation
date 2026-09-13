@@ -306,6 +306,30 @@ function visibleSkuOptions(optionValues: ProductSku["optionValues"]) {
   ));
 }
 
+interface EditableSkuOptionRow {
+  key: string;
+  value: string;
+  isVariant: boolean;
+}
+
+function editableSkuOptionRows(sku: ProductSku): EditableSkuOptionRow[] {
+  const variantKeys = new Set(sku.variantOptionKeys ?? []);
+  const rows = visibleSkuOptions(sku.optionValues).map(([key, value]) => ({
+    key,
+    value: String(value),
+    isVariant: variantKeys.has(key),
+  }));
+  // Keep an explicit storefront dimension visible even when this SKU has not
+  // received a value yet.  Previously those fields were omitted entirely,
+  // which made the front-end selector impossible to repair from the console.
+  for (const key of sku.variantOptionKeys ?? []) {
+    if (!rows.some((row) => row.key === key)) {
+      rows.push({ key, value: "", isVariant: true });
+    }
+  }
+  return rows;
+}
+
 function skuUpdatedDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
@@ -3221,7 +3245,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const [weight, setWeight] = useState(sku.weight === undefined ? "" : String(sku.weight));
   const [weightUnit, setWeightUnit] = useState(sku.weightUnit ?? "kg");
   const [skuStatus, setSkuStatus] = useState<ProductSku["status"]>(sku.status);
-  const [optionRows, setOptionRows] = useState(() => visibleSkuOptions(sku.optionValues).map(([key, value]) => ({ key, value: String(value) })));
+  const [optionRows, setOptionRows] = useState<EditableSkuOptionRow[]>(() => editableSkuOptionRows(sku));
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "0");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [publicationStatus, setPublicationStatus] = useState<PublicCatalogOffer["publicationStatus"]>(offer?.publicationStatus ?? "DRAFT");
@@ -3240,12 +3264,12 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     setWeight(sku.weight === undefined ? "" : String(sku.weight));
     setWeightUnit(sku.weightUnit ?? "kg");
     setSkuStatus(sku.status);
-    setOptionRows(visibleSkuOptions(sku.optionValues).map(([key, value]) => ({ key, value: String(value) })));
+    setOptionRows(editableSkuOptionRows(sku));
     setPrice(offer ? String(offer.unitPrice) : "0");
     setCurrency(offer?.currency ?? defaultCurrency);
     setPublicationStatus(offer?.publicationStatus ?? "DRAFT");
     setSelectedTags(offer?.tags ?? []);
-  }, [defaultCurrency, offer, sku.barcode, sku.defaultMoq, sku.moqUnit, sku.name, sku.optionValues, sku.skuCode, sku.sourceSkuCode, sku.status, sku.weight, sku.weightUnit]);
+  }, [defaultCurrency, offer, sku.barcode, sku.defaultMoq, sku.moqUnit, sku.name, sku.optionValues, sku.skuCode, sku.sourceSkuCode, sku.status, sku.variantOptionKeys, sku.weight, sku.weightUnit]);
 
   const save = async () => {
     const numericMoq = defaultMoq.trim() ? Number(defaultMoq) : null;
@@ -3267,17 +3291,24 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     try {
       const displayTag = selectedTags[0];
       if (canEditSku) {
+        const nextOptionValues = { ...sku.optionValues };
+        for (const [key] of visibleSkuOptions(sku.optionValues)) delete nextOptionValues[key];
+        delete nextOptionValues[SKU_TEMPLATE_MARKER_KEY];
+        const nextVariantOptionKeys: string[] = [];
+        for (const row of optionRows) {
+          const key = row.key.trim();
+          if (!key) continue;
+          nextOptionValues[key] = row.value;
+          if (row.isVariant && !nextVariantOptionKeys.includes(key)) nextVariantOptionKeys.push(key);
+        }
         await updateSku(sku.id, {
           expectedVersion: sku.version,
           skuCode: skuCode.trim(),
           sourceSkuCode: sku.sourceSkuCode === undefined ? undefined : sourceSkuCode.trim() || null,
           name: skuName.trim() || null,
           barcode: barcode.trim() || null,
-          optionValues: optionRows.reduce<Record<string, string>>((values, row) => {
-            const key = row.key.trim();
-            if (key) values[key] = row.value;
-            return values;
-          }, {}),
+          optionValues: nextOptionValues,
+          variantOptionKeys: nextVariantOptionKeys,
           defaultMoq: numericMoq,
           moqUnit: numericMoq === null ? null : moqUnit.trim() || null,
           packingQuantity: numericPackingQuantity,
@@ -3343,8 +3374,9 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
         </> : null}
       </div>
       {canEditSku ? <div className="core-sku-option-editor">
-        <div className="core-sku-option-editor-heading"><Text size="1" color="gray">{t("规格字段")}</Text><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "" }])}><Plus />{t("添加规格")}</Button></div>
+        <div className="core-sku-option-editor-heading"><div><Text size="2" weight="bold">{t("商品规格")}</Text><Text size="1" color="gray">{t("规格字段")}</Text></div><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "", isVariant: true }])}><Plus />{t("添加规格")}</Button></div>
         {optionRows.length ? optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={`${row.key}-${index}`}>
+          <span className="core-sku-option-editor-variant">{row.isVariant ? <Badge color="jade" variant="soft">{t("商品规格")}</Badge> : null}</span>
           <TextField.Root value={row.key} placeholder={t("规格名称")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
           <TextField.Root value={row.value} placeholder={t("规格值")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
           <Button size="1" variant="ghost" color="red" aria-label={t("删除规格")} onClick={() => setOptionRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>

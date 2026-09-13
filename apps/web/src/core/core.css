@@ -1103,7 +1103,8 @@
 .core-sku-quick-tags { min-width: 0; display: grid; gap: 6px; }
 .core-sku-option-editor { display: grid; gap: 8px; }
 .core-sku-option-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.core-sku-option-editor-row { display: grid; grid-template-columns: minmax(130px, .8fr) minmax(160px, 1.2fr) auto; gap: 7px; align-items: center; }
+.core-sku-option-editor-row { display: grid; grid-template-columns: minmax(74px, auto) minmax(130px, .8fr) minmax(160px, 1.2fr) auto; gap: 7px; align-items: center; }
+.core-sku-option-editor-variant { min-width: 74px; display: flex; justify-content: flex-start; }
 .core-sku-quick-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .core-managed-tag-picker { max-height: 142px; padding: 8px; display: flex; align-content: flex-start; flex-wrap: wrap; gap: 7px; overflow-y: auto; border: 1px solid var(--core-line); border-radius: 10px; background: var(--core-surface); }
 .core-managed-tag-option { min-width: 0; min-height: 30px; padding: 5px 9px; display: inline-flex !important; grid-template-columns: none !important; align-items: center !important; gap: 6px !important; border: 1px solid var(--core-line); border-radius: 8px; color: var(--core-muted) !important; background: var(--core-soft); cursor: pointer; }

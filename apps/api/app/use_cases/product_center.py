@@ -133,6 +133,25 @@ def _packing_quantity(option_values: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _variant_option_keys(option_values: dict[str, Any] | None) -> list[str]:
+    """Read storefront variant dimensions without exposing the raw marker."""
+
+    marker = (option_values or {}).get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
+    if not isinstance(marker, dict):
+        return []
+    raw_keys = marker.get("variant_option_keys")
+    if not isinstance(raw_keys, list):
+        return []
+    keys: list[str] = []
+    seen: set[str] = set()
+    for raw_key in raw_keys:
+        key = str(raw_key).strip()
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+    return keys
+
+
 def _with_packing_quantity(
     option_values: dict[str, Any],
     packing_quantity: Decimal | None,
@@ -320,6 +339,7 @@ def _sku_response(row: SkuRow) -> SkuResponse:
         source_sku_code=row.source_sku_code,
         name=row.name,
         option_values=row.option_values,
+        variant_option_keys=_variant_option_keys(row.option_values),
         barcode=row.barcode,
         default_moq=row.default_moq,
         moq_unit=row.moq_unit,
@@ -349,6 +369,7 @@ def _scoped_sku_response(row: SkuRow, *, account_scope: str = "STAFF") -> SkuRes
         source_sku_code=None,
         name=row.name,
         option_values=public_sku_option_values(row.option_values or {}),
+        variant_option_keys=_variant_option_keys(row.option_values),
         barcode=None,
         default_moq=row.default_moq,
         moq_unit=row.moq_unit,
@@ -2601,6 +2622,8 @@ def update_sku(
     packing_quantity_supplied = "packing_quantity" in changes
     packing_quantity = changes.pop("packing_quantity", None)
     option_values_supplied = "option_values" in changes
+    variant_option_keys_supplied = "variant_option_keys" in changes
+    variant_option_keys = changes.pop("variant_option_keys", None)
     for field, value in changes.items():
         if field == "option_values" and value is not None:
             # Template ownership is server-managed metadata. Users may edit
@@ -2628,6 +2651,16 @@ def update_sku(
             None,
             preserve_existing_when_unset=True,
         )
+    if variant_option_keys_supplied:
+        values = dict(row.option_values or {})
+        marker = values.get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
+        if isinstance(marker, dict):
+            next_marker = dict(marker)
+        else:
+            next_marker = {"source": "MANUAL", "schema": 1}
+        next_marker["variant_option_keys"] = list(variant_option_keys or [])
+        values[SKU_TEMPLATE_SOURCE_OPTION_KEY] = next_marker
+        row.option_values = values
     row.version += 1
     row.updated_by_user_id = user_id
     product = repository.get_product_row(

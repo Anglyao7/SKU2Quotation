@@ -1971,6 +1971,7 @@ interface ApiSku {
   source_sku_code?: string | null;
   name?: string | null;
   option_values: Record<string, string | number | boolean>;
+  variant_option_keys?: string[];
   barcode?: string | null;
   default_moq?: number | string | null;
   moq_unit?: string | null;
@@ -2161,6 +2162,7 @@ function mapSku(row: ApiSku): ProductSku {
     sourceSkuCode: defined(row.source_sku_code),
     name: defined(row.name),
     optionValues: row.option_values,
+    variantOptionKeys: row.variant_option_keys ?? [],
     barcode: defined(row.barcode),
     defaultMoq: row.default_moq == null ? undefined : Number(row.default_moq),
     moqUnit: defined(row.moq_unit),
@@ -4167,6 +4169,7 @@ export async function updateSku(skuId: string, input: {
   sourceSkuCode?: string | null;
   name?: string | null;
   optionValues?: Record<string, string | number | boolean>;
+  variantOptionKeys?: string[];
   barcode?: string | null;
   defaultMoq?: number | null;
   moqUnit?: string | null;
@@ -4183,6 +4186,7 @@ export async function updateSku(skuId: string, input: {
       source_sku_code: input.sourceSkuCode,
       name: input.name,
       option_values: input.optionValues,
+      variant_option_keys: input.variantOptionKeys,
       barcode: input.barcode,
       default_moq: input.defaultMoq,
       moq_unit: input.moqUnit,

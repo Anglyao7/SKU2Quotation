@@ -82,6 +82,10 @@ class SkuResponse(BaseModel):
     source_sku_code: str | None = None
     name: str | None
     option_values: dict[str, Any]
+    # Explicit variant dimensions drive the option selectors shown in the
+    # storefront (for example Color/Size).  Keep this separate from the
+    # internal template marker so the console can edit it safely.
+    variant_option_keys: list[str] = Field(default_factory=list)
     barcode: str | None
     default_moq: Decimal | None
     moq_unit: str | None
@@ -191,6 +195,7 @@ class SkuUpdateRequest(BaseModel):
     source_sku_code: str | None = Field(default=None, max_length=160)
     name: str | None = Field(default=None, max_length=500)
     option_values: dict[str, str | int | float | bool] | None = None
+    variant_option_keys: list[str] | None = Field(default=None, max_length=50)
     barcode: str | None = Field(default=None, max_length=120)
     default_moq: Decimal | None = Field(default=None, ge=0)
     moq_unit: str | None = Field(default=None, max_length=32)
@@ -206,6 +211,25 @@ class SkuUpdateRequest(BaseModel):
             return None
         normalized = str(value).strip().upper()
         return normalized or None
+
+    @field_validator("variant_option_keys", mode="before")
+    @classmethod
+    def normalize_variant_option_keys(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("variant_option_keys must be a list")
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            key = str(item).strip()
+            if not key or key in seen:
+                continue
+            if len(key) > 120:
+                raise ValueError("variant option names must not exceed 120 characters")
+            seen.add(key)
+            normalized.append(key)
+        return normalized
 
 
 class PublicCatalogOfferUpsertRequest(BaseModel):
