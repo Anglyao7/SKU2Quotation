@@ -203,6 +203,11 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
   if (!tenantSlug) throw new Response("Not found", { status: 404 });
   const currentUrl = new URL(request.url);
   const locale = parseStorefrontLocale(currentUrl.searchParams.get("lang"));
+  // The default Chinese storefront omits `lang` from its URL. Treat that
+  // omitted value as zh-CN when looking up the in-memory catalog snapshot so
+  // returning from a product detail page does not refetch and flash the
+  // category navigation.
+  const snapshotLocale = locale ?? "zh-CN";
   const pathShareId = params.shareId?.trim();
   const accountKey = params.accountKey?.trim();
   const accountId = accountKey ? storefrontAccountMembershipId(accountKey) : undefined;
@@ -227,9 +232,9 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       return redirect(`${storefrontBasePath(store.slug)}${suffix}${currentUrl.search}${currentUrl.hash}`);
     }
     const savedView = shareToken ? undefined : readStorefrontViewState(storageScope);
-    const catalogSnapshot = shareToken || accountId || !locale
+    const catalogSnapshot = shareToken || accountId
       ? null
-      : readStorefrontCatalogSnapshot(storageScope, locale);
+      : readStorefrontCatalogSnapshot(storageScope, snapshotLocale);
     if (catalogSnapshot) {
       const cachedStore = catalogSnapshot.store;
       // Cached metadata is not authoritative for storefront identity. Old
