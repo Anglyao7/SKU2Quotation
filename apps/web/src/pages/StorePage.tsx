@@ -963,7 +963,7 @@ export function StorePage() {
     store.hot_products_enabled && !hasFilters && !imageSearchActive
   );
   const searchPending = !imageSearchActive && Boolean(search.trim()) && (
-    search.trim() !== deferredSearch || loading
+    search.trim() !== deferredSearch || loading || pageTransitioning
   );
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const cartSkuCount = cartLines.length;
