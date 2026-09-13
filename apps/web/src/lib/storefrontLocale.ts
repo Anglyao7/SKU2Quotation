@@ -1,5 +1,6 @@
 import type { StorefrontLocale } from "../types";
 import { consoleLocaleMessage } from "../core/consoleLocaleMessages";
+import { money } from "./format";
 import { localizedStorefrontMessages } from "./storefrontMessages";
 import { cartonMessages } from "./cartonMessages";
 
@@ -216,6 +217,7 @@ const english: Record<string, string> = {
   "关闭图片预览": "Close image preview",
   "已选 {quantity}": "{quantity} selected",
   "参考单价": "Reference price",
+  "{amount}起": "From {amount}",
   "{name} 已选数量": "Selected quantity for {name}",
   "减少 {name} 数量": "Decrease quantity for {name}",
   "增加 {name} 数量": "Increase quantity for {name}",
@@ -406,4 +408,29 @@ export function storefrontText(
     result = result.replaceAll(`{${key}}`, String(value));
   }
   return result;
+}
+
+/**
+ * Public storefront cards intentionally show the lowest available price as a
+ * starting price instead of exposing a potentially confusing price range.
+ * Keep the formatting here so catalog cards, visitor history and AI results
+ * use the same localized wording.
+ */
+export function storefrontPriceLabel(
+  locale: StorefrontLocale,
+  from?: number | string | null,
+  to?: number | string | null,
+  currency = "CNY",
+) {
+  const formattedFrom = money(from, currency);
+  const numericFrom = Number(from);
+  const numericTo = Number(to);
+  if (
+    Number.isFinite(numericFrom)
+    && Number.isFinite(numericTo)
+    && Math.abs(numericFrom - numericTo) > 0.0001
+  ) {
+    return storefrontText(locale, "{amount}起", { amount: formattedFrom });
+  }
+  return formattedFrom;
 }

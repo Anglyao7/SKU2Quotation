@@ -434,6 +434,7 @@
   "采购总额": "Total de compra",
   "采样于 {time}": "Amostrado às {time}",
   "参考单价": "Preço de referência",
+  "{amount}起": "A partir de {amount}",
   "参考汇率": "Taxa de referência",
   "参考汇率，实际结算以银行或支付渠道为准。": "Taxas de referência apenas. A liquidação final é determinada pelo seu banco ou fornecedor de pagamento.",
   "参考价": "Preço de referência",

@@ -105,6 +105,7 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "关闭图片预览": "Fechar pré-visualização da imagem",
   "已选 {quantity}": "{quantity} selecionados",
   "参考单价": "Preço unitário de referência",
+  "{amount}起": "A partir de {amount}",
   "{name} 已选数量": "Quantidade selecionada de {name}",
   "减少 {name} 数量": "Diminuir a quantidade de {name}",
   "增加 {name} 数量": "Aumentar a quantidade de {name}",

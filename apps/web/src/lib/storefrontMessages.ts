@@ -7,10 +7,12 @@ type AdditionalLocale = Exclude<StorefrontLocale, "zh-CN" | "en-US">;
 // copy until its generated console dictionary is added; catalog translations
 // remain supplied by the published language package.
 type ExistingAdditionalLocale = Exclude<AdditionalLocale, "pt" | "fr" | "fa" | "ru">;
+type LocalizedStorefrontMessage = Record<ExistingAdditionalLocale, string>
+  & Partial<Record<"ru", string>>;
 
 const localizedStorefrontMessagesBase: Record<
   string,
-  Record<ExistingAdditionalLocale, string>
+  LocalizedStorefrontMessage
 > = {
   "SKU 商品目录": { es: "Catálogo de SKU", tr: "SKU Kataloğu", ar: "كتالوج وحدات SKU", ja: "SKUカタログ", ko: "SKU 카탈로그" },
   "商品目录": { es: "Catálogo de productos", tr: "Ürün Kataloğu", ar: "كتالوج المنتجات", ja: "商品カタログ", ko: "상품 카탈로그" },
@@ -118,6 +120,7 @@ const localizedStorefrontMessagesBase: Record<
   "关闭图片预览": { es: "Cerrar vista previa", tr: "Görsel önizlemeyi kapat", ar: "إغلاق معاينة الصورة", ja: "画像プレビューを閉じる", ko: "이미지 미리보기 닫기" },
   "已选 {quantity}": { es: "{quantity} seleccionados", tr: "{quantity} seçildi", ar: "تم اختيار {quantity}", ja: "{quantity}点選択済み", ko: "{quantity}개 선택됨" },
   "参考单价": { es: "Precio de referencia", tr: "Referans birim fiyat", ar: "سعر الوحدة المرجعي", ja: "参考単価", ko: "참고 단가" },
+  "{amount}起": { es: "Desde {amount}", tr: "{amount}'den başlayan", ar: "يبدأ من {amount}", ja: "{amount}から", ko: "{amount}부터", ru: "От {amount}" },
   "{name} 已选数量": { es: "Cantidad seleccionada de {name}", tr: "{name} için seçilen miktar", ar: "الكمية المحددة من {name}", ja: "{name}の選択数量", ko: "{name} 선택 수량" },
   "减少 {name} 数量": { es: "Reducir cantidad de {name}", tr: "{name} miktarını azalt", ar: "تقليل كمية {name}", ja: "{name}の数量を減らす", ko: "{name} 수량 줄이기" },
   "增加 {name} 数量": { es: "Aumentar cantidad de {name}", tr: "{name} miktarını artır", ar: "زيادة كمية {name}", ja: "{name}の数量を増やす", ko: "{name} 수량 늘리기" },

@@ -11,9 +11,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, ApiError } from "../lib/api";
-import { money } from "../lib/format";
 import { storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
-import { storefrontLocaleQuery, storefrontText } from "../lib/storefrontLocale";
+import { storefrontLocaleQuery, storefrontPriceLabel, storefrontText } from "../lib/storefrontLocale";
 import type {
   PublicSupportConversation,
   PublicSupportMessage,
@@ -56,20 +55,13 @@ function saveToken(slug: string, token: string) {
   }
 }
 
-function supportProductPrice(product: StoreProduct) {
-  const priceFrom = Number(product.price_from);
-  const priceTo = Number(product.price_to);
-  if (
-    Number.isFinite(priceFrom)
-    && Number.isFinite(priceTo)
-    && Math.abs(priceFrom - priceTo) > 0.0001
-  ) {
-    return (
-      `${money(product.price_from, product.currency)} – `
-      + money(product.price_to, product.currency)
-    );
-  }
-  return money(product.price_from, product.currency);
+function supportProductPrice(product: StoreProduct, locale: StorefrontLocale) {
+  return storefrontPriceLabel(
+    locale,
+    product.price_from,
+    product.price_to,
+    product.currency,
+  );
 }
 
 function SupportProductCard({
@@ -121,7 +113,7 @@ function SupportProductCard({
           {product.product_code ? ` · ${product.product_code}` : ""}
         </small>
         <strong dir="auto">{product.name}</strong>
-        {showPrice ? <span>{supportProductPrice(product)}</span> : null}
+        {showPrice ? <span>{supportProductPrice(product, locale)}</span> : null}
         <em>
           {t("查看商品")}
           <ArrowRight weight="bold" aria-hidden="true" />

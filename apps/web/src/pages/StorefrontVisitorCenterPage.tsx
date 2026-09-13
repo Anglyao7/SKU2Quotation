@@ -29,7 +29,6 @@ import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
-import { money } from "../lib/format";
 import { readStoreCart, refreshCartSkus, setCartQuantity, writeStoreCart } from "../lib/storeCart";
 import {
   clearStorefrontHistory,
@@ -46,6 +45,7 @@ import {
   storefrontDirection,
   storefrontLayoutDirection,
   storefrontLocaleQuery,
+  storefrontPriceLabel,
   storefrontText,
 } from "../lib/storefrontLocale";
 import type { Storefront, StorefrontLocale, StorefrontVisitorQuote } from "../types";
@@ -77,7 +77,7 @@ function ProductRows({
       <div>
         <Link to={`${basePath}/products/${encodeURIComponent(item.id)}${storefrontLocaleQuery(locale)}`}><strong>{item.name}</strong></Link>
         <Text size="1" color="gray">{item.category || t("未分类")}</Text>
-        {store.prices_visible !== false ? <Text size="2" weight="bold" color="blue">{money(item.priceFrom, item.currency)}</Text> : null}
+        {store.prices_visible !== false ? <Text size="2" weight="bold" color="blue">{storefrontPriceLabel(locale, item.priceFrom, item.priceTo, item.currency)}</Text> : null}
       </div>
       {removable ? <Button size="2" variant="ghost" color="gray" onClick={() => onRemove?.(item)} aria-label={t("取消收藏")}><Trash /></Button> : null}
     </Card>

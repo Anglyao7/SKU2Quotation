@@ -2,8 +2,7 @@ import { Button, Card, Text } from "@radix-ui/themes";
 import { ArrowRight, Heart, Image as ImageIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { money } from "../lib/format";
-import { storefrontText } from "../lib/storefrontLocale";
+import { storefrontPriceLabel, storefrontText } from "../lib/storefrontLocale";
 import { isStorefrontFavorite, toggleStorefrontFavorite } from "../lib/storefrontVisitor";
 import type { StoreProduct, StorefrontLocale } from "../types";
 import { StorefrontCatalogImage } from "./StorefrontCatalogImage";
@@ -38,15 +37,12 @@ export function ProductCard({
   const t = (source: string, values?: Record<string, string | number>) => (
     storefrontText(locale, source, values)
   );
-  const priceFrom = Number(product.price_from);
-  const priceTo = Number(product.price_to);
-  const priceLabel = (
-    Number.isFinite(priceFrom)
-    && Number.isFinite(priceTo)
-    && Math.abs(priceFrom - priceTo) > 0.0001
-  )
-    ? `${money(product.price_from, product.currency)} – ${money(product.price_to, product.currency)}`
-    : money(product.price_from, product.currency);
+  const priceLabel = storefrontPriceLabel(
+    locale,
+    product.price_from,
+    product.price_to,
+    product.currency,
+  );
 
   useEffect(() => {
     setFavorite(isStorefrontFavorite(tenantSlug, product.id));
