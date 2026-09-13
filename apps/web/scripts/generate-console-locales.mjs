@@ -298,7 +298,7 @@ function translationQualityIssue({ locale, source, translated, english }) {
 const validJapaneseIdenticalMessages = new Set([
   "保存", "保存中", "保存中…", "操作", "成功", "地域", "列", "日本",
   "商品", "商品 / SKU", "属性", "数量", "所有者", "所有者（OWNER）",
-  "未提供", "中国", "最近 {time}", "SKU / 商品",
+  "未提供", "中国", "最近 {time}", "SKU / 商品", "固定", "商品属性",
 ]);
 
 function shouldRepairTranslation({ locale, source, translated, english }) {
