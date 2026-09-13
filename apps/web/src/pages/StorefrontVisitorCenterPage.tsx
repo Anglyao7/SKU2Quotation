@@ -27,7 +27,6 @@ import { useCoreAuth } from "../core/AuthContext";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { StorefrontFooter } from "../components/StorefrontFooter";
-import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { api } from "../lib/api";
 import { storefrontAccountMembershipId, storefrontBasePath, storefrontStorageScope } from "../lib/storefrontAccount";
@@ -276,7 +275,6 @@ export function StorefrontVisitorCenterPage() {
         </div>
       </div></Container>
     </header>
-    <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
     <main className="visitor-center-main"><Container size="4">
       <Link to={storefrontHome} className="sku-detail-back"><ArrowLeft weight="bold" />{t("返回商品目录")}</Link>
       <section className="visitor-center-hero">

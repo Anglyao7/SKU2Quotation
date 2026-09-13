@@ -21,7 +21,6 @@ import { ProductImagePreview } from "../components/ProductImagePreview";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
-import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -220,8 +219,6 @@ export function SkuDetailPage() {
           </div>
         </Container>
       </header>
-
-      <StorefrontTopNavigation store={store} accountKey={accountKey} locale={locale} />
 
       <StorefrontAnnouncements
         announcements={announcements}
