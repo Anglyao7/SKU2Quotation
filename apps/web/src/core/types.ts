@@ -2,7 +2,7 @@ import type { StorefrontLocale, TenantSubscriptionTier } from "../types";
 
 export type UiLocale = StorefrontLocale;
 export type BusinessMode = "DOMESTIC" | "EXPORT";
-export type StorefrontCategoryLayoutMode = "AUTO" | "HORIZONTAL" | "VERTICAL";
+export type StorefrontCategoryLayoutMode = "AUTO" | "HORIZONTAL" | "VERTICAL" | "VISITOR";
 
 export interface AuthUser {
   id: string;

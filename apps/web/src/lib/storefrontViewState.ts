@@ -40,6 +40,10 @@ function storageKey(slug: string) {
   return `smart-trade-cloud:store-view:${slug.toLocaleLowerCase()}`;
 }
 
+function categoryLayoutPreferenceKey(slug: string) {
+  return `smart-trade-cloud:store-category-layout:${slug.trim().toLocaleLowerCase()}`;
+}
+
 function catalogSnapshotKey(slug: string, locale: StorefrontLocale) {
   return `${slug.trim().toLocaleLowerCase()}:${locale}`;
 }
@@ -113,6 +117,35 @@ export function writeStorefrontViewState(
     } satisfies StorefrontViewState));
   } catch {
     // Catalog navigation must still work when session storage is unavailable.
+  }
+}
+
+/**
+ * A visitor's layout choice is independent from the merchant's default. Keep
+ * it in local storage so it survives a new session, while the tenant/account
+ * scope keeps one subaccount storefront from affecting another.
+ */
+export function readStorefrontCategoryLayoutPreference(
+  slug: string,
+): StorefrontCategoryLayout | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(categoryLayoutPreferenceKey(slug));
+    return value === "vertical" || value === "horizontal" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeStorefrontCategoryLayoutPreference(
+  slug: string,
+  layout: StorefrontCategoryLayout,
+) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(categoryLayoutPreferenceKey(slug), layout);
+  } catch {
+    // The storefront still works when browser storage is unavailable.
   }
 }
 

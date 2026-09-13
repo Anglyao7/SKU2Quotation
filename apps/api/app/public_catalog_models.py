@@ -40,7 +40,7 @@ class TenantPublicProfileRow(AuditTimestampMixin, Base):
             name="all_products_position_nonnegative",
         ),
         CheckConstraint(
-            "storefront_category_layout_mode IN ('AUTO', 'HORIZONTAL', 'VERTICAL')",
+            "storefront_category_layout_mode IN ('AUTO', 'HORIZONTAL', 'VERTICAL', 'VISITOR')",
             name="storefront_category_layout_mode_allowed",
         ),
         UniqueConstraint("slug", name="uq_tenant_public_profiles_slug"),

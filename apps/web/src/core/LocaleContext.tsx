@@ -3477,8 +3477,9 @@ const english: Record<string, string> = {
   "按设备自动": "Automatic by device",
   "始终横向": "Always horizontal",
   "始终竖向": "Always vertical",
-  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。":
-    "Automatic mode uses vertical categories on phones and horizontal categories on computers; you can also lock one layout.",
+  "访客自行切换": "Visitor chooses",
+  "自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局，或交给访客自行切换。":
+    "Automatic mode uses vertical categories on phones and horizontal categories on computers; you can also lock one layout or let visitors choose.",
   "当前设置仅影响客户前台的分类导航，不影响后台操作界面。":
     "This setting only affects category navigation on the customer storefront, not the admin workspace.",
   "前台展示方式保存失败，请重试。": "Could not save the storefront display mode. Please try again.",

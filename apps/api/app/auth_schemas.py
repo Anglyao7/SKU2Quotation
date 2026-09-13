@@ -161,7 +161,7 @@ class MerchantSettingsUpdate(BaseModel):
     hot_products_enabled: bool | None = None
     storefront_exchange_rates_enabled: bool | None = None
     storefront_prices_visible: bool | None = None
-    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL"] | None = None
+    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL", "VISITOR"] | None = None
     storefront_locales: list[StorefrontLocale] | None = Field(
         default=None,
         min_length=1,
@@ -246,7 +246,7 @@ class MerchantSettingsResponse(BaseModel):
     hot_products_enabled: bool
     storefront_exchange_rates_enabled: bool
     storefront_prices_visible: bool
-    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL"]
+    storefront_category_layout_mode: Literal["AUTO", "HORIZONTAL", "VERTICAL", "VISITOR"]
     storefront_footer_sections: list[StorefrontFooterSection]
 
 

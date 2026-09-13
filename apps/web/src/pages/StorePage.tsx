@@ -13,10 +13,12 @@ import {
   CaretDown,
   CaretLeft,
   CaretRight,
+  Columns,
   Fire,
   FolderOpen,
   ImageSquare,
   MagnifyingGlass,
+  Rows,
   ShareNetwork,
   Storefront as StoreIcon,
   WarningCircle,
@@ -63,9 +65,12 @@ import {
 } from "../lib/storefrontLocale";
 import {
   readStorefrontCatalogSnapshot,
+  readStorefrontCategoryLayoutPreference,
   readStorefrontViewState,
   writeStorefrontCatalogSnapshot,
+  writeStorefrontCategoryLayoutPreference,
   writeStorefrontViewState,
+  type StorefrontCategoryLayout,
 } from "../lib/storefrontViewState";
 import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontCategoryOption, StorefrontLocale } from "../types";
 
@@ -300,6 +305,16 @@ export function StorePage() {
   const [isMobileViewport, setIsMobileViewport] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
   ));
+  const [initialVisitorCategoryLayout] = useState<StorefrontCategoryLayout>(() => (
+    typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches
+      ? "vertical"
+      : "horizontal"
+  ));
+  const [visitorCategoryLayout, setVisitorCategoryLayout] = useState<StorefrontCategoryLayout | null>(() => (
+    loadedStore.category_layout_mode === "VISITOR"
+      ? readStorefrontCategoryLayoutPreference(storageScope)
+      : null
+  ));
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(
     () => new Set(initialView?.expandedCategories ?? []),
   );
@@ -430,6 +445,14 @@ export function StorePage() {
     mediaQuery.addEventListener?.("change", updateViewport);
     return () => mediaQuery.removeEventListener?.("change", updateViewport);
   }, []);
+
+  useEffect(() => {
+    if (store.category_layout_mode !== "VISITOR") {
+      setVisitorCategoryLayout(null);
+      return;
+    }
+    setVisitorCategoryLayout(readStorefrontCategoryLayoutPreference(storageScope));
+  }, [storageScope, store.category_layout_mode]);
 
   useEffect(() => {
     // Keep one marker per browser tab/session. The server deduplicates the
@@ -579,13 +602,21 @@ export function StorePage() {
       .filter(Boolean),
   )).slice(0, 5), [store.popular_search_terms]);
   const categoryShowcaseEnabled = store.category_showcase_enabled !== false;
+  const visitorLayoutSelectionEnabled = store.category_layout_mode === "VISITOR";
   const categoryLayout: "horizontal" | "vertical" = store.category_layout_mode === "VERTICAL"
     ? "vertical"
     : store.category_layout_mode === "HORIZONTAL"
       ? "horizontal"
+      : store.category_layout_mode === "VISITOR"
+        ? visitorCategoryLayout ?? initialVisitorCategoryLayout
       : isMobileViewport
         ? "vertical"
         : "horizontal";
+  const selectVisitorCategoryLayout = (layout: StorefrontCategoryLayout) => {
+    if (!visitorLayoutSelectionEnabled) return;
+    setVisitorCategoryLayout(layout);
+    writeStorefrontCategoryLayoutPreference(storageScope, layout);
+  };
   const showCategoryShowcase = Boolean(
     !shareToken
     && !imageSearchActive
@@ -1125,7 +1156,34 @@ export function StorePage() {
                   <Text size="2" weight="medium">{t("查找商品")}</Text>
                   <Text size="1" color="gray">{t("输入 SKU、商品特征或使用场景，AI 会结合类目与标签查找")}</Text>
                 </div>
-                <div className="filter-panel-actions" />
+                <div className="filter-panel-actions">
+                  {!shareToken && visitorLayoutSelectionEnabled ? (
+                    <div className="category-layout-toggle" role="group" aria-label={t("分类展示方式")}>
+                      <Button
+                        type="button"
+                        size="1"
+                        variant={categoryLayout === "horizontal" ? "soft" : "ghost"}
+                        color={categoryLayout === "horizontal" ? "jade" : "gray"}
+                        aria-pressed={categoryLayout === "horizontal"}
+                        aria-label={t("横向展示")}
+                        onClick={() => selectVisitorCategoryLayout("horizontal")}
+                      >
+                        <Rows size={15} />{t("横向展示")}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="1"
+                        variant={categoryLayout === "vertical" ? "soft" : "ghost"}
+                        color={categoryLayout === "vertical" ? "jade" : "gray"}
+                        aria-pressed={categoryLayout === "vertical"}
+                        aria-label={t("竖向展示")}
+                        onClick={() => selectVisitorCategoryLayout("vertical")}
+                      >
+                        <Columns size={15} />{t("竖向展示")}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
               </div>
               <div className="search-row">
                 <TextField.Root

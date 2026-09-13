@@ -1087,6 +1087,17 @@ def test_merchant_controls_responsive_storefront_category_layout() -> None:
         assert store.status_code == 200, store.text
         assert store.json()["category_layout_mode"] == "VERTICAL"
 
+        visitor = client.patch(
+            "/api/v1/me/merchant",
+            json={"storefront_category_layout_mode": "VISITOR"},
+        )
+        assert visitor.status_code == 200, visitor.text
+        assert visitor.json()["storefront_category_layout_mode"] == "VISITOR"
+
+        visitor_store = client.get("/api/store/demo")
+        assert visitor_store.status_code == 200, visitor_store.text
+        assert visitor_store.json()["category_layout_mode"] == "VISITOR"
+
         invalid = client.patch(
             "/api/v1/me/merchant",
             json={"storefront_category_layout_mode": "DIAGONAL"},

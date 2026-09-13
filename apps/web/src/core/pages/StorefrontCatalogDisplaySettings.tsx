@@ -1,5 +1,5 @@
 import { Badge, Button, Switch, Text, TextField } from "@radix-ui/themes";
-import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, CaretLeft, CaretRight, Columns, CurrencyDollar, Desktop, DeviceMobile, Fire, MagnifyingGlass, Package, PushPin, Rows, X } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowDown, ArrowSquareOut, ArrowUp, ArrowsLeftRight, CaretLeft, CaretRight, Columns, CurrencyDollar, Desktop, DeviceMobile, Fire, MagnifyingGlass, Package, PushPin, Rows, X } from "@phosphor-icons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -179,7 +179,7 @@ export function StorefrontCatalogDisplaySettings() {
           <div>
             <Text size="1" color="gray">{t("分类展示")}</Text>
             <h3 id="storefront-category-layout-title">{t("前台分类布局")}</h3>
-            <p>{t("自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局。")}</p>
+            <p>{t("自动模式会让手机使用竖向分类、电脑使用横向分类；也可以固定一种布局，或交给访客自行切换。")}</p>
           </div>
           <div className="storefront-category-layout-options" role="group" aria-label={t("前台分类布局") }>
             <Button
@@ -191,6 +191,16 @@ export function StorefrontCatalogDisplaySettings() {
               onClick={() => void saveCategoryLayoutMode("AUTO")}
             >
               <DeviceMobile />{t("按设备自动")}
+            </Button>
+            <Button
+              type="button"
+              variant={merchant.storefrontCategoryLayoutMode === "VISITOR" ? "soft" : "ghost"}
+              color={merchant.storefrontCategoryLayoutMode === "VISITOR" ? "jade" : "gray"}
+              disabled={Boolean(busy) || !canManage}
+              aria-pressed={merchant.storefrontCategoryLayoutMode === "VISITOR"}
+              onClick={() => void saveCategoryLayoutMode("VISITOR")}
+            >
+              <ArrowsLeftRight />{t("访客自行切换")}
             </Button>
             <Button
               type="button"

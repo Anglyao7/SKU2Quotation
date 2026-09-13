@@ -163,7 +163,7 @@ export interface Storefront {
   category_showcase_enabled?: boolean;
   exchange_rates_enabled?: boolean;
   prices_visible?: boolean;
-  category_layout_mode?: "AUTO" | "HORIZONTAL" | "VERTICAL";
+  category_layout_mode?: "AUTO" | "HORIZONTAL" | "VERTICAL" | "VISITOR";
   popular_search_terms?: string[];
   announcements?: PublicAnnouncement[];
   support_widget?: PublicSupportWidget;
