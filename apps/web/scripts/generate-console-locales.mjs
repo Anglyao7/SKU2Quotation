@@ -19,6 +19,7 @@ const localeNames = {
   pt: "Portuguese",
   fr: "French",
   fa: "Persian",
+  ru: "Russian",
 };
 const requestedLocales = argumentValues("--locale");
 const targetLocales = requestedLocales.length
