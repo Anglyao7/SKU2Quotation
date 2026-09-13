@@ -476,7 +476,9 @@ const router = createBrowserRouter([{
         { path: "suppliers", element: <Navigate to="/console/supply-chain" replace /> },
         { path: "inquiries", element: <PermissionGate anyOf={["inquiry.view"]}><InquiryPage /></PermissionGate> },
         { path: "quotes", element: <ConsoleQuotesRoute /> },
-        { path: "tasks", element: <PermissionGate anyOf={["product.import", "product.edit"]}><TaskRecordsPage /></PermissionGate> },
+        // Keep the page available for internal operations, but never expose
+        // task history to merchant accounts (including direct URL access).
+        { path: "tasks", element: <PlatformAdminGate><TaskRecordsPage /></PlatformAdminGate> },
         { path: "quotes/:quoteDraftId/workbench", element: <PermissionGate anyOf={["quotation.create"]}><QuoteWorkbenchPage /></PermissionGate> },
         { path: "quote-templates", element: <PermissionGate anyOf={["quotation.create"]}><QuoteTemplatesPage /></PermissionGate> },
         { path: "customer-accounts", element: <PermissionGate anyOf={["customer_portal.subaccount_manage"]}><CustomerAccountsPage /></PermissionGate> },

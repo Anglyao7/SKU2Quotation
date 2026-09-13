@@ -67,7 +67,9 @@ const navigationGroups: Array<{
     key: "workspace", label: "工作", icon: ChartDonut,
     items: [
       { to: "/console", label: "概览", mobileLabel: "概览", icon: ChartDonut, end: true, permissions: [], platformAdminOnly: false, mobilePrimary: true },
-      { to: "/console/tasks", label: "任务记录", mobileLabel: "任务", icon: ClockCounterClockwise, permissions: ["product.import", "product.edit"], platformAdminOnly: false, mobilePrimary: false },
+      // Task records are an internal platform-admin view. Merchants should not
+      // see this module in their workspace navigation.
+      { to: "/console/tasks", label: "任务记录", mobileLabel: "任务", icon: ClockCounterClockwise, permissions: [], platformAdminOnly: true, mobilePrimary: false },
     ],
   },
   {
