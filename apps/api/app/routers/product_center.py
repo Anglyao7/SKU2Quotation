@@ -40,6 +40,7 @@ from ..product_center_schemas import (
     ProductDeleteAllJobResponse,
     ProductDeleteAllRequest,
     ProductDetail,
+    ProductUpdateRequest,
     ProductImageResponse,
     ProductListPage,
     ProductReviewQueueItem,
@@ -278,6 +279,28 @@ def update_product_category(
     context = _context(session)
     try:
         return use_cases.update_product_category(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            request=request,
+            account_scope=context.account_scope,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/products/{product_id}", response_model=ProductDetail)
+def update_product(
+    product_id: UUID,
+    request: ProductUpdateRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> ProductDetail:
+    context = _context(session)
+    try:
+        return use_cases.update_product(
             session,
             tenant_id=context.tenant_id,
             user_id=context.user_id,

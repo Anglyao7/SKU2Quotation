@@ -662,6 +662,24 @@ export interface ProductAttribute {
   reviewStatus: string;
 }
 
+export interface ProductAttributeUpdateInput {
+  id?: string;
+  key: string;
+  value: unknown;
+  unitCode?: string | null;
+  reviewStatus?: "AI_SUGGESTED" | "CONFIRMED" | "REJECTED";
+}
+
+export interface ProductUpdateInput {
+  expectedVersion: number;
+  name?: string;
+  productCode?: string | null;
+  description?: string | null;
+  defaultUnit?: string | null;
+  status?: "DRAFT" | "IN_REVIEW" | "ACTIVE" | "ARCHIVED";
+  attributes?: ProductAttributeUpdateInput[];
+}
+
 export interface ProductActivity {
   id: string;
   entityType: string;

@@ -57,6 +57,7 @@ import type {
   ProductAttribute,
   ProductCategory,
   ProductDetail,
+  ProductUpdateInput,
   ProductOffer,
   ProductSku,
   ProductListPage,
@@ -4077,6 +4078,35 @@ export async function updateProductCategory(
   return mapProductDetail(row);
 }
 
+export async function updateProduct(
+  productId: string,
+  input: ProductUpdateInput,
+): Promise<ProductDetail> {
+  const row = await request<ApiProductDetail>(
+    `/products/${encodeURIComponent(productId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        expected_version: input.expectedVersion,
+        name: input.name,
+        product_code: input.productCode,
+        description: input.description,
+        default_unit: input.defaultUnit,
+        status: input.status,
+        attributes: input.attributes?.map((attribute) => ({
+          id: attribute.id,
+          key: attribute.key,
+          value: attribute.value,
+          unit_code: attribute.unitCode,
+          review_status: attribute.reviewStatus ?? "CONFIRMED",
+        })),
+      }),
+    },
+  );
+  bumpPublicCatalogRevision();
+  return mapProductDetail(row);
+}
+
 export async function createManualProduct(
   input: ManualProductCreateInput,
 ): Promise<ProductDetail> {
@@ -4133,6 +4163,8 @@ export async function createSkus(productId: string, items: Array<{
 
 export async function updateSku(skuId: string, input: {
   expectedVersion: number;
+  skuCode?: string;
+  sourceSkuCode?: string | null;
   name?: string | null;
   optionValues?: Record<string, string | number | boolean>;
   barcode?: string | null;
@@ -4147,6 +4179,8 @@ export async function updateSku(skuId: string, input: {
     method: "PATCH",
     body: JSON.stringify({
       expected_version: input.expectedVersion,
+      sku_code: input.skuCode,
+      source_sku_code: input.sourceSkuCode,
       name: input.name,
       option_values: input.optionValues,
       barcode: input.barcode,

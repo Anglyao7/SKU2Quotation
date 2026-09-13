@@ -29,6 +29,7 @@ import {
   rollbackCatalogImportFile,
   retryCatalogTranslationProduct,
   updateProductCategory,
+  updateProduct,
   updateSku,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
@@ -50,7 +51,7 @@ import { primaryCategoryLabel } from "../../lib/format";
 import { storefrontLanguage } from "../../lib/storefrontLocale";
 import { api } from "../../lib/api";
 import type { ProductTag, StorefrontLocale } from "../../types";
-import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
+import type { CatalogImportFile, CatalogImportFileRollbackResult, CoreProduct, FileDetection, ImportJob, ProductAttribute, ProductCategory, ProductDetail, ProductListPage, ProductSku, PublicCatalogOffer, SkuListItem } from "../types";
 import { SearchableCategorySelect } from "../components/SearchableCategorySelect";
 import { useToast } from "../ToastContext";
 
@@ -68,6 +69,17 @@ const SKU_PACKING_QUANTITY_KEYS = new Set([
 type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
 type ProductStatus = "DRAFT" | "IN_REVIEW" | "ACTIVE" | "ARCHIVED";
 type ImportQueueStatus = "checking" | "ready" | "uploading" | "processing" | "published" | "failed";
+
+type EditableAttributeKind = "text" | "number" | "boolean" | "json";
+
+interface EditableProductAttribute {
+  id?: string;
+  key: string;
+  value: string;
+  unitCode: string;
+  kind: EditableAttributeKind;
+  reviewStatus: "AI_SUGGESTED" | "CONFIRMED" | "REJECTED";
+}
 
 interface ImportQueueItem {
   id: string;
@@ -2501,6 +2513,132 @@ function ManagedTagPicker({ tags, selected, onChange, disabled = false }: {
   );
 }
 
+function attributeKind(value: unknown): EditableAttributeKind {
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (value && typeof value === "object") return "json";
+  return "text";
+}
+
+function attributeDraft(attribute: ProductAttribute): EditableProductAttribute {
+  const kind = attributeKind(attribute.value);
+  return {
+    id: attribute.id,
+    key: attribute.key,
+    value: kind === "json" ? JSON.stringify(attribute.value) : String(attribute.value ?? ""),
+    unitCode: attribute.unitCode ?? "",
+    kind,
+    reviewStatus: attribute.reviewStatus === "REJECTED"
+      ? "REJECTED"
+      : attribute.reviewStatus === "AI_SUGGESTED" ? "AI_SUGGESTED" : "CONFIRMED",
+  };
+}
+
+function parseAttributeDraft(attribute: EditableProductAttribute): unknown {
+  if (attribute.kind === "number") {
+    const number = Number(attribute.value);
+    return Number.isFinite(number) ? number : attribute.value;
+  }
+  if (attribute.kind === "boolean") return attribute.value === "true";
+  if (attribute.kind === "json") {
+    try { return JSON.parse(attribute.value); } catch { return attribute.value; }
+  }
+  return attribute.value;
+}
+
+function ProductEditor({ product, onChanged }: {
+  product: ProductDetail;
+  onChanged: () => Promise<void>;
+}) {
+  const { t } = useLocale();
+  const [name, setName] = useState(product.name);
+  const [productCode, setProductCode] = useState(product.productCode ?? "");
+  const [description, setDescription] = useState(product.description ?? "");
+  const [defaultUnit, setDefaultUnit] = useState(product.defaultUnit ?? "");
+  const [status, setStatus] = useState<ProductStatus>(product.status as ProductStatus);
+  const [attributes, setAttributes] = useState<EditableProductAttribute[]>(() => product.attributes.map(attributeDraft));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setName(product.name);
+    setProductCode(product.productCode ?? "");
+    setDescription(product.description ?? "");
+    setDefaultUnit(product.defaultUnit ?? "");
+    setStatus(product.status as ProductStatus);
+    setAttributes(product.attributes.map(attributeDraft));
+    setError("");
+  }, [product]);
+
+  const updateAttribute = (index: number, patch: Partial<EditableProductAttribute>) => {
+    setAttributes((current) => current.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, ...patch } : item
+    )));
+  };
+
+  const save = async () => {
+    if (!name.trim()) {
+      setError(t("商品名称不能为空。"));
+      return;
+    }
+    const invalidAttribute = attributes.find((attribute) => !attribute.key.trim());
+    if (invalidAttribute) {
+      setError(t("属性名称不能为空。"));
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      await updateProduct(product.id, {
+        expectedVersion: product.currentVersion,
+        name: name.trim(),
+        productCode: productCode.trim() || null,
+        description: description.trim() || null,
+        defaultUnit: defaultUnit.trim() || null,
+        status,
+        attributes: attributes.map((attribute) => ({
+          id: attribute.id,
+          key: attribute.key.trim(),
+          value: parseAttributeDraft(attribute),
+          unitCode: attribute.unitCode.trim() || null,
+          reviewStatus: attribute.reviewStatus,
+        })),
+      });
+      await onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("商品保存失败，请稍后重试。"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="core-product-editor">
+      <div className="core-product-editor-grid">
+        <label><Text size="1" color="gray">{t("商品名称")}</Text><TextField.Root value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label><Text size="1" color="gray">{t("商品编码")}</Text><TextField.Root value={productCode} onChange={(event) => setProductCode(event.target.value)} /></label>
+        <label><Text size="1" color="gray">{t("计量单位")}</Text><TextField.Root value={defaultUnit} onChange={(event) => setDefaultUnit(event.target.value)} placeholder="piece" /></label>
+        <label><Text size="1" color="gray">{t("状态")}</Text><select value={status} onChange={(event) => setStatus(event.target.value as ProductStatus)}><option value="DRAFT">{t("草稿")}</option><option value="IN_REVIEW">{t("待审核")}</option><option value="ACTIVE">{t("在售")}</option><option value="ARCHIVED">{t("已归档")}</option></select></label>
+        <label className="is-wide"><Text size="1" color="gray">{t("商品描述")}</Text><TextArea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} /></label>
+      </div>
+      <section className="core-product-attribute-editor">
+        <div className="core-product-editor-section-heading"><div><Text size="2" weight="bold">{t("商品属性")}</Text><Text size="1" color="gray">{t("商品详情中的所有属性都可以在这里维护")}</Text></div><Button size="1" variant="soft" onClick={() => setAttributes((current) => [...current, { key: "", value: "", unitCode: "", kind: "text", reviewStatus: "CONFIRMED" }])}><Plus />{t("添加属性")}</Button></div>
+        {attributes.length ? <div className="core-product-attribute-list">{attributes.map((attribute, index) => (
+          <div className="core-product-attribute-row" key={attribute.id ?? `new-${index}`}>
+            <TextField.Root value={attribute.key} placeholder={t("属性名称")} onChange={(event) => updateAttribute(index, { key: event.target.value })} />
+            <TextField.Root value={attribute.value} placeholder={t("属性值")} onChange={(event) => updateAttribute(index, { value: event.target.value })} />
+            <TextField.Root value={attribute.unitCode} placeholder={t("单位")} onChange={(event) => updateAttribute(index, { unitCode: event.target.value })} />
+            <select value={attribute.kind} onChange={(event) => updateAttribute(index, { kind: event.target.value as EditableAttributeKind })}><option value="text">{t("文本")}</option><option value="number">{t("数字")}</option><option value="boolean">{t("布尔值")}</option><option value="json">JSON</option></select>
+            <Button size="1" variant="ghost" color="red" aria-label={t("删除属性")} onClick={() => setAttributes((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
+          </div>
+        ))}</div> : <Text size="1" color="gray">{t("暂无商品属性")}</Text>}
+      </section>
+      {error ? <div className="core-form-error" role="alert">{error}</div> : null}
+      <div className="core-product-editor-actions"><Button variant="solid" loading={saving} disabled={saving} onClick={() => void save()}>{t(saving ? "保存中…" : "保存商品")}</Button></div>
+    </section>
+  );
+}
+
 function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories, managedTags, onEnhanceProduct, onEnhanceSkus, onTranslateProduct, translatingProductId, onChanged, onClose }: {
   product: ProductDetail;
   sourceProduct: ProductDetail;
@@ -2524,6 +2662,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
+  const [productEditing, setProductEditing] = useState(false);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(
     () => new Set(product.categories.map((category) => category.id)),
   );
@@ -2549,6 +2688,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
   useEffect(() => {
     setActiveTab(selectedSkuId ? "skus" : "product");
+    setProductEditing(false);
     imageDragDepthRef.current = 0;
     setImageDragging(false);
     setImageError("");
@@ -2745,8 +2885,14 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
               {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
             </section>
             <div className="core-product-overview-content">
+              <div className="core-product-overview-actions">
+                {canEdit ? <Button size="2" variant={productEditing ? "soft" : "solid"} color={productEditing ? "gray" : undefined} onClick={() => setProductEditing((current) => !current)}><PencilSimple />{t(productEditing ? "取消编辑" : "编辑商品")}</Button> : null}
+              </div>
               <dl className="core-product-facts">
-                <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
+                {!productEditing ? <>
+                  <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
+                  <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
+                </> : null}
                 <div className="core-product-category-fact">
                   <dt>{t("分类")}</dt>
                   <dd>
@@ -2799,14 +2945,15 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                     )}
                   </dd>
                 </div>
-                <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
                 <div><dt>{t("供应商")}</dt><dd>{product.supplier || t("未设置")}</dd></div>
               </dl>
               {categoryError ? <div className="core-form-error" role="alert">{categoryError}</div> : null}
-              <section className="core-product-description">
-                <Text size="1" color="gray">{t("商品描述")}</Text>
-                <p>{product.description || t("暂无描述")}</p>
-              </section>
+              {productEditing ? <ProductEditor product={sourceProduct} onChanged={onChanged} /> : (
+                <section className="core-product-description">
+                  <Text size="1" color="gray">{t("商品描述")}</Text>
+                  <p>{product.description || t("暂无描述")}</p>
+                </section>
+              )}
             </div>
           </div>
         </Tabs.Content>
@@ -3064,9 +3211,17 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const canEditSku = hasPermission("product.edit");
   const canPublishOffer = hasPermission("catalog.publish");
   const defaultCurrency = profile?.context.defaultCurrency ?? "CNY";
+  const [skuCode, setSkuCode] = useState(sku.skuCode);
+  const [sourceSkuCode, setSourceSkuCode] = useState(sku.sourceSkuCode ?? "");
+  const [skuName, setSkuName] = useState(sku.name ?? "");
+  const [barcode, setBarcode] = useState(sku.barcode ?? "");
   const [defaultMoq, setDefaultMoq] = useState(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
   const [moqUnit, setMoqUnit] = useState(sku.moqUnit ?? "piece");
   const [packingQuantity, setPackingQuantity] = useState(getSkuPackingQuantity(sku.optionValues));
+  const [weight, setWeight] = useState(sku.weight === undefined ? "" : String(sku.weight));
+  const [weightUnit, setWeightUnit] = useState(sku.weightUnit ?? "kg");
+  const [skuStatus, setSkuStatus] = useState<ProductSku["status"]>(sku.status);
+  const [optionRows, setOptionRows] = useState(() => visibleSkuOptions(sku.optionValues).map(([key, value]) => ({ key, value: String(value) })));
   const [price, setPrice] = useState(offer ? String(offer.unitPrice) : "0");
   const [currency, setCurrency] = useState(offer?.currency ?? defaultCurrency);
   const [publicationStatus, setPublicationStatus] = useState<PublicCatalogOffer["publicationStatus"]>(offer?.publicationStatus ?? "DRAFT");
@@ -3075,22 +3230,32 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const [error, setError] = useState("");
 
   useEffect(() => {
+    setSkuCode(sku.skuCode);
+    setSourceSkuCode(sku.sourceSkuCode ?? "");
+    setSkuName(sku.name ?? "");
+    setBarcode(sku.barcode ?? "");
     setDefaultMoq(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
     setMoqUnit(sku.moqUnit ?? "piece");
     setPackingQuantity(getSkuPackingQuantity(sku.optionValues));
+    setWeight(sku.weight === undefined ? "" : String(sku.weight));
+    setWeightUnit(sku.weightUnit ?? "kg");
+    setSkuStatus(sku.status);
+    setOptionRows(visibleSkuOptions(sku.optionValues).map(([key, value]) => ({ key, value: String(value) })));
     setPrice(offer ? String(offer.unitPrice) : "0");
     setCurrency(offer?.currency ?? defaultCurrency);
     setPublicationStatus(offer?.publicationStatus ?? "DRAFT");
     setSelectedTags(offer?.tags ?? []);
-  }, [defaultCurrency, offer, sku.defaultMoq, sku.moqUnit, sku.optionValues]);
+  }, [defaultCurrency, offer, sku.barcode, sku.defaultMoq, sku.moqUnit, sku.name, sku.optionValues, sku.skuCode, sku.sourceSkuCode, sku.status, sku.weight, sku.weightUnit]);
 
   const save = async () => {
     const numericMoq = defaultMoq.trim() ? Number(defaultMoq) : null;
     const numericPackingQuantity = packingQuantity.trim() ? Number(packingQuantity) : null;
+    const numericWeight = weight.trim() ? Number(weight) : null;
     const numericPrice = Number(price || "0");
     if (
       (numericMoq !== null && (!Number.isFinite(numericMoq) || numericMoq < 0))
       || (numericPackingQuantity !== null && (!Number.isFinite(numericPackingQuantity) || numericPackingQuantity < 0))
+      || (numericWeight !== null && (!Number.isFinite(numericWeight) || numericWeight < 0))
       || (canPublishOffer && (!Number.isFinite(numericPrice) || numericPrice < 0))
     ) {
       setError(t("起订数、装箱数和价格必须是大于或等于 0 的数字。"));
@@ -3104,9 +3269,21 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
       if (canEditSku) {
         await updateSku(sku.id, {
           expectedVersion: sku.version,
+          skuCode: skuCode.trim(),
+          sourceSkuCode: sku.sourceSkuCode === undefined ? undefined : sourceSkuCode.trim() || null,
+          name: skuName.trim() || null,
+          barcode: barcode.trim() || null,
+          optionValues: optionRows.reduce<Record<string, string>>((values, row) => {
+            const key = row.key.trim();
+            if (key) values[key] = row.value;
+            return values;
+          }, {}),
           defaultMoq: numericMoq,
           moqUnit: numericMoq === null ? null : moqUnit.trim() || null,
           packingQuantity: numericPackingQuantity,
+          weight: numericWeight,
+          weightUnit: numericWeight === null ? null : weightUnit.trim() || null,
+          status: skuStatus,
         });
         skuSaved = true;
       }
@@ -3144,9 +3321,16 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     <div className="core-sku-quick-editor">
       <div className="core-sku-quick-fields">
         {canEditSku ? <>
+          <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
+          {sku.sourceSkuCode !== undefined ? <label><Text size="1" color="gray">{t("来源 SKU")}</Text><TextField.Root value={sourceSkuCode} onChange={(event) => setSourceSkuCode(event.target.value)} /></label> : null}
+          <label><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("条码")}</Text><TextField.Root value={barcode} onChange={(event) => setBarcode(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={defaultMoq} onChange={(event) => setDefaultMoq(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={moqUnit} onChange={(event) => setMoqUnit(event.target.value)} placeholder="piece" /></label>
           <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={packingQuantity} onChange={(event) => setPackingQuantity(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("毛重")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={weight} onChange={(event) => setWeight(event.target.value)} /></label>
+          <label><Text size="1" color="gray">{t("重量单位")}</Text><TextField.Root maxLength={32} value={weightUnit} onChange={(event) => setWeightUnit(event.target.value)} placeholder="kg" /></label>
+          <label><Text size="1" color="gray">{t("状态")}</Text><select value={skuStatus} onChange={(event) => setSkuStatus(event.target.value as ProductSku["status"])}><option value="DRAFT">{t("草稿")}</option><option value="ACTIVE">{t("在售")}</option><option value="INACTIVE">{t("已下架")}</option><option value="ARCHIVED">{t("已归档")}</option></select></label>
         </> : null}
         {canPublishOffer ? <>
           <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
@@ -3158,6 +3342,14 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
           </select></label>
         </> : null}
       </div>
+      {canEditSku ? <div className="core-sku-option-editor">
+        <div className="core-sku-option-editor-heading"><Text size="1" color="gray">{t("规格字段")}</Text><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "" }])}><Plus />{t("添加规格")}</Button></div>
+        {optionRows.length ? optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={`${row.key}-${index}`}>
+          <TextField.Root value={row.key} placeholder={t("规格名称")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
+          <TextField.Root value={row.value} placeholder={t("规格值")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
+          <Button size="1" variant="ghost" color="red" aria-label={t("删除规格")} onClick={() => setOptionRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
+        </div>) : <Text size="1" color="gray">{t("暂无规格")}</Text>}
+      </div> : null}
       {canPublishOffer ? <div className="core-sku-quick-tags">
         <Text size="1" color="gray">{t("选择标签")}</Text>
         <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />

@@ -187,6 +187,8 @@ class SkuBatchCreateRequest(BaseModel):
 
 class SkuUpdateRequest(BaseModel):
     expected_version: int = Field(ge=1)
+    sku_code: str | None = Field(default=None, max_length=160)
+    source_sku_code: str | None = Field(default=None, max_length=160)
     name: str | None = Field(default=None, max_length=500)
     option_values: dict[str, str | int | float | bool] | None = None
     barcode: str | None = Field(default=None, max_length=120)
@@ -196,6 +198,14 @@ class SkuUpdateRequest(BaseModel):
     weight: Decimal | None = Field(default=None, ge=0)
     weight_unit: str | None = Field(default=None, max_length=32)
     status: Literal["DRAFT", "ACTIVE", "INACTIVE", "ARCHIVED"] | None = None
+
+    @field_validator("sku_code", "source_sku_code", mode="before")
+    @classmethod
+    def normalize_update_codes(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip().upper()
+        return normalized or None
 
 
 class PublicCatalogOfferUpsertRequest(BaseModel):
@@ -407,6 +417,52 @@ class ProductCategoryUpdateRequest(BaseModel):
         if self.category_ids is not None:
             return self.category_ids
         return [self.category_id] if self.category_id is not None else []
+
+
+class ProductAttributeUpdateItem(BaseModel):
+    """A product attribute value edited from the catalog detail view."""
+
+    id: UUID | None = None
+    key: str = Field(min_length=1, max_length=100)
+    value: Any = None
+    unit_code: str | None = Field(default=None, max_length=32)
+    review_status: Literal["AI_SUGGESTED", "CONFIRMED", "REJECTED"] = "CONFIRMED"
+
+    @field_validator("key")
+    @classmethod
+    def normalize_attribute_key(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("attribute key must not be blank")
+        return normalized
+
+    @field_validator("unit_code", mode="before")
+    @classmethod
+    def normalize_attribute_unit(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class ProductUpdateRequest(BaseModel):
+    """Editable product-level fields shown in the catalog detail view."""
+
+    expected_version: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=500)
+    product_code: str | None = Field(default=None, max_length=100)
+    description: str | None = None
+    default_unit: str | None = Field(default=None, max_length=32)
+    status: Literal["DRAFT", "IN_REVIEW", "ACTIVE", "ARCHIVED"] | None = None
+    attributes: list[ProductAttributeUpdateItem] | None = Field(default=None, max_length=200)
+
+    @field_validator("name", "product_code", "description", "default_unit", mode="before")
+    @classmethod
+    def normalize_product_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
 
 class AttributeDefinitionCreateRequest(BaseModel):

@@ -247,15 +247,20 @@ def get_product_row(session: Session, *, tenant_id: UUID, product_id: UUID) -> P
     )
 
 
-def product_code_exists(session: Session, *, tenant_id: UUID, product_code: str) -> bool:
-    return bool(
-        session.scalar(
-            select(func.count()).select_from(ProductRow).where(
-                ProductRow.tenant_id == tenant_id,
-                func.lower(ProductRow.product_code) == product_code.casefold(),
-            )
-        )
-    )
+def product_code_exists(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_code: str,
+    exclude_product_id: UUID | None = None,
+) -> bool:
+    conditions = [
+        ProductRow.tenant_id == tenant_id,
+        func.lower(ProductRow.product_code) == product_code.casefold(),
+    ]
+    if exclude_product_id is not None:
+        conditions.append(ProductRow.id != exclude_product_id)
+    return bool(session.scalar(select(func.count()).select_from(ProductRow).where(*conditions)))
 
 
 def get_category(

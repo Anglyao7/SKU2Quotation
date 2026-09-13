@@ -47,6 +47,7 @@ from ..product_center_schemas import (
     ProductCard,
     ProductCategorySummary,
     ProductDetail,
+    ProductUpdateRequest,
     ProductImageResponse,
     ProductListPage,
     ProductOfferSummary,
@@ -1573,6 +1574,177 @@ def update_product_category(
     )
 
 
+def _set_product_attribute_value(row: ProductAttributeRow, value: Any) -> None:
+    """Store an edited attribute using the table's single typed-value shape."""
+
+    row.value_text = None
+    row.value_number = None
+    row.value_boolean = None
+    row.value_json = None
+    if isinstance(value, bool):
+        row.value_boolean = value
+    elif isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        row.value_number = Decimal(str(value))
+    elif isinstance(value, (dict, list)):
+        row.value_json = value
+    else:
+        row.value_text = "" if value is None else str(value)
+
+
+def _attribute_audit_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _attribute_audit_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_attribute_audit_value(item) for item in value]
+    return value
+
+
+def update_product(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    request: ProductUpdateRequest,
+    account_scope: str = "STAFF",
+) -> ProductDetail:
+    """Update every merchant-owned product field exposed by the detail view."""
+
+    _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    product = repository.get_product_row(session, tenant_id=tenant_id, product_id=product_id)
+    if product is None or product.deleted_at is not None:
+        raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    if product.current_version != request.expected_version:
+        raise ApplicationError(
+            "PRODUCT_VERSION_CONFLICT",
+            "Product has been changed by another user.",
+            kind="conflict",
+        )
+
+    changes = request.model_dump(exclude={"expected_version", "attributes"}, exclude_unset=True)
+    if "name" in changes and not str(changes["name"] or "").strip():
+        raise ApplicationError("PRODUCT_NAME_REQUIRED", "Product name is required.", kind="validation")
+    product_code = changes.get("product_code")
+    if product_code and repository.product_code_exists(
+        session,
+        tenant_id=tenant_id,
+        product_code=product_code,
+        exclude_product_id=product.id,
+    ):
+        raise ApplicationError(
+            "PRODUCT_CODE_CONFLICT",
+            "Product code already exists.",
+            kind="conflict",
+        )
+
+    before = {
+        "name": product.name,
+        "product_code": product.product_code,
+        "description": product.description,
+        "default_unit": product.default_unit,
+        "status": product.status,
+    }
+    now = utcnow()
+    for field, value in changes.items():
+        setattr(product, field, value)
+    if "status" in changes:
+        product.archived_at = now if changes["status"] == "ARCHIVED" else None
+
+    attributes_before: list[dict[str, Any]] = []
+    attributes_after: list[dict[str, Any]] = []
+    if request.attributes is not None:
+        existing = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
+        existing_by_id = {row.id: row for row in existing}
+        submitted_ids: set[UUID] = set()
+        for item in request.attributes:
+            row = existing_by_id.get(item.id) if item.id is not None else None
+            if item.id is not None and row is None:
+                raise ApplicationError(
+                    "PRODUCT_ATTRIBUTE_NOT_FOUND",
+                    "Product attribute was not found.",
+                    kind="not_found",
+                )
+            if row is None:
+                row = ProductAttributeRow(
+                    tenant_id=tenant_id,
+                    product_id=product.id,
+                    attribute_key=item.key,
+                    review_status=item.review_status,
+                )
+                _set_product_attribute_value(row, item.value)
+                session.add(row)
+                session.flush()
+            submitted_ids.add(row.id)
+            attributes_before.append({
+                "id": str(row.id),
+                "key": row.attribute_key,
+                "value": _attribute_audit_value(_attribute_value(row)),
+                "unit_code": row.unit_code,
+                "review_status": row.review_status,
+            })
+            row.attribute_key = item.key
+            row.unit_code = item.unit_code
+            row.review_status = item.review_status
+            _set_product_attribute_value(row, item.value)
+            attributes_after.append({
+                "id": str(row.id),
+                "key": row.attribute_key,
+                "value": item.value,
+                "unit_code": row.unit_code,
+                "review_status": row.review_status,
+            })
+        for row in existing:
+            if row.id not in submitted_ids:
+                attributes_before.append({
+                    "id": str(row.id),
+                    "key": row.attribute_key,
+                    "value": _attribute_audit_value(_attribute_value(row)),
+                    "unit_code": row.unit_code,
+                    "review_status": row.review_status,
+                })
+                session.delete(row)
+
+    product.current_version += 1
+    product.search_document_version = 0
+    product.updated_by = user_id
+    product.updated_at = now
+    after = {**changes, "version": product.current_version}
+    if request.attributes is not None:
+        after["attributes"] = attributes_after
+        before["attributes"] = attributes_before
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(product.id),
+            action="product.updated",
+            before=before,
+            after=after,
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    _commit(
+        session,
+        conflict_code="PRODUCT_UPDATE_FAILED",
+        conflict_message="商品保存失败，请刷新后重试。",
+    )
+    return get_product(
+        session,
+        tenant_id=tenant_id,
+        permissions=permissions,
+        product_id=product.id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+    )
+
+
 def _normalized_product_image(content: bytes) -> tuple[bytes, int, int]:
     try:
         with Image.open(io.BytesIO(content)) as source:
@@ -2394,6 +2566,38 @@ def update_sku(
     )
     before = _sku_response(row).model_dump(mode="json")
     changes = request.model_dump(exclude={"expected_version"}, exclude_unset=True)
+    if "sku_code" in changes and not changes["sku_code"]:
+        raise ApplicationError("SKU_CODE_REQUIRED", "SKU code is required.", kind="validation")
+    sku_code = changes.get("sku_code")
+    if sku_code:
+        duplicate = session.scalar(
+            select(func.count()).select_from(SkuRow).where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id != row.id,
+                SkuRow.sku_code == sku_code,
+                SkuRow.deleted_at.is_(None),
+                SkuRow.status != "ARCHIVED",
+            )
+        )
+        if duplicate:
+            raise ApplicationError("SKU_CODE_CONFLICT", "SKU code already exists.", kind="conflict")
+    source_sku_code = changes.get("source_sku_code")
+    if source_sku_code:
+        duplicate_source = session.scalar(
+            select(func.count()).select_from(SkuRow).where(
+                SkuRow.tenant_id == tenant_id,
+                SkuRow.id != row.id,
+                SkuRow.source_sku_code == source_sku_code,
+                SkuRow.deleted_at.is_(None),
+                SkuRow.status != "ARCHIVED",
+            )
+        )
+        if duplicate_source:
+            raise ApplicationError(
+                "SOURCE_SKU_CODE_CONFLICT",
+                "Source SKU code already exists.",
+                kind="conflict",
+            )
     packing_quantity_supplied = "packing_quantity" in changes
     packing_quantity = changes.pop("packing_quantity", None)
     option_values_supplied = "option_values" in changes
