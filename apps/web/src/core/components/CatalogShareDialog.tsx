@@ -423,12 +423,14 @@ export function CatalogShareDialog({
               </label>
               <label className={`core-catalog-share-background-option${backgroundMode === "image" ? " is-selected" : ""}`}>
                 <input type="radio" name="catalog-share-background" checked={backgroundMode === "image"} onChange={() => setBackgroundMode("image")} />
-                <span>上传图片</span>
+                <span>图片背景</span>
               </label>
-              <label className="core-catalog-share-background-upload">
-                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleBackgroundFile(event.target.files?.[0])} />
-                {backgroundImageUrl ? "更换背景图" : t("上传图片")}
-              </label>
+              {backgroundMode === "image" ? (
+                <label className="core-catalog-share-background-upload">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => handleBackgroundFile(event.target.files?.[0])} />
+                  {backgroundImageUrl ? "更换背景图" : "选择背景图"}
+                </label>
+              ) : null}
               {backgroundImageUrl ? <Button size="1" variant="ghost" color="gray" onClick={() => { URL.revokeObjectURL(backgroundImageUrl); setBackgroundImageUrl(""); setBackgroundMode("color"); }}>清除</Button> : null}
             </div>
           </section>
