@@ -72,7 +72,14 @@ import {
   writeStorefrontViewState,
   type StorefrontCategoryLayout,
 } from "../lib/storefrontViewState";
-import type { CatalogSharePublic, StoreProduct, Storefront, StorefrontCategoryOption, StorefrontLocale } from "../types";
+import type {
+  CatalogSharePublic,
+  StoreProduct,
+  Storefront,
+  StorefrontCategoryOption,
+  StorefrontLocale,
+  StorefrontProductSort,
+} from "../types";
 
 type PaginationItem = number | "start-ellipsis" | "end-ellipsis";
 
@@ -136,6 +143,7 @@ function catalogRequestKey(
   shareToken: string,
   search: string,
   category: string,
+  sort: StorefrontProductSort,
   accountId = "",
 ) {
   return JSON.stringify([
@@ -144,6 +152,7 @@ function catalogRequestKey(
     shareToken,
     search.trim(),
     category,
+    sort,
     accountId,
   ]);
 }
@@ -308,6 +317,7 @@ export function StorePage() {
   const [deferredSearch, setDeferredSearch] = useState(initialView?.search.trim() ?? "");
   const [primaryCategory, setPrimaryCategory] = useState(initialView?.primaryCategory ?? "");
   const [secondaryCategory, setSecondaryCategory] = useState(initialView?.secondaryCategory ?? "");
+  const [sort, setSort] = useState<StorefrontProductSort>(initialView?.sort ?? "default");
   const [imageSearchState, setImageSearchState] = useState<StorefrontImageSearchState>(
     EMPTY_IMAGE_SEARCH_STATE,
   );
@@ -362,6 +372,7 @@ export function StorePage() {
           shareToken,
           initialView?.search ?? "",
           initialView?.secondaryCategory || initialView?.primaryCategory || "",
+          initialView?.sort ?? "default",
           accountId,
         )
       : null,
@@ -416,6 +427,7 @@ export function StorePage() {
     setDeferredSearch(restoredView?.search.trim() ?? "");
     setPrimaryCategory(restoredView?.primaryCategory ?? "");
     setSecondaryCategory(restoredView?.secondaryCategory ?? "");
+    setSort(restoredView?.sort ?? "default");
     setImageSearchState(EMPTY_IMAGE_SEARCH_STATE);
     setExpandedCategories(new Set(restoredView?.expandedCategories ?? []));
     if (tenantChanged || accountChanged) {
@@ -429,6 +441,7 @@ export function StorePage() {
           shareToken,
           restoredView?.search ?? "",
           restoredView?.secondaryCategory || restoredView?.primaryCategory || "",
+          restoredView?.sort ?? "default",
           accountId,
         )
       : null;
@@ -645,6 +658,7 @@ export function StorePage() {
     shareToken,
     deferredSearch,
     category,
+    sort,
     accountId,
   );
 
@@ -666,6 +680,7 @@ export function StorePage() {
         category: path || undefined,
         includeFacets: false,
         page: 1,
+        sort,
         locale,
         sourceLocale: loadedStore.source_locale,
         accountId,
@@ -731,6 +746,7 @@ export function StorePage() {
         sourceLocale: loadedStore.source_locale,
         shareToken: shareToken || undefined,
         accountId,
+        sort,
       });
       if (currentRequest !== requestId.current) return;
       if (includeFacets) facetsLoadedRef.current = true;
@@ -775,7 +791,7 @@ export function StorePage() {
         setPageTransitioning(false);
       }
     }
-  }, [accountId, tenantSlug, deferredSearch, category, locale, shareToken, t, showCategoryShowcase, loadedStore.source_locale]);
+  }, [accountId, tenantSlug, deferredSearch, category, locale, shareToken, sort, t, showCategoryShowcase, loadedStore.source_locale]);
 
   useEffect(() => {
     if (restoredCatalogQueryRef.current === currentCatalogRequestKey) {
@@ -842,6 +858,7 @@ export function StorePage() {
         sourceLocale: loadedStore.source_locale,
         shareToken: shareToken || undefined,
         accountId,
+        sort,
       }).then((nextPage) => {
         if (disposed) return;
         stopImages = prefetchCatalogImages(nextPage.items.map((product) => product.image_url));
@@ -885,6 +902,7 @@ export function StorePage() {
     pages,
     shareToken,
     accountId,
+    sort,
     tenantSlug,
     showCategoryShowcase,
     imageSearchActive,
@@ -946,6 +964,7 @@ export function StorePage() {
     showCategoryShowcase,
     shareToken,
     accountId,
+    sort,
     store.source_locale,
     tenantSlug,
   ]);
@@ -962,7 +981,8 @@ export function StorePage() {
     )?.label ?? catalogShare.category_name ?? catalogShare.title;
   }, [catalogShare, products, store.category_options, t]);
   const hotSortActive = Boolean(
-    store.hot_products_enabled && !hasFilters && !imageSearchActive
+    sort === "popular"
+    || (sort === "default" && store.hot_products_enabled && !hasFilters && !imageSearchActive)
   );
   const searchPending = !imageSearchActive && Boolean(search.trim()) && (
     search.trim() !== deferredSearch || loading || pageTransitioning
@@ -1022,6 +1042,7 @@ export function StorePage() {
       secondaryCategory,
       categoryLayout,
       expandedCategories: Array.from(expandedCategories),
+      sort,
     };
     writeStorefrontViewState(storageScope, viewState);
     if (!accountId && !loading && !error && products.length > 0) {
@@ -1449,7 +1470,7 @@ export function StorePage() {
                       {hotSortActive ? (
                         <Badge color="amber" variant="soft">
                           <Fire size={14} weight="fill" aria-hidden="true" />
-                          {t("爆款优先")}
+                          {t(sort === "popular" ? "热门程度" : "爆款优先")}
                         </Badge>
                       ) : null}
                     </div>
@@ -1461,21 +1482,37 @@ export function StorePage() {
                         : "点击商品查看可选规格与 SKU。")}
                     </Text>
                   </div>
-                  <Badge
-                    color={hasFilters ? "jade" : "gray"}
-                    variant="soft"
-                    aria-live="polite"
-                  >
-                    {showCategoryShowcase
-                      ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
-                      : searchPending
-                      ? t("搜索中……")
-                      : loading
-                        ? t("正在查找")
-                      : pageTransitioning
-                        ? t("切换中…")
-                      : t("{count} 条结果", { count: total.toLocaleString(locale) })}
-                  </Badge>
+                  <div className="results-header-actions">
+                    <label className="store-sort-control">
+                      <span>{t("排序")}</span>
+                      <select
+                        className="store-sort-select"
+                        value={sort}
+                        aria-label={t("排序")}
+                        onChange={(event) => setSort(event.target.value as StorefrontProductSort)}
+                      >
+                        <option value="default">{t("默认排序")}</option>
+                        <option value="price_asc">{t("价格：低到高")}</option>
+                        <option value="price_desc">{t("价格：高到低")}</option>
+                        <option value="popular">{t("热门程度")}</option>
+                      </select>
+                    </label>
+                    <Badge
+                      color={hasFilters ? "jade" : "gray"}
+                      variant="soft"
+                      aria-live="polite"
+                    >
+                      {showCategoryShowcase
+                        ? t("{count} 个分类", { count: categoryShowcaseOptions.length.toLocaleString(locale) })
+                        : searchPending
+                        ? t("搜索中……")
+                        : loading
+                          ? t("正在查找")
+                        : pageTransitioning
+                          ? t("切换中…")
+                        : t("{count} 条结果", { count: total.toLocaleString(locale) })}
+                    </Badge>
+                  </div>
                 </div>
                 <Separator size="4" />
               </>

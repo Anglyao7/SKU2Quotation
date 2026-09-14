@@ -563,6 +563,7 @@ def _public_product_id_statement(
     pinned_product_ids: set[UUID] | None = None,
     priority_product_order: list[UUID] | None = None,
     priority_category_ids: list[UUID] | None = None,
+    sort_mode: str = "default",
 ):
     statement = _public_catalog_statement(
         tenant_id=tenant_id,
@@ -666,6 +667,7 @@ def _public_product_id_statement(
             else_=2,
         )
     )
+    price_value = func.min(PublicCatalogOfferRow.unit_price).label("price_value")
     grouped = (
         statement.with_only_columns(
             ProductRow.id.label("product_id"),
@@ -680,6 +682,7 @@ def _public_product_id_statement(
             popular_rank.label("popular_rank"),
             product_name.label("product_name"),
             match_rank.label("match_rank"),
+            price_value,
         )
         .order_by(None)
         .group_by(
@@ -696,7 +699,7 @@ def _public_product_id_statement(
             product_name,
         )
     )
-    if normalized and priority_product_order is None:
+    if normalized and priority_product_order is None and sort_mode == "default":
         return grouped.order_by(
             match_rank,
             pinned_rank,
@@ -710,7 +713,37 @@ def _public_product_id_statement(
             product_name,
             ProductRow.id,
         )
-    if hot:
+    if sort_mode == "price_asc":
+        return grouped.order_by(
+            price_value.asc(),
+            pinned_rank,
+            pinned_order,
+            pinned_at.desc(),
+            popular_rank,
+            uncategorized,
+            root_sort,
+            root_name,
+            child_sort,
+            child_name,
+            product_name,
+            ProductRow.id,
+        )
+    if sort_mode == "price_desc":
+        return grouped.order_by(
+            price_value.desc(),
+            pinned_rank,
+            pinned_order,
+            pinned_at.desc(),
+            popular_rank,
+            uncategorized,
+            root_sort,
+            root_name,
+            child_sort,
+            child_name,
+            product_name,
+            ProductRow.id,
+        )
+    if hot or sort_mode == "popular":
         catalog_products = grouped.subquery("public_catalog_products")
         view_totals = (
             select(
@@ -812,6 +845,7 @@ def list_public_product_ids_page(
     pinned_product_ids: set[UUID] | None = None,
     priority_product_order: list[UUID] | None = None,
     priority_category_ids: list[UUID] | None = None,
+    sort_mode: str = "default",
 ) -> list[UUID]:
     statement = _public_product_id_statement(
         session,
@@ -826,6 +860,7 @@ def list_public_product_ids_page(
         pinned_product_ids=pinned_product_ids,
         priority_product_order=priority_product_order,
         priority_category_ids=priority_category_ids,
+        sort_mode=sort_mode,
     )
     return [
         row.product_id

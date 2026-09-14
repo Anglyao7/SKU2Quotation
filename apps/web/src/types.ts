@@ -326,6 +326,12 @@ export type StorefrontLocale =
   | "fa"
   | "ru";
 
+export type StorefrontProductSort =
+  | "default"
+  | "price_asc"
+  | "price_desc"
+  | "popular";
+
 export interface CatalogLanguagePackDescriptor {
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;

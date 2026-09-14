@@ -173,7 +173,12 @@ const english: Record<string, string> = {
   "{count} 个分类": "{count} categories",
   "商品分类": "Categories",
   "筛选结果": "Filtered results",
+  "排序": "Sort",
   "爆款优先": "Bestsellers first",
+  "默认排序": "Default sorting",
+  "价格：低到高": "Price: low to high",
+  "价格：高到低": "Price: high to low",
+  "热门程度": "Popularity",
   "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。":
     "Prioritized by views and orders from the last 90 days. Manually pinned products remain first.",
   "全部 SKU": "All SKUs",

@@ -1321,6 +1321,10 @@ img { display: block; max-width: 100%; }
 .results-header h2 { letter-spacing: -0.035em; }
 .results-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 .results-title-row .rt-Badge { gap: 4px; }
+.results-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex-wrap: wrap; }
+.store-sort-control { display: inline-flex; align-items: center; gap: 8px; color: var(--text-soft); font-size: 12px; white-space: nowrap; }
+.store-sort-select { min-height: 32px; padding: 0 30px 0 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--text); background: var(--surface); font: inherit; cursor: pointer; }
+.store-sort-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .results-body { padding-top: 24px; }
 .sku-grid-shell {
   position: relative;

@@ -2,6 +2,7 @@ import type {
   StoreProduct,
   Storefront,
   StorefrontLocale,
+  StorefrontProductSort,
 } from "../types";
 import { currentPublicCatalogRevision } from "./publicCatalogRevision";
 
@@ -15,6 +16,7 @@ export interface StorefrontViewState {
   secondaryCategory: string;
   categoryLayout: StorefrontCategoryLayout;
   expandedCategories: string[];
+  sort?: StorefrontProductSort;
   savedAt: number;
 }
 
@@ -97,6 +99,11 @@ export function readStorefrontViewState(slug: string): StorefrontViewState | nul
           .slice(0, 200)
           .map((item) => item.slice(0, 300))
         : [],
+      sort: parsed.sort === "price_asc"
+        || parsed.sort === "price_desc"
+        || parsed.sort === "popular"
+        ? parsed.sort
+        : "default",
       savedAt,
     };
   } catch {

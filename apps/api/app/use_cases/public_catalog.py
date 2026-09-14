@@ -2455,11 +2455,15 @@ def list_public_products(
     include_facets: bool,
     page: int,
     page_size: int,
+    sort_mode: str = "default",
     locale: str | None = None,
     share_token: str | None = None,
     subaccount_membership_id: UUID | None = None,
     ranked_product_ids: list[UUID] | None = None,
 ) -> PublicProductPage:
+    sort_mode = str(sort_mode or "default").strip().casefold()
+    if sort_mode not in {"default", "price_asc", "price_desc", "popular"}:
+        sort_mode = "default"
     tenant, profile = _resolve_store(session, slug=slug)
     shared_product_ids: set[UUID] | None = None
     if share_token:
@@ -2482,8 +2486,9 @@ def list_public_products(
     )
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
-    hot_sort_applied = bool(
-        profile.hot_products_enabled
+    hot_sort_applied = sort_mode == "popular" or bool(
+        sort_mode == "default"
+        and profile.hot_products_enabled
         and not query.strip()
         and not (category or "").strip()
         and not wanted_tags
@@ -2524,8 +2529,27 @@ def list_public_products(
                 if product_id not in hidden_product_ids
             ]
         total = len(matching_product_ids)
-        start = (page - 1) * page_size
-        selected_product_ids = matching_product_ids[start : start + page_size]
+        if sort_mode != "default" and matching_product_ids:
+            # Semantic search determines the candidate set; an explicit
+            # storefront sort should still be able to reorder those matches
+            # instead of silently keeping vector relevance order.
+            selected_product_ids = repository.list_public_product_ids_page(
+                session,
+                tenant_id=tenant.id,
+                now=now,
+                query="",
+                category=category,
+                tags=wanted_tags,
+                page=page,
+                page_size=page_size,
+                product_ids=set(matching_product_ids),
+                excluded_product_ids=hidden_product_ids,
+                hot=sort_mode == "popular",
+                sort_mode=sort_mode,
+            )
+        else:
+            start = (page - 1) * page_size
+            selected_product_ids = matching_product_ids[start : start + page_size]
     elif semantic and query.strip():
         try:
             candidate_rows = _vector_semantic_rows(
@@ -2588,7 +2612,13 @@ def list_public_products(
             excluded_product_ids=hidden_product_ids,
         )
         from ..services.storefront_sorting import ranking_plan
-        default_order = not query.strip() and not (category or "").strip() and not wanted_tags and not share_token
+        default_order = (
+            sort_mode == "default"
+            and not query.strip()
+            and not (category or "").strip()
+            and not wanted_tags
+            and not share_token
+        )
         plan = ranking_plan(session, tenant_id=tenant.id, profile=profile, membership_id=subaccount_membership_id) if default_order else None
         selected_product_ids = repository.list_public_product_ids_page(
             session,
@@ -2601,7 +2631,8 @@ def list_public_products(
             page_size=page_size,
             product_ids=shared_product_ids,
             excluded_product_ids=hidden_product_ids,
-            hot=False,
+            hot=sort_mode == "popular",
+            sort_mode=sort_mode,
             priority_product_order=plan.priority_ids if plan else None,
             priority_category_ids=plan.category_ids if plan else None,
             pinned_product_ids=(pinned_product_ids(session, tenant_id=tenant.id, membership_id=subaccount_membership_id)

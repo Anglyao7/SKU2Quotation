@@ -30,6 +30,7 @@ import type {
   StorefrontExchangeRateSnapshot,
   StorefrontCategoryOption,
   StorefrontLocale,
+  StorefrontProductSort,
   StorefrontVisitorQuote,
   Tenant,
   TenantAccessPayload,
@@ -81,6 +82,7 @@ interface StoreSkuFilters {
   sourceLocale?: StorefrontLocale;
   shareToken?: string;
   accountId?: string;
+  sort?: StorefrontProductSort;
 }
 
 const publicRequestCache = new Map<string, PublicCacheEntry>();
@@ -462,6 +464,7 @@ async function getCachedStoreProducts(
   if (filters.includeFacets === false) params.set("include_facets", "false");
   if (filters.shareToken) params.set("share", filters.shareToken);
   if (filters.accountId) params.set("account", filters.accountId);
+  if (filters.sort && filters.sort !== "default") params.set("sort", filters.sort);
   params.set("page", String(filters.page || 1));
   params.set("page_size", "24");
   params.sort();
