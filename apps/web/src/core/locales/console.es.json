@@ -3808,6 +3808,7 @@
   "SKU 详情": "Detalles de SKU",
   "SKU 已保存，但公开报价保存失败：{message}": "El SKU se guardó, pero la oferta pública no se pudo guardar: {message}",
   "SKU 已翻译，语言包仍待补全": "SKUs traducidos — el paquete de idiomas aún necesita completarse",
+  "上游已返回 {done} 个 SKU，尚未写入可发布译文；请等待整理或重试。": "El proveedor devolvió {done} SKU, pero aún no están disponibles para publicar; espera a que finalice o reintenta.",
   "SKU 译文": "Traducciones de SKU",
   "SKU 状态更新失败": "No se pudo actualizar el estado del SKU",
   "SKU、分类、标签、多语言与 AI 搜索": "SKUs, categorías, etiquetas, idiomas y búsqueda con IA",

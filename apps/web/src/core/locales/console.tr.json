@@ -3811,6 +3811,7 @@
   "SKU 详情": "SKU ayrıntıları",
   "SKU 已保存，但公开报价保存失败：{message}": "SKU kaydedildi, ancak genel teklif kaydedilemedi: {message}",
   "SKU 已翻译，语言包仍待补全": "SKU'lar çevrildi — dil paketi hâlâ tamamlanmayı bekliyor",
+  "上游已返回 {done} 个 SKU，尚未写入可发布译文；请等待整理或重试。": "Üst hizmet {done} SKU döndürdü, ancak henüz yayıma hazır değil; tamamlanmasını bekleyin veya yeniden deneyin.",
   "SKU 译文": "SKU çevirileri",
   "SKU 状态更新失败": "SKU durumu güncellenemedi",
   "SKU、分类、标签、多语言与 AI 搜索": "SKU'lar, kategoriler, etiketler, diller ve AI arama",

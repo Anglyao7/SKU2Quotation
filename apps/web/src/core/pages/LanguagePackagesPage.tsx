@@ -301,12 +301,19 @@ export function LanguagePackagesPage() {
       ? selectedJob.totalSkus
       : 0;
   const checkpointTranslatedSkus = completedSkuCount(selectedJob);
+  // A Qwen Batch checkpoint means that the upstream result looks complete for
+  // a candidate SKU. It is not publishable until the worker has materialized
+  // the SKU translation row (and, when applicable, the language package).
+  // Keep the two numbers separate so a failed finalization cannot make the
+  // manual publish action look available when the API has nothing to publish.
   const displayedTranslatedSkus = Math.min(
     displayedTotalSkus,
-    Math.max(
-      selectedStatus?.translatedSkus ?? 0,
-      checkpointTranslatedSkus,
-    ),
+    Math.max(0, selectedStatus?.translatedSkus ?? 0),
+  );
+  const upstreamOnlyTranslatedSkus = Math.max(
+    0,
+    Math.min(displayedTotalSkus, checkpointTranslatedSkus)
+      - displayedTranslatedSkus,
   );
   const displayedPendingSkus = Math.max(
     0,
@@ -1311,6 +1318,13 @@ export function LanguagePackagesPage() {
             ) : (
               <span>{t("已处理 {done} / {total} 个 SKU", { done: selectedJob.processedSkus, total: selectedJob.totalSkus })}</span>
             )}
+            {upstreamOnlyTranslatedSkus > 0 ? (
+              <span>
+                {t("上游已返回 {done} 个 SKU，尚未写入可发布译文；请等待整理或重试。", {
+                  done: checkpointTranslatedSkus,
+                })}
+              </span>
+            ) : null}
             {selectedJob.translationTotalValues === 0
               && selectedJob.finalizationTotalValues > 0 ? (
               <span>

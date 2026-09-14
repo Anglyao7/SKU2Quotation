@@ -2250,6 +2250,8 @@ const english: Record<string, string> = {
   "任务中断，断点已保存": "Interrupted — checkpoint saved",
   "SKU 已翻译，语言包仍待补全":
     "SKUs translated — language package still needs completion",
+  "上游已返回 {done} 个 SKU，尚未写入可发布译文；请等待整理或重试。":
+    "The upstream service returned {done} SKUs, but they are not materialized for publishing yet; wait for finalization or retry.",
   "已处理 {done} / {total} 个 SKU": "Processed {done} / {total} SKUs",
   "已完成 {done} / {total} 个翻译字段":
     "Completed {done} / {total} translation fields",
