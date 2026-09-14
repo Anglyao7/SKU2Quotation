@@ -139,6 +139,11 @@ export function ProductDetailPage() {
   const [announcements, setAnnouncements] = useState(store.announcements || []);
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const description = product.description?.trim();
+  // Keep the CSS clamp and the expand control on the same condition. The
+  // previous code clamped every non-empty description but only rendered the
+  // control after 160 source characters, leaving shorter (or translated,
+  // visually longer) descriptions permanently truncated.
+  const descriptionIsLong = Boolean(description && description.length > 160);
   const displayTag = product.display_tag || product.tags[0];
   const cameFromCatalog = Boolean(
     (location.state as { fromStorefrontCatalog?: boolean } | null)
@@ -374,11 +379,11 @@ export function ProductDetailPage() {
                   {t("商品描述")}
                 </Text>
                 <div
-                  className={`sku-detail-description-content${description ? "" : " is-empty"}${description && !descriptionExpanded ? " is-collapsed" : ""}`}
+                  className={`sku-detail-description-content${description ? "" : " is-empty"}${descriptionIsLong && !descriptionExpanded ? " is-collapsed" : ""}`}
                 >
                   {description || t("商家暂未补充详细描述。")}
                 </div>
-                {description && description.length > 160 ? (
+                {descriptionIsLong ? (
                   <button
                     type="button"
                     className="sku-detail-description-toggle"
