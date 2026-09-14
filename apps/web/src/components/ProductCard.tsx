@@ -116,8 +116,7 @@ export function ProductCard({
             {product.name}
           </Link>
         </Text>
-        <div className={`sku-card-footer${showPrice ? "" : " is-price-hidden"}`}>
-          {showPrice ? <div className="sku-price-block">
+        {showPrice ? <div className="sku-price-block">
             <Text
               as="div"
               size="4"
@@ -128,6 +127,7 @@ export function ProductCard({
               {priceLabel}
             </Text>
           </div> : null}
+        <div className="sku-card-footer">
           <Button
             asChild
             size="2"

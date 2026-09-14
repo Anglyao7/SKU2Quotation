@@ -1675,7 +1675,7 @@ img { display: block; max-width: 100%; }
 .product-visual-match strong { flex: 0 0 auto; font-size: 12px; letter-spacing: -.01em; }
 .sku-name { min-height: 38px; line-height: 1.4; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .sku-name a:hover { color: var(--accent-strong); }
-.sku-card-footer { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-top: auto; padding-top: 8px; }
+.sku-card-footer { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: auto; padding-top: 8px; }
 .sku-price-block { min-width: 0; display: grid; }
 .price-text {
   display: block;
@@ -3183,8 +3183,8 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   }
   .results-container.has-sidebar .sku-card-body { padding-inline: 6px; }
   .results-container.has-sidebar .sku-card-footer { gap: 6px; }
-  .results-container.has-sidebar .sku-card-footer .price-text { font-size: 12px !important; letter-spacing: -0.025em; }
-  .results-container.has-sidebar .sku-card-footer .price-text.is-compact { font-size: 12px !important; }
+  .results-container.has-sidebar .sku-price-block .price-text { font-size: 12px !important; letter-spacing: -0.025em; }
+  .results-container.has-sidebar .sku-price-block .price-text.is-compact { font-size: 12px !important; }
   .results-container.has-sidebar .sku-add-button {
     width: 28px;
     min-width: 28px;
@@ -3243,10 +3243,10 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .product-visual-match-label > span { display: block; }
   .product-visual-match strong { font-size: 11px; }
   .sku-name { min-height: 36px; font-size: 13px !important; line-height: 1.36; }
-  .sku-card-footer { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; padding-top: 4px; }
+  .sku-card-footer { align-items: center; gap: 6px; padding-top: 4px; }
   .sku-price-block { gap: 0; }
-  .sku-card-footer .price-text { width: 100%; font-size: 14px !important; line-height: 1.2; letter-spacing: -0.025em; }
-  .sku-card-footer .price-text.is-compact { font-size: 13px !important; }
+  .sku-price-block .price-text { width: 100%; font-size: 14px !important; line-height: 1.2; letter-spacing: -0.025em; }
+  .sku-price-block .price-text.is-compact { font-size: 13px !important; }
   .sku-add-button {
     justify-self: end;
     width: 40px;
