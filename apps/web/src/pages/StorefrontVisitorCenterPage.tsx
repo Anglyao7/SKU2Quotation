@@ -156,6 +156,8 @@ export function StorefrontVisitorCenterPage() {
   const cartLines = useMemo(() => Object.values(cart), [cart]);
   const storefrontHome = `${basePath}${storefrontLocaleQuery(locale)}`;
   const ordersPath = `${basePath}/me/orders`;
+  const historyPath = `${basePath}/me/history`;
+  const favoritesPath = `${basePath}/me/favorites`;
   const routeWithQuery = (path: string, entries: Array<[string, string]> = []) => {
     const params = new URLSearchParams();
     if (locale !== "zh-CN") params.set("lang", locale);
@@ -167,7 +169,13 @@ export function StorefrontVisitorCenterPage() {
   const ordersPage = location.pathname.endsWith("/orders")
     || ["pending", "submitted", "confirmed", "completed", "closed", "issues"].includes(requestedTab || "");
   const orderTab = normalizeVisitorOrderTab(requestedTab);
-  const activeView = ordersPage ? "" : searchParams.get("view");
+  const historyPage = /\/me\/history\/?$/u.test(location.pathname);
+  const favoritesPage = /\/me\/favorites\/?$/u.test(location.pathname);
+  const centerTitle = ordersPage
+    ? "我的订单"
+    : historyPage
+      ? "浏览记录"
+      : favoritesPage ? "我的收藏" : "我的";
   const orderHref = (tab: VisitorOrderTab) => routeWithQuery(ordersPath, [["tab", tab]]);
 
   const loadQuotes = useCallback(async () => {
@@ -279,7 +287,7 @@ export function StorefrontVisitorCenterPage() {
       <Link to={storefrontHome} className="sku-detail-back"><ArrowLeft weight="bold" />{t("返回商品目录")}</Link>
       <section className="visitor-center-hero">
         <span><UserCircle weight="duotone" /></span>
-        <div><Text size="1" color="gray">{t("访客个人中心")}</Text><Heading size="7">{t(ordersPage ? "我的订单" : "我的")}</Heading><Text size="2" color="gray">{t("记录仅保存在当前浏览器；商家确认询价或订单后会在这里通知你。")}</Text></div>
+        <div><Text size="1" color="gray">{t("访客个人中心")}</Text><Heading size="7">{t(centerTitle)}</Heading><Text size="2" color="gray">{t("记录仅保存在当前浏览器；商家确认询价或订单后会在这里通知你。")}</Text></div>
       </section>
       {error ? <Card className="visitor-center-error"><Text color="red">{error}</Text><Button size="2" variant="soft" onClick={() => void loadQuotes()}>{t("重试")}</Button></Card> : null}
       {ordersPage ? (
@@ -304,14 +312,19 @@ export function StorefrontVisitorCenterPage() {
             </div>
           </Tabs.Root>
         </section>
+      ) : historyPage || favoritesPage ? (
+        <section className="visitor-detail-page">
+          <Link to={storefrontHome} className="visitor-orders-back"><ArrowLeft weight="bold" />{t("我的")}</Link>
+          {historyPage ? historyPanel : favoritesPanel}
+        </section>
       ) : (
         <>
           <div className="visitor-shortcut-grid">
-            <Link to={routeWithQuery(`${basePath}/me`, [["view", "history"]])} className="visitor-shortcut-card">
+            <Link to={routeWithQuery(historyPath)} className="visitor-shortcut-card">
               <span className="visitor-shortcut-icon"><ClockCounterClockwise weight="duotone" /></span>
               <span className="visitor-shortcut-copy"><strong>{t("浏览记录")}</strong><small>{history.length}</small></span>
             </Link>
-            <Link to={routeWithQuery(`${basePath}/me`, [["view", "favorites"]])} className="visitor-shortcut-card">
+            <Link to={routeWithQuery(favoritesPath)} className="visitor-shortcut-card">
               <span className="visitor-shortcut-icon"><Heart weight="duotone" /></span>
               <span className="visitor-shortcut-copy"><strong>{t("我的收藏")}</strong><small>{favorites.length}</small></span>
             </Link>
@@ -324,7 +337,6 @@ export function StorefrontVisitorCenterPage() {
               <span className="visitor-shortcut-copy"><strong>{t("关闭订单")}</strong><small>{closed.length}</small></span>
             </Link>
           </div>
-          {activeView === "history" ? historyPanel : activeView === "favorites" ? favoritesPanel : null}
         </>
       )}
     </Container></main>

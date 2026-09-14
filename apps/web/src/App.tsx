@@ -228,8 +228,8 @@ async function storefrontLoader({ params, request }: LoaderFunctionArgs) {
       if (!isCanonicalAccountStorefront(store, tenantSlug, accountId)) {
         throw new Response("Account storefront unavailable", { status: 409 });
       }
-      const suffix = /\/me\/orders\/?$/u.test(currentUrl.pathname)
-        ? "/me/orders"
+      const suffix = /\/me\/(?:orders|history|favorites)\/?$/u.test(currentUrl.pathname)
+        ? currentUrl.pathname.slice(currentUrl.pathname.lastIndexOf("/me"))
         : /\/me\/?$/u.test(currentUrl.pathname) ? "/me" : "";
       return redirect(`${storefrontBasePath(store.slug)}${suffix}${currentUrl.search}${currentUrl.hash}`);
     }
@@ -550,6 +550,18 @@ const router = createBrowserRouter([{
     errorElement: <StorefrontRouteError />,
   },
   {
+    path: "/:tenantSlug/account/:accountKey/me/history",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/account/:accountKey/me/favorites",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
     path: "/:tenantSlug/account/:accountKey/pages/:pageSlug",
     loader: storefrontCustomPageLoader,
     element: <StorefrontCustomPage />,
@@ -581,6 +593,18 @@ const router = createBrowserRouter([{
   },
   {
     path: "/:tenantSlug/me/orders",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/me/history",
+    loader: storefrontLoader,
+    element: <StorefrontVisitorCenterPage />,
+    errorElement: <StorefrontRouteError />,
+  },
+  {
+    path: "/:tenantSlug/me/favorites",
     loader: storefrontLoader,
     element: <StorefrontVisitorCenterPage />,
     errorElement: <StorefrontRouteError />,
