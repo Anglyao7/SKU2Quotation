@@ -8,6 +8,7 @@ import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
 import { StorefrontFooter } from "../components/StorefrontFooter";
 import { StorefrontLanguageSwitch } from "../components/StorefrontLanguageSwitch";
 import { StorefrontSupportWidget } from "../components/StorefrontSupportWidget";
+import { StorefrontTopNavigation } from "../components/StorefrontTopNavigation";
 import { StorefrontVisitorEntry } from "../components/StorefrontVisitorEntry";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { prepareStorefrontCustomPageHtml } from "../lib/storefrontCustomPage";
@@ -182,6 +183,12 @@ export function StorefrontCustomPage() {
           </div>
         </Container>
       </header>
+      <StorefrontTopNavigation
+        store={store}
+        accountKey={accountKey}
+        locale={locale}
+        activePageSlug={page.slug}
+      />
       {page.exchange_rates_enabled ? (
         <StorefrontExchangeRates tenantSlug={store.slug} locale={locale} />
       ) : null}
