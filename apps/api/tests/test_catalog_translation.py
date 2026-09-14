@@ -676,6 +676,7 @@ class _ReplacingTranslator:
             "定时定量喂食": "Scheduled portion feeding",
             "宠物用品": "Pet supplies",
             "智能喂食": "Smart feeding",
+            "红色": "Red",
         }
         translated = text
         for source, target in replacements.items():
@@ -710,6 +711,31 @@ def test_catalog_translation_preserves_model_codes_and_field_structure() -> None
     assert result.category == "Pet supplies/Smart feeding"
     assert result.tags == ("Smart feeding",)
     assert result.display_tag == "Smart feeding"
+
+
+def test_catalog_translation_includes_sku_specification() -> None:
+    source = CatalogTranslationSource(
+        sku_id=uuid4(),
+        sku_code="SF-6L20-RED",
+        name="支持APP的智能宠物喂食器 SF-6L20",
+        description=None,
+        category="宠物用品/智能喂食",
+        tags=(),
+        display_tag=None,
+        product_version=1,
+        sku_version=2,
+        source_hash="b" * 64,
+        specification="红色",
+    )
+
+    result = translate_catalog_sources(
+        _ReplacingTranslator(),
+        [source],
+        source_locale="zh-CN",
+        target_locale="en-US",
+    )[0]
+
+    assert result.specification == "Red"
 
 
 def test_catalog_translation_sends_shared_sku_fields_only_once_per_batch() -> None:

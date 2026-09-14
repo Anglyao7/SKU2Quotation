@@ -154,6 +154,11 @@ class CatalogTranslationSource:
     product_version: int
     sku_version: int
     source_hash: str
+    # The legacy source hash intentionally remains stable for unchanged rows;
+    # sku_version already changes whenever the SKU is edited.  Keeping this
+    # value on the source object lets realtime and Batch paths translate the
+    # same SKU specification without invalidating every existing package.
+    specification: str | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +201,9 @@ def catalog_translation_source(row: object) -> CatalogTranslationSource:
         if requested_display_tag
         else None
     ) or (tags[0] if tags else None)
+    specification = (
+        str((sku.option_values or {}).get("规格名称") or "").strip() or None
+    )
     source = {
         "sku_code": str(sku.sku_code).strip(),
         "name": str(sku.name or product.name).strip(),
@@ -225,6 +233,7 @@ def catalog_translation_source(row: object) -> CatalogTranslationSource:
         product_version=source["product_version"],
         sku_version=source["sku_version"],
         source_hash=source_hash,
+        specification=specification,
     )
 
 
@@ -304,6 +313,8 @@ def _field_values(source: CatalogTranslationSource) -> dict[str, str]:
         ]
         for index, segment in enumerate(segments):
             values[f"CATEGORY_{index:03d}"] = segment
+    if source.specification:
+        values["SPECIFICATION"] = source.specification
     for index, tag in enumerate(source.tags):
         values[f"TAG_{index:03d}"] = tag
     return values
@@ -421,6 +432,11 @@ def translate_catalog_sources(
             if display_tag_index is not None
             else None
         ) or (translated_tags[0] if translated_tags else None)
+        specification = (
+            translated_fields[(item_index, "SPECIFICATION")].strip()
+            if "SPECIFICATION" in expected
+            else None
+        )
         results.append(
             CatalogTranslationResult(
                 sku_id=source.sku_id,
@@ -430,6 +446,7 @@ def translate_catalog_sources(
                 category="/".join(category_segments) or None,
                 tags=translated_tags,
                 display_tag=display_tag.strip() if display_tag else None,
+                specification=specification,
             )
         )
     return results
@@ -693,6 +710,7 @@ def catalog_translation_result_from_values(
         if display_tag_index is not None and display_tag_index < len(tags)
         else tags[0] if tags else None
     )
+    specification = localized(source.specification) if source.specification else None
     return CatalogTranslationResult(
         sku_id=source.sku_id,
         source_hash=source.source_hash,
@@ -701,4 +719,5 @@ def catalog_translation_result_from_values(
         category=category,
         tags=tags,
         display_tag=display_tag,
+        specification=specification,
     )

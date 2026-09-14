@@ -238,7 +238,6 @@ def _product_source(rows: list[object]) -> dict[str, Any]:
 def _sku_source(row: object) -> dict[str, Any]:
     offer, sku, product, category = row
     source = catalog_translation_source(row)
-    specification = str((sku.option_values or {}).get("规格名称") or "").strip() or None
     package_source = {
         "sku_id": str(sku.id),
         "product_id": str(product.id),
@@ -247,7 +246,7 @@ def _sku_source(row: object) -> dict[str, Any]:
         "category": source.category or _category_path(category),
         "tags": list(source.tags),
         "display_tag": source.display_tag,
-        "specification": specification,
+        "specification": source.specification,
         "translation_source_hash": source.source_hash,
         "product_version": int(product.current_version),
         "sku_version": int(sku.version),

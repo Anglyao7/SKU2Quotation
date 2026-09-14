@@ -2586,6 +2586,10 @@ def update_sku(
         sku_ids=[row.id],
     )
     before = _sku_response(row).model_dump(mode="json")
+    # Product-level language packages contain the SKU option labels/values.
+    # Keep a public snapshot before applying the edit so a specification or
+    # variant-label change invalidates that package as well as this SKU row.
+    before_public_option_values = public_sku_option_values(row.option_values or {})
     changes = request.model_dump(exclude={"expected_version"}, exclude_unset=True)
     if "sku_code" in changes and not changes["sku_code"]:
         raise ApplicationError("SKU_CODE_REQUIRED", "SKU code is required.", kind="validation")
@@ -2669,6 +2673,15 @@ def update_sku(
         product_id=row.product_id,
     )
     if product is not None:
+        public_option_values_changed = (
+            before_public_option_values
+            != public_sku_option_values(row.option_values or {})
+        )
+        if public_option_values_changed:
+            # Storefront language packs validate their product version. A SKU
+            # option edit therefore must advance the product snapshot too,
+            # otherwise the old translated option label can remain published.
+            product.current_version += 1
         product.search_document_version = 0
     session.add(
         ProductAuditEventRow(
