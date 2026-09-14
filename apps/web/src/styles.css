@@ -1683,12 +1683,24 @@ img { display: block; max-width: 100%; }
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.025em;
   line-height: 1.25;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  /* Keep localized currency amounts together. Long button labels used to
+     squeeze this column and make every character render on its own line. */
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 .price-text.is-condensed { font-size: 13px; letter-spacing: -0.03em; }
 .price-text.is-compact { font-size: 12px; letter-spacing: -0.035em; }
 .sku-add-button { min-width: 88px; padding-inline: 12px !important; font-size: 11px !important; }
+.sku-add-button-icon {
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  min-height: 36px;
+  padding: 0 !important;
+  justify-content: center;
+}
+.sku-add-button-icon .sku-add-label { display: none; }
 .sku-quantity-control { display: grid; grid-template-columns: 32px minmax(36px, auto) 32px; align-items: center; gap: 3px; }
 .sku-quantity-control > span { min-width: 38px; display: grid; justify-items: center; line-height: 1; }
 .sku-quantity-control small { color: var(--text-soft); font-size: 8px; font-weight: 500; }

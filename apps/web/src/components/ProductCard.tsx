@@ -128,14 +128,20 @@ export function ProductCard({
               {priceLabel}
             </Text>
           </div> : null}
-          <Button asChild size="2" className="sku-add-button">
+          <Button
+            asChild
+            size="2"
+            className="sku-add-button sku-add-button-icon"
+            aria-label={t("查看规格")}
+            title={t("查看规格")}
+          >
             <Link
               to={detailsHref}
               state={{ fromStorefrontCatalog: true }}
               onClick={onOpenDetails}
             >
-              <span className="sku-add-label">{t("查看规格")}</span>
-              <ArrowRight size={16} />
+              <span className="visually-hidden">{t("查看规格")}</span>
+              <ArrowRight size={17} aria-hidden="true" />
             </Link>
           </Button>
         </div>
