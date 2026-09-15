@@ -2,6 +2,7 @@ import {
   Badge,
   Button,
   Container,
+  DropdownMenu,
   Heading,
   IconButton,
   Separator,
@@ -20,6 +21,7 @@ import {
   MagnifyingGlass,
   Rows,
   ShareNetwork,
+  SlidersHorizontal,
   Storefront as StoreIcon,
   WarningCircle,
   X,
@@ -1474,29 +1476,50 @@ export function StorePage() {
                         </Badge>
                       ) : null}
                     </div>
-                    <Text size="2" color="gray">
-                      {t(showCategoryShowcase
-                        ? "选择一个二级分类查看商品。"
-                        : hotSortActive
-                        ? "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。"
-                        : "点击商品查看可选规格与 SKU。")}
-                    </Text>
+                    {showCategoryShowcase || hotSortActive ? (
+                      <Text size="2" color="gray">
+                        {t(showCategoryShowcase
+                          ? "选择一个二级分类查看商品。"
+                          : "根据近 90 天浏览与下单热度优先展示，手动置顶商品仍排在最前。")}
+                      </Text>
+                    ) : null}
                   </div>
                   <div className="results-header-actions">
-                    <label className="store-sort-control">
-                      <span>{t("排序")}</span>
-                      <select
-                        className="store-sort-select"
-                        value={sort}
-                        aria-label={t("排序")}
-                        onChange={(event) => setSort(event.target.value as StorefrontProductSort)}
-                      >
-                        <option value="default">{t("默认排序")}</option>
-                        <option value="price_asc">{t("价格：低到高")}</option>
-                        <option value="price_desc">{t("价格：高到低")}</option>
-                        <option value="popular">{t("热门程度")}</option>
-                      </select>
-                    </label>
+                    <DropdownMenu.Root modal={false}>
+                      <DropdownMenu.Trigger>
+                        <Button
+                          type="button"
+                          size="2"
+                          variant="soft"
+                          color="gray"
+                          className="store-sort-trigger"
+                          aria-label={t("排序")}
+                        >
+                          <SlidersHorizontal size={15} weight="duotone" aria-hidden="true" />
+                          <span>{t("排序")}</span>
+                          <strong>{t(sort === "default"
+                            ? "默认排序"
+                            : sort === "price_asc"
+                            ? "价格：低到高"
+                            : sort === "price_desc"
+                            ? "价格：高到低"
+                            : "热门程度")}</strong>
+                          <CaretDown size={13} aria-hidden="true" />
+                        </Button>
+                      </DropdownMenu.Trigger>
+                      <DropdownMenu.Content align="end" sideOffset={8} className="store-sort-menu">
+                        <DropdownMenu.Label>{t("排序")}</DropdownMenu.Label>
+                        <DropdownMenu.RadioGroup
+                          value={sort}
+                          onValueChange={(value) => setSort(value as StorefrontProductSort)}
+                        >
+                          <DropdownMenu.RadioItem value="default">{t("默认排序")}</DropdownMenu.RadioItem>
+                          <DropdownMenu.RadioItem value="price_asc">{t("价格：低到高")}</DropdownMenu.RadioItem>
+                          <DropdownMenu.RadioItem value="price_desc">{t("价格：高到低")}</DropdownMenu.RadioItem>
+                          <DropdownMenu.RadioItem value="popular">{t("热门程度")}</DropdownMenu.RadioItem>
+                        </DropdownMenu.RadioGroup>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Root>
                     <Badge
                       color={hasFilters ? "jade" : "gray"}
                       variant="soft"
