@@ -30,11 +30,11 @@ DEFAULT_TIMEZONES = [
 def upgrade() -> None:
     connection = op.get_bind()
     serialized_default = json.dumps(DEFAULT_TIMEZONES, ensure_ascii=False)
+    escaped_default = serialized_default.replace("'", "''")
     if connection.dialect.name == "sqlite":
         # Rebuilding tenants through batch mode invalidates existing SQLite
         # triggers that reference the table. SQLite can add this non-null
         # column directly when a constant default is supplied.
-        escaped_default = serialized_default.replace("'", "''")
         op.add_column(
             "tenants",
             sa.Column(
@@ -45,19 +45,26 @@ def upgrade() -> None:
             ),
         )
         return
+
+    # PostgreSQL must receive a non-null constant at ADD COLUMN time. An
+    # UPDATE followed by a separate ALTER can still leave legacy rows null
+    # when the column's JSON value is adapted by the driver, causing the
+    # constraint step to fail during a live deployment.
     op.add_column(
         "tenants",
-        sa.Column("dashboard_timezones", sa.JSON(), nullable=True),
-    )
-    connection.execute(
-        sa.text(
-            "UPDATE tenants SET dashboard_timezones = :value "
-            "WHERE dashboard_timezones IS NULL"
+        sa.Column(
+            "dashboard_timezones",
+            sa.JSON(),
+            nullable=False,
+            server_default=sa.text(f"'{escaped_default}'::json"),
         ),
-        {"value": serialized_default},
     )
-    with op.batch_alter_table("tenants") as batch:
-        batch.alter_column("dashboard_timezones", existing_type=sa.JSON(), nullable=False)
+    op.alter_column(
+        "tenants",
+        "dashboard_timezones",
+        existing_type=sa.JSON(),
+        server_default=None,
+    )
 
 
 def downgrade() -> None:
