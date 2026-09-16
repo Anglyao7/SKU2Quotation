@@ -2027,6 +2027,20 @@ interface ApiProductDetail extends ApiProduct {
   description?: string | null;
   default_unit?: string | null;
   attributes: Array<{ id: string; definition_id?: string | null; key: string; value: unknown; unit_code?: string | null; review_status: string }>;
+  images: Array<{
+    id: string;
+    product_id: string;
+    url: string;
+    original_filename?: string | null;
+    content_type: string;
+    byte_size: number;
+    width?: number | null;
+    height?: number | null;
+    image_role: "MAIN" | "GALLERY" | "DETAIL" | "PACKAGING" | "CERTIFICATE";
+    sort_order: number;
+    approval_status: "SOURCE" | "PENDING" | "APPROVED" | "REJECTED";
+    created_at: string;
+  }>;
   skus: ApiSku[];
   sources: ApiOffer[];
   activity: Array<{ id: string; entity_type: string; entity_id: string; action: string; before: Record<string, unknown>; after: Record<string, unknown>; actor_membership_id: string; occurred_at: string }>;
@@ -2223,6 +2237,20 @@ function mapProductDetail(row: ApiProductDetail): ProductDetail {
     description: defined(row.description),
     defaultUnit: defined(row.default_unit),
     attributes: row.attributes.map(mapAttribute),
+    images: (row.images ?? []).map((image) => ({
+      id: image.id,
+      productId: image.product_id,
+      url: image.url,
+      originalFilename: defined(image.original_filename),
+      contentType: image.content_type,
+      byteSize: image.byte_size,
+      width: defined(image.width),
+      height: defined(image.height),
+      imageRole: image.image_role,
+      sortOrder: image.sort_order,
+      approvalStatus: image.approval_status,
+      createdAt: image.created_at,
+    })),
     skus: row.skus.map(mapSku),
     sources: row.sources.map(mapOffer),
     activity: row.activity.map(mapActivity),
@@ -2321,25 +2349,28 @@ export interface ProductImageUploadResult {
   byteSize: number;
   width?: number;
   height?: number;
+  imageRole: "MAIN" | "GALLERY" | "DETAIL" | "PACKAGING" | "CERTIFICATE";
+  sortOrder: number;
+  approvalStatus: "SOURCE" | "PENDING" | "APPROVED" | "REJECTED";
+  createdAt: string;
 }
 
-export async function uploadProductMainImage(
-  productId: string,
-  image: File,
-): Promise<ProductImageUploadResult> {
-  const body = new FormData();
-  body.append("image", image);
-  const row = await request<{
-    id: string;
-    product_id: string;
-    url: string;
-    original_filename?: string | null;
-    content_type: string;
-    byte_size: number;
-    width?: number | null;
-    height?: number | null;
-  }>(`/products/${productId}/images/main`, { method: "POST", body });
-  bumpPublicCatalogRevision();
+interface ApiProductImageUploadResult {
+  id: string;
+  product_id: string;
+  url: string;
+  original_filename?: string | null;
+  content_type: string;
+  byte_size: number;
+  width?: number | null;
+  height?: number | null;
+  image_role: ProductImageUploadResult["imageRole"];
+  sort_order: number;
+  approval_status: ProductImageUploadResult["approvalStatus"];
+  created_at: string;
+}
+
+function mapProductImageUploadResult(row: ApiProductImageUploadResult): ProductImageUploadResult {
   return {
     id: row.id,
     productId: row.product_id,
@@ -2349,7 +2380,44 @@ export async function uploadProductMainImage(
     byteSize: row.byte_size,
     width: defined(row.width),
     height: defined(row.height),
+    imageRole: row.image_role,
+    sortOrder: row.sort_order,
+    approvalStatus: row.approval_status,
+    createdAt: row.created_at,
   };
+}
+
+export async function uploadProductMainImage(
+  productId: string,
+  image: File,
+): Promise<ProductImageUploadResult> {
+  const body = new FormData();
+  body.append("image", image);
+  const row = await request<ApiProductImageUploadResult>(`/products/${productId}/images/main`, { method: "POST", body });
+  bumpPublicCatalogRevision();
+  return mapProductImageUploadResult(row);
+}
+
+export async function uploadProductGalleryImage(productId: string, image: File): Promise<ProductImageUploadResult> {
+  const body = new FormData();
+  body.append("image", image);
+  const row = await request<ApiProductImageUploadResult>(
+    `/products/${encodeURIComponent(productId)}/images/gallery`,
+    { method: "POST", body },
+  );
+  bumpPublicCatalogRevision();
+  return mapProductImageUploadResult(row);
+}
+
+export async function replaceProductImage(productId: string, imageId: string, image: File): Promise<ProductImageUploadResult> {
+  const body = new FormData();
+  body.append("image", image);
+  const row = await request<ApiProductImageUploadResult>(
+    `/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}/replace`,
+    { method: "POST", body },
+  );
+  bumpPublicCatalogRevision();
+  return mapProductImageUploadResult(row);
 }
 
 export async function downloadProductMainImage(
@@ -2358,6 +2426,19 @@ export async function downloadProductMainImage(
 ): Promise<void> {
   await downloadCoreFile(
     `/products/${encodeURIComponent(productId)}/images/main/download`,
+    filename,
+    true,
+    true,
+  );
+}
+
+export async function downloadProductImage(
+  productId: string,
+  imageId: string,
+  filename: string,
+): Promise<void> {
+  await downloadCoreFile(
+    `/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}/download`,
     filename,
     true,
     true,
@@ -6519,6 +6600,7 @@ interface ApiDashboard {
   market?: {
     observed_at: string;
     world_times: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string; local_time: string; utc_offset: string; is_dst: boolean; source: string }>;
+    available_timezones?: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string }>;
     exchange_rates: Array<{ currency: string; name: string; symbol: string; rate?: number | string | null; base_currency: string; rate_date?: string | null; source: string }>;
     rate_date?: string | null;
     time_source: string;
@@ -6537,12 +6619,21 @@ export async function getDashboard(): Promise<DashboardSnapshot> {
     market: row.market ? {
       observedAt: row.market.observed_at,
       worldTimes: row.market.world_times.map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency, localTime: item.local_time, utcOffset: item.utc_offset, isDst: item.is_dst, source: item.source })),
+      availableTimezones: (row.market.available_timezones ?? []).map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency })),
       exchangeRates: row.market.exchange_rates.map((item) => ({ currency: item.currency, name: item.name, symbol: item.symbol, rate: item.rate == null ? undefined : Number(item.rate), baseCurrency: item.base_currency, rateDate: defined(item.rate_date), source: item.source })),
       rateDate: defined(row.market.rate_date),
       timeSource: row.market.time_source,
       rateSource: row.market.rate_source,
     } : undefined,
   };
+}
+
+export async function updateDashboardTimezones(timezones: string[]): Promise<string[]> {
+  const row = await request<{ timezones: string[] }>("/dashboard/timezones", {
+    method: "PATCH",
+    body: JSON.stringify({ timezones }),
+  });
+  return row.timezones;
 }
 
 interface ApiSupplyChainPartner {

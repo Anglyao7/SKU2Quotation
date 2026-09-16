@@ -1,4 +1,4 @@
-import { Button, Card, Text } from "@radix-ui/themes";
+import { Button, Card, IconButton, Select, Text } from "@radix-ui/themes";
 import {
   ArrowRight,
   ChatCircleDots,
@@ -8,10 +8,11 @@ import {
   FileText,
   GlobeHemisphereWest,
   Sparkle,
+  Trash,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { getDashboard } from "../api";
+import { getDashboard, updateDashboardTimezones } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
@@ -63,6 +64,7 @@ export function CoreDashboardPage() {
     () => (data?.metrics ?? [])
       .filter((metric) => (
         metric.key !== "pending_product_reviews"
+        && metric.key !== "active_suppliers"
         && (
           !isCustomerSubaccount
           || metric.key === "active_skus"
@@ -101,7 +103,7 @@ export function CoreDashboardPage() {
           </Card>
         ))}
       </section>
-      {market ? <DashboardMarketPanel market={market} locale={locale} t={t} /> : null}
+      {market ? <DashboardMarketPanel market={market} locale={locale} t={t} onReload={load} canManageTimezones={!isCustomerSubaccount} /> : null}
     </div>
   );
 }
@@ -110,16 +112,56 @@ function DashboardMarketPanel({
   market,
   locale,
   t,
+  onReload,
+  canManageTimezones,
 }: {
   market: NonNullable<DashboardSnapshot["market"]>;
   locale: string;
   t: (value: string, variables?: Record<string, string | number>) => string;
+  onReload: () => Promise<void>;
+  canManageTimezones: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
+  const [manageTimezones, setManageTimezones] = useState(false);
+  const [savingTimezones, setSavingTimezones] = useState(false);
+  const [timezoneError, setTimezoneError] = useState("");
+  const [selectedTimezoneKeys, setSelectedTimezoneKeys] = useState(() => market.worldTimes.map((item) => item.key));
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    setSelectedTimezoneKeys(market.worldTimes.map((item) => item.key));
+  }, [market.worldTimes]);
+  const availableTimezones = market.availableTimezones.length
+    ? market.availableTimezones
+    : market.worldTimes;
+
+  const saveTimezones = useCallback(async (keys: string[]) => {
+    setSavingTimezones(true);
+    setTimezoneError("");
+    try {
+      await updateDashboardTimezones(keys);
+      await onReload();
+    } catch (reason) {
+      setSelectedTimezoneKeys(market.worldTimes.map((item) => item.key));
+      setTimezoneError(reason instanceof Error ? reason.message : t("保存失败"));
+    } finally {
+      setSavingTimezones(false);
+    }
+  }, [market.worldTimes, onReload, t]);
+
+  const addTimezone = useCallback((key: string) => {
+    const next = [...selectedTimezoneKeys, key];
+    setSelectedTimezoneKeys(next);
+    void saveTimezones(next);
+  }, [saveTimezones, selectedTimezoneKeys]);
+
+  const removeTimezone = useCallback((key: string) => {
+    const next = selectedTimezoneKeys.filter((item) => item !== key);
+    setSelectedTimezoneKeys(next);
+    void saveTimezones(next);
+  }, [saveTimezones, selectedTimezoneKeys]);
 
   const formatLocalTime = (timezone: string, fallback: string) => {
     try {
@@ -142,11 +184,32 @@ function DashboardMarketPanel({
           <Text size="2" color="gray">{t("全球时间与汇率")}</Text>
           <h2>{t("主要市场时间")}</h2>
         </div>
-        <span className="core-market-source">
-          <GlobeHemisphereWest size={16} weight="duotone" />
-          {t("实时参考")}
-        </span>
+        <div className="core-market-actions">
+          {canManageTimezones ? <Button size="1" variant={manageTimezones ? "solid" : "soft"} onClick={() => setManageTimezones((value) => !value)}>
+            <GlobeHemisphereWest size={16} weight="duotone" />
+            {manageTimezones ? t("完成") : t("管理时区")}
+          </Button> : null}
+          <span className="core-market-source">
+            <GlobeHemisphereWest size={16} weight="duotone" />
+            {t("实时参考")}
+          </span>
+        </div>
       </div>
+      {manageTimezones ? (
+        <div className="core-market-timezone-editor">
+          <Text size="1" color="gray">{t("可添加或移除首页显示的主要市场时区。")}</Text>
+          <Select.Root value="" onValueChange={addTimezone} disabled={savingTimezones}>
+            <Select.Trigger placeholder={t("添加时区")} />
+            <Select.Content position="popper">
+              {availableTimezones.filter((item) => !selectedTimezoneKeys.includes(item.key)).map((item) => (
+                <Select.Item key={item.key} value={item.key}>{item.flag} {t(item.label)} · {item.city}</Select.Item>
+              ))}
+            </Select.Content>
+          </Select.Root>
+          {savingTimezones ? <Text size="1" color="gray">{t("正在保存")}</Text> : null}
+          {timezoneError ? <Text size="1" color="red">{timezoneError}</Text> : null}
+        </div>
+      ) : null}
       <div className="core-market-layout">
         <div className="core-world-time-grid">
           {market.worldTimes.map((item) => (
@@ -157,6 +220,7 @@ function DashboardMarketPanel({
                   <strong>{t(item.label)}</strong>
                   <small>{item.city} · {item.language}</small>
                 </span>
+                {manageTimezones ? <IconButton size="1" variant="ghost" color="gray" aria-label={t("移除时区")} onClick={() => removeTimezone(item.key)} disabled={savingTimezones}><Trash size={15} /></IconButton> : null}
               </div>
               <div className="core-world-time-value">
                 <Clock size={16} weight="duotone" />

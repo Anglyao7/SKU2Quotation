@@ -107,6 +107,9 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
+from ..services.search_query_translation import (
+    configured_baidu_search_query_translator,
+)
 from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
@@ -598,6 +601,60 @@ def _positive_int_environment(name: str, default: int, *, maximum: int) -> int:
     except ValueError:
         value = default
     return max(1, min(value, maximum))
+
+
+def _source_language_search_query(
+    query: str,
+    *,
+    source_locale: str,
+    search_locale: str | None,
+) -> str:
+    """Normalize a foreign-language storefront query into source text.
+
+    Product retrieval is intentionally source-language based.  For a visitor
+    searching in a published foreign language, translate only the short query
+    and keep the original query as the fail-open fallback.  Chinese input and
+    identifier-only input are already searchable in the source catalog and do
+    not need an external request.
+    """
+
+    normalized = " ".join(query.split()).strip()
+    if not normalized or not search_locale:
+        return normalized
+    if normalize_storefront_locale(search_locale) == normalize_storefront_locale(
+        source_locale
+    ):
+        return normalized
+    if re.search(r"[\u3400-\u9fff]", normalized):
+        return normalized
+    if not re.search(r"[\w\u0080-\uffff]", normalized, flags=re.UNICODE):
+        return normalized
+    if re.fullmatch(r"[A-Za-z0-9._/-]+", normalized) and any(
+        character.isdigit() for character in normalized
+    ):
+        return normalized
+    try:
+        translator = configured_baidu_search_query_translator()
+        translated = translator.translate(
+            normalized,
+            source_locale=search_locale,
+            target_locale=source_locale,
+        ).strip()
+    except TranslationProviderError as exc:
+        # Search must remain available if the optional normalizer is not
+        # configured or the upstream service is temporarily unavailable.
+        logger.info(
+            "Baidu search-query normalization skipped (%s)",
+            exc.category,
+        )
+        return normalized
+    except Exception:  # pragma: no cover - defensive provider boundary
+        logger.warning(
+            "Baidu search-query normalization raised unexpectedly",
+            exc_info=True,
+        )
+        return normalized
+    return translated or normalized
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -2457,6 +2514,7 @@ def list_public_products(
     page_size: int,
     sort_mode: str = "default",
     locale: str | None = None,
+    search_locale: str | None = None,
     share_token: str | None = None,
     subaccount_membership_id: UUID | None = None,
     ranked_product_ids: list[UUID] | None = None,
@@ -2483,6 +2541,14 @@ def list_public_products(
             tenant=tenant,
             profile=profile,
         )
+    )
+    normalized_search_locale = normalize_storefront_locale(search_locale)
+    if normalized_search_locale not in _available_locales:
+        normalized_search_locale = None
+    query = _source_language_search_query(
+        query,
+        source_locale=source_locale,
+        search_locale=normalized_search_locale,
     )
     now = utcnow()
     wanted_tags = _normalize_tags(tags)
@@ -4069,8 +4135,15 @@ def _localized_quote_response(
         if isinstance(snapshot_source_locale, str) and snapshot_source_locale.strip()
         else getattr(tenant, "default_locale", None)
     )
-    snapshot_document_locale = _normalized_locale(
-        snapshot_payload.get("document_locale")
+    submission_locale_value = snapshot_payload.get("submission_locale")
+    has_immutable_submission_locale = (
+        isinstance(submission_locale_value, str)
+        and bool(submission_locale_value.strip())
+    )
+    submission_locale = _normalized_locale(
+        submission_locale_value
+        if has_immutable_submission_locale
+        else snapshot_payload.get("document_locale")
         if isinstance(snapshot_payload.get("document_locale"), str)
         else source_locale,
         default=source_locale,
@@ -4081,11 +4154,15 @@ def _localized_quote_response(
     # early return here would leave the original English snapshot on screen.
     # A quote originally submitted in the source language remains immutable:
     # later catalog edits must not rewrite its historical line-item snapshot.
+    # Legacy quotes do not have the immutable marker because document_locale
+    # used to be overwritten on every language switch. Re-read those rows so
+    # an already affected English snapshot can still be restored to Chinese.
     if (
         not items
         or (
-            target_locale == source_locale
-            and snapshot_document_locale == source_locale
+            has_immutable_submission_locale
+            and target_locale == source_locale
+            and submission_locale == source_locale
         )
     ):
         return response
@@ -4173,11 +4250,21 @@ def _localized_quote_response(
             for key, value in source_options.items()
             if str(key).strip() and not str(key).startswith("_")
         }
+        if sku.default_moq is not None and not any(
+            re.sub(r"[\s_\-:：]+", "", str(key).strip().casefold())
+            in {"起订数", "起订量", "moq", "minimumorderquantity"}
+            for key in source_options
+        ):
+            source_options = {
+                **source_options,
+                "起订数": str(sku.default_moq),
+            }
         localized_options = _localized_public_option_values(
             source_options,
             translation=product_translation,
         )
         source_specification = str(source_options.get("规格名称") or "").strip()
+        source_rendered_specification = _quote_specification(source_options)
         translated_specification = _quote_translation_value(
             sku_translation, "specification"
         )
@@ -4225,7 +4312,8 @@ def _localized_quote_response(
                         (
                             str(translated_specification).strip()
                             if translated_specification not in (None, "")
-                            else item.specification_snapshot
+                            else source_rendered_specification
+                            or item.specification_snapshot
                         )
                     ),
                     "option_values_snapshot": public_sku_option_values(
@@ -4513,6 +4601,7 @@ def create_public_quote_draft(
         },
         "visitor_country_code": visitor_country_code,
         "notes": request.notes,
+        "submission_locale": requested_locale,
         "document_locale": requested_locale,
         "source_locale": source_locale,
         "privacy_notice": {

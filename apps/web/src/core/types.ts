@@ -448,6 +448,16 @@ export interface DashboardSnapshot {
       isDst: boolean;
       source: string;
     }>;
+    availableTimezones: Array<{
+      key: string;
+      label: string;
+      city: string;
+      countryCode: string;
+      flag: string;
+      language: string;
+      timezone: string;
+      currency: string;
+    }>;
     exchangeRates: Array<{
       currency: string;
       name: string;
@@ -692,10 +702,26 @@ export interface ProductActivity {
   occurredAt: string;
 }
 
+export interface ProductImage {
+  id: string;
+  productId: string;
+  url: string;
+  originalFilename?: string;
+  contentType: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+  imageRole: "MAIN" | "GALLERY" | "DETAIL" | "PACKAGING" | "CERTIFICATE";
+  sortOrder: number;
+  approvalStatus: "SOURCE" | "PENDING" | "APPROVED" | "REJECTED";
+  createdAt: string;
+}
+
 export interface ProductDetail extends CoreProduct {
   description?: string;
   defaultUnit?: string;
   attributes: ProductAttribute[];
+  images: ProductImage[];
   skus: ProductSku[];
   sources: ProductOffer[];
   activity: ProductActivity[];

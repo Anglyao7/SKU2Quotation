@@ -14,6 +14,7 @@ import {
   createSkus,
   deleteAllProducts,
   detectFile,
+  downloadProductImage,
   downloadProductMainImage,
   exportSkuCatalog,
   getDeleteAllProductsJob,
@@ -28,9 +29,11 @@ import {
   PRODUCT_TEMPLATE_DOWNLOAD_URL,
   rollbackCatalogImportFile,
   retryCatalogTranslationProduct,
+  replaceProductImage,
   updateProductCategory,
   updateProduct,
   updateSku,
+  uploadProductGalleryImage,
   uploadProductMainImage,
   upsertPublicCatalogOffer,
   CoreApiError,
@@ -2571,8 +2574,9 @@ function parseAttributeDraft(attribute: EditableProductAttribute): unknown {
   return attribute.value;
 }
 
-function ProductEditor({ product, onChanged }: {
+function ProductEditor({ product, categories, onChanged }: {
   product: ProductDetail;
+  categories: ProductCategory[];
   onChanged: () => Promise<void>;
 }) {
   const { t } = useLocale();
@@ -2582,8 +2586,27 @@ function ProductEditor({ product, onChanged }: {
   const [defaultUnit, setDefaultUnit] = useState(product.defaultUnit ?? "");
   const [status, setStatus] = useState<ProductStatus>(product.status as ProductStatus);
   const [attributes, setAttributes] = useState<EditableProductAttribute[]>(() => product.attributes.map(attributeDraft));
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(
+    () => new Set(product.categories.map((category) => category.id)),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  const categoryOptions = useMemo(
+    () => categories.filter((category) => (
+      category.status === "ACTIVE" || product.categories.some((item) => item.id === category.id)
+    )),
+    [categories, product.categories],
+  );
+  const savedCategoryIds = useMemo(
+    () => new Set(product.categories.map((category) => category.id)),
+    [product.categories],
+  );
+  const categorySelectionChanged = selectedCategoryIds.size !== savedCategoryIds.size
+    || [...selectedCategoryIds].some((categoryId) => !savedCategoryIds.has(categoryId));
+  const selectedCategoryLabels = categoryOptions
+    .filter((category) => selectedCategoryIds.has(category.id))
+    .map((category) => category.path?.trim() || category.name);
 
   useEffect(() => {
     setName(product.name);
@@ -2592,6 +2615,7 @@ function ProductEditor({ product, onChanged }: {
     setDefaultUnit(product.defaultUnit ?? "");
     setStatus(product.status as ProductStatus);
     setAttributes(product.attributes.map(attributeDraft));
+    setSelectedCategoryIds(new Set(product.categories.map((category) => category.id)));
     setError("");
   }, [product]);
 
@@ -2614,7 +2638,7 @@ function ProductEditor({ product, onChanged }: {
     setSaving(true);
     setError("");
     try {
-      await updateProduct(product.id, {
+      const updatedProduct = await updateProduct(product.id, {
         expectedVersion: product.currentVersion,
         name: name.trim(),
         productCode: productCode.trim() || null,
@@ -2629,6 +2653,9 @@ function ProductEditor({ product, onChanged }: {
           reviewStatus: attribute.reviewStatus,
         })),
       });
+      if (categorySelectionChanged) {
+        await updateProductCategory(product.id, updatedProduct.currentVersion, [...selectedCategoryIds]);
+      }
       await onChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("商品保存失败，请稍后重试。"));
@@ -2639,27 +2666,79 @@ function ProductEditor({ product, onChanged }: {
 
   return (
     <section className="core-product-editor">
+      <div className="core-product-editor-title">
+        <Text size="3" weight="bold">{t("商品详情")}</Text>
+        <Badge color={status === "ACTIVE" ? "jade" : status === "DRAFT" || status === "IN_REVIEW" ? "amber" : "gray"}>
+          {t(productStatusLabel[status])}
+        </Badge>
+      </div>
       <div className="core-product-editor-grid">
-        <label><Text size="1" color="gray">{t("商品名称")}</Text><TextField.Root value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <label className="is-name"><Text size="1" color="gray">{t("商品名称")}</Text><TextField.Root value={name} onChange={(event) => setName(event.target.value)} /></label>
         <label><Text size="1" color="gray">{t("商品编码")}</Text><TextField.Root value={productCode} onChange={(event) => setProductCode(event.target.value)} /></label>
         <label><Text size="1" color="gray">{t("计量单位")}</Text><TextField.Root value={defaultUnit} onChange={(event) => setDefaultUnit(event.target.value)} placeholder="piece" /></label>
         <label><Text size="1" color="gray">{t("状态")}</Text><select value={status} onChange={(event) => setStatus(event.target.value as ProductStatus)}><option value="DRAFT">{t("草稿")}</option><option value="IN_REVIEW">{t("待审核")}</option><option value="ACTIVE">{t("在售")}</option><option value="ARCHIVED">{t("已归档")}</option></select></label>
+        <div className="core-product-editor-category is-wide">
+          <Text size="1" color="gray">{t("分类")}</Text>
+          <div className="core-product-editor-category-control">
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger>
+                <Button type="button" variant="soft" color="gray" disabled={saving}>
+                  {selectedCategoryIds.size
+                    ? t("已选 {count} 个分类", { count: selectedCategoryIds.size })
+                    : t("选择分类")}
+                  <CaretDown />
+                </Button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Content className="core-product-category-menu" align="start">
+                {categoryOptions.map((category) => (
+                  <DropdownMenu.CheckboxItem
+                    key={category.id}
+                    checked={selectedCategoryIds.has(category.id)}
+                    onSelect={(event) => event.preventDefault()}
+                    onCheckedChange={(checked) => {
+                      setSelectedCategoryIds((current) => {
+                        const next = new Set(current);
+                        if (checked) next.add(category.id);
+                        else next.delete(category.id);
+                        return next;
+                      });
+                      setError("");
+                    }}
+                  >
+                    {category.path?.trim() || category.name}
+                  </DropdownMenu.CheckboxItem>
+                ))}
+              </DropdownMenu.Content>
+            </DropdownMenu.Root>
+            <div className="core-product-editor-category-values">
+              {selectedCategoryLabels.length
+                ? selectedCategoryLabels.map((label) => <span key={label}>{label}</span>)
+                : <Text size="1" color="gray">{t("未分类")}</Text>}
+            </div>
+          </div>
+        </div>
         <label className="is-wide"><Text size="1" color="gray">{t("商品描述")}</Text><TextArea value={description} onChange={(event) => setDescription(event.target.value)} rows={4} /></label>
       </div>
-      <section className="core-product-attribute-editor">
-        <div className="core-product-editor-section-heading"><div><Text size="2" weight="bold">{t("商品属性")}</Text><Text size="1" color="gray">{t("商品详情中的所有属性都可以在这里维护")}</Text></div><Button size="1" variant="soft" onClick={() => setAttributes((current) => [...current, { key: "", value: "", unitCode: "", kind: "text", reviewStatus: "CONFIRMED" }])}><Plus />{t("添加属性")}</Button></div>
-        {attributes.length ? <div className="core-product-attribute-list">{attributes.map((attribute, index) => (
-          <div className="core-product-attribute-row" key={attribute.id ?? `new-${index}`}>
-            <TextField.Root value={attribute.key} placeholder={t("属性名称")} onChange={(event) => updateAttribute(index, { key: event.target.value })} />
-            <TextField.Root value={attribute.value} placeholder={t("属性值")} onChange={(event) => updateAttribute(index, { value: event.target.value })} />
-            <TextField.Root value={attribute.unitCode} placeholder={t("单位")} onChange={(event) => updateAttribute(index, { unitCode: event.target.value })} />
-            <select value={attribute.kind} onChange={(event) => updateAttribute(index, { kind: event.target.value as EditableAttributeKind })}><option value="text">{t("文本")}</option><option value="number">{t("数字")}</option><option value="boolean">{t("布尔值")}</option><option value="json">JSON</option></select>
-            <Button size="1" variant="ghost" color="red" aria-label={t("删除属性")} onClick={() => setAttributes((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
-          </div>
-        ))}</div> : <Text size="1" color="gray">{t("暂无商品属性")}</Text>}
-      </section>
+      <details className="core-product-attribute-editor">
+        <summary>
+          <span><Text size="2" weight="bold">{t("商品属性")}</Text><Badge color="gray">{attributes.length}</Badge></span>
+          <CaretDown aria-hidden="true" />
+        </summary>
+        <div className="core-product-attribute-content">
+          <div className="core-product-editor-section-heading"><span /><Button size="1" variant="soft" onClick={() => setAttributes((current) => [...current, { key: "", value: "", unitCode: "", kind: "text", reviewStatus: "CONFIRMED" }])}><Plus />{t("添加属性")}</Button></div>
+          {attributes.length ? <div className="core-product-attribute-list">{attributes.map((attribute, index) => (
+            <div className="core-product-attribute-row" key={attribute.id ?? `new-${index}`}>
+              <TextField.Root value={attribute.key} placeholder={t("属性名称")} onChange={(event) => updateAttribute(index, { key: event.target.value })} />
+              <TextField.Root value={attribute.value} placeholder={t("属性值")} onChange={(event) => updateAttribute(index, { value: event.target.value })} />
+              <TextField.Root value={attribute.unitCode} placeholder={t("单位")} onChange={(event) => updateAttribute(index, { unitCode: event.target.value })} />
+              <select value={attribute.kind} onChange={(event) => updateAttribute(index, { kind: event.target.value as EditableAttributeKind })}><option value="text">{t("文本")}</option><option value="number">{t("数字")}</option><option value="boolean">{t("布尔值")}</option><option value="json">JSON</option></select>
+              <Button size="1" variant="ghost" color="red" aria-label={t("删除属性")} onClick={() => setAttributes((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
+            </div>
+          ))}</div> : <Text size="1" color="gray">{t("暂无商品属性")}</Text>}
+        </div>
+      </details>
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
-      <div className="core-product-editor-actions"><Button variant="solid" loading={saving} disabled={saving} onClick={() => void save()}>{t(saving ? "保存中…" : "保存商品")}</Button></div>
+      <div className="core-product-editor-actions"><Button size="3" variant="solid" loading={saving} disabled={saving} onClick={() => void save()}>{t(saving ? "保存中…" : "保存商品")}</Button></div>
     </section>
   );
 }
@@ -2680,64 +2759,44 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const imageUploadActionRef = useRef<"replace" | "add">("replace");
   const imageDragDepthRef = useRef(0);
   const [imageUploading, setImageUploading] = useState(false);
   const [imageDownloading, setImageDownloading] = useState(false);
   const [imageDragging, setImageDragging] = useState(false);
   const [imageError, setImageError] = useState("");
   const [imageFailed, setImageFailed] = useState(false);
-  const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
-  const [productEditing, setProductEditing] = useState(false);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(
-    () => new Set(product.categories.map((category) => category.id)),
+  const [selectedImageId, setSelectedImageId] = useState(
+    () => product.images.find((image) => image.imageRole === "MAIN")?.id ?? product.images[0]?.id ?? "",
   );
-  const [categorySaving, setCategorySaving] = useState(false);
-  const [categoryError, setCategoryError] = useState("");
+  const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
   const canEnhanceImages = canEdit && isPlatformAdmin;
+  const selectedImage = product.images.find((image) => image.id === selectedImageId)
+    ?? product.images.find((image) => image.imageRole === "MAIN")
+    ?? product.images[0];
+  const selectedImageUrl = selectedImage?.url || product.primaryImageUrl;
+  const selectedImageIndex = selectedImage
+    ? product.images.findIndex((image) => image.id === selectedImage.id)
+    : -1;
+  const selectedImageIsMain = selectedImage?.imageRole === "MAIN"
+    || (!selectedImage && Boolean(product.primaryImageUrl));
 
-  const categoryOptions = useMemo(
-    () => categories.filter((category) => (
-      category.status === "ACTIVE" || product.categories.some((item) => item.id === category.id)
-    )),
-    [categories, product.categories],
-  );
-  const savedCategoryIds = useMemo(
-    () => new Set(product.categories.map((category) => category.id)),
-    [product.categories],
-  );
-  const categorySelectionChanged = selectedCategoryIds.size !== savedCategoryIds.size
-    || [...selectedCategoryIds].some((categoryId) => !savedCategoryIds.has(categoryId));
-
-  useEffect(() => setImageFailed(false), [product.primaryImageUrl]);
+  useEffect(() => setImageFailed(false), [selectedImageUrl]);
   useEffect(() => {
     setActiveTab(selectedSkuId ? "skus" : "product");
-    setProductEditing(false);
+    setSelectedImageId(
+      product.images.find((image) => image.imageRole === "MAIN")?.id
+      ?? product.images[0]?.id
+      ?? "",
+    );
     imageDragDepthRef.current = 0;
     setImageDragging(false);
     setImageError("");
-    setSelectedCategoryIds(new Set(product.categories.map((category) => category.id)));
-    setCategoryError("");
-  }, [product.categories, product.id, selectedSkuId]);
+  }, [product.id, selectedSkuId]);
 
-  const saveCategory = async () => {
-    if (!canEdit || categorySaving) return;
-    if (!categorySelectionChanged) return;
-    setCategorySaving(true);
-    setCategoryError("");
-    try {
-      await updateProductCategory(product.id, product.currentVersion, [...selectedCategoryIds]);
-      await onChanged();
-    } catch (reason) {
-      setCategoryError(reason instanceof Error ? reason.message : t("分类保存失败，请稍后重试。"));
-      setSelectedCategoryIds(new Set(product.categories.map((category) => category.id)));
-    } finally {
-      setCategorySaving(false);
-    }
-  };
-
-  const uploadImage = async (file?: File) => {
+  const uploadImage = async (file?: File, action = imageUploadActionRef.current) => {
     if (!file || imageUploading || !canEdit) return;
     setImageError("");
     const supportedExtension = /\.(png|jpe?g|webp)$/i.test(file.name);
@@ -2749,9 +2808,18 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
       setImageError(t("商品图片不能超过 20 MB。"));
       return;
     }
+    if (action === "add" && product.images.length >= 50) {
+      setImageError(t("每个商品最多上传 50 张图片。"));
+      return;
+    }
     setImageUploading(true);
     try {
-      await uploadProductMainImage(product.id, file);
+      const uploaded = action === "add" && product.images.length > 0
+        ? await uploadProductGalleryImage(product.id, file)
+        : action === "replace" && selectedImage
+          ? await replaceProductImage(product.id, selectedImage.id, file)
+          : await uploadProductMainImage(product.id, file);
+      setSelectedImageId(uploaded.id);
       await onChanged();
     } catch (reason) {
       setImageError(reason instanceof Error ? reason.message : t("商品图片上传失败"));
@@ -2762,14 +2830,21 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   };
 
   const downloadImage = async () => {
-    if (imageDownloading || product.imageStatus === "NONE") return;
+    if (imageDownloading || !selectedImageUrl) return;
     const safeName = (product.productCode || product.name || "product-image")
       .replace(/[\\/:*?"<>|]/g, "-")
       .slice(0, 100);
     setImageDownloading(true);
     setImageError("");
     try {
-      await downloadProductMainImage(product.id, `${safeName || "product-image"}-主图.webp`);
+      const suffix = selectedImageIsMain
+        ? t("主图")
+        : t("图片 {index}", { index: selectedImageIndex + 1 });
+      if (selectedImage) {
+        await downloadProductImage(product.id, selectedImage.id, `${safeName || "product-image"}-${suffix}.webp`);
+      } else {
+        await downloadProductMainImage(product.id, `${safeName || "product-image"}-${suffix}.webp`);
+      }
     } catch (reason) {
       setImageError(reason instanceof Error ? reason.message : t("商品图片下载失败"));
     } finally {
@@ -2804,7 +2879,11 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
     imageDragDepthRef.current = 0;
     setImageDragging(false);
     if (imageUploading || !dragContainsFiles(event)) return;
-    void uploadImage(event.dataTransfer.files[0]);
+    void uploadImage(event.dataTransfer.files[0], "replace");
+  };
+  const chooseImageUpload = (action: "replace" | "add") => {
+    imageUploadActionRef.current = action;
+    imageInputRef.current?.click();
   };
   return (
     <>
@@ -2839,7 +2918,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
         onValueChange={(value) => setActiveTab(value as "product" | "skus")}
       >
         <Tabs.List className="core-product-detail-tabs" aria-label={t("选择详情类型")}>
-          <Tabs.Trigger value="product"><ImageSquare />{t("商品详情")}</Tabs.Trigger>
+          <Tabs.Trigger value="product"><ImageSquare />{t("前台展示")}</Tabs.Trigger>
           <Tabs.Trigger value="skus"><Tag />{t("SKU 详情")}<span className="core-product-detail-tab-count">{product.skus.length}</span></Tabs.Trigger>
         </Tabs.List>
         <Tabs.Content value="product" className="core-product-detail-tab-panel">
@@ -2854,13 +2933,13 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
               onDrop={dropImage}
             >
               <div className="core-product-image-preview">
-                {product.primaryImageUrl && !imageFailed ? (
-                  <img src={product.primaryImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
+                {selectedImageUrl && !imageFailed ? (
+                  <img src={selectedImageUrl} alt={product.name} onError={() => setImageFailed(true)} />
                 ) : <ImageSquare aria-hidden="true" />}
                 {imageDragging ? (
                   <span className="core-product-image-drop-state" aria-hidden="true">
                     <FileArrowUp weight="duotone" />
-                    <strong>{t("松开即可替换商品主图")}</strong>
+                    <strong>{t(selectedImageUrl ? "松开即可替换当前图片" : "松开即可上传商品图片")}</strong>
                   </span>
                 ) : imageUploading ? (
                   <span className="core-product-image-drop-state is-uploading" aria-live="polite">
@@ -2869,34 +2948,65 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                   </span>
                 ) : null}
               </div>
+              {product.images.length ? (
+                <div className="core-product-image-gallery" aria-label={t("商品图片列表")}>
+                  {product.images.map((image, index) => (
+                    <button
+                      key={image.id}
+                      type="button"
+                      className="core-product-image-thumbnail"
+                      aria-label={t("查看图片 {index}", { index: index + 1 })}
+                      aria-pressed={selectedImage?.id === image.id}
+                      onClick={() => setSelectedImageId(image.id)}
+                    >
+                      <img src={image.url} alt="" />
+                      {image.imageRole === "MAIN" ? <span>{t("主图")}</span> : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               <div className="core-product-image-controls">
                 <span className="core-product-image-copy">
-                  <Text size="2" weight="bold">{t("商品主图")}</Text>
+                  <Text size="2" weight="bold">
+                    {selectedImageIsMain
+                      ? t("商品主图")
+                      : t("商品图片 {current}/{count}", {
+                          current: selectedImageIndex + 1,
+                          count: product.images.length,
+                        })}
+                  </Text>
                   <Text size="1" color="gray">
-                    {t(canEdit ? "拖入新图片即可替换" : "PNG、JPG 或 WebP，最大 20 MB")}
+                    {t(canEdit ? "选择缩略图后可直接替换" : "PNG、JPG 或 WebP，最大 20 MB")}
                   </Text>
                 </span>
                 <span className="core-product-image-actions">
-                  {product.imageStatus !== "NONE" ? (
+                  {selectedImageUrl ? (
                     <Button size="2" variant="ghost" color="gray" disabled={imageDownloading || imageUploading} loading={imageDownloading} onClick={() => void downloadImage()}>
                       <DownloadSimple />{t("下载图片")}
                     </Button>
                   ) : null}
-                  {canEnhanceImages ? (
+                  {canEnhanceImages && selectedImageIsMain ? (
                     <Button
                       size="2"
                       variant="soft"
                       color="purple"
-                      disabled={product.imageStatus === "NONE" || imageUploading || imageDownloading}
+                      disabled={!selectedImageUrl || imageUploading || imageDownloading}
                       onClick={() => onEnhanceProduct(product.id)}
                     >
                       <Sparkle />{t("图片变清晰")}
                     </Button>
                   ) : null}
                   {canEdit ? (
-                    <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading} onClick={() => imageInputRef.current?.click()}>
-                      <FileArrowUp />{t(product.imageStatus !== "NONE" ? "替换图片" : "上传图片")}
-                    </Button>
+                    <>
+                      {selectedImageUrl ? (
+                        <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading && imageUploadActionRef.current === "replace"} onClick={() => chooseImageUpload("replace")}>
+                          <FileArrowUp />{t("替换图片")}
+                        </Button>
+                      ) : null}
+                      <Button size="2" disabled={imageUploading || product.images.length >= 50} loading={imageUploading && imageUploadActionRef.current === "add"} onClick={() => chooseImageUpload("add")}>
+                        <Plus />{t(selectedImageUrl ? "新增图片" : "上传图片")}
+                      </Button>
+                    </>
                   ) : null}
                 </span>
                 <input
@@ -2904,80 +3014,26 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                   type="file"
                   accept="image/png,image/jpeg,image/webp"
                   hidden
-                  onChange={(event) => void uploadImage(event.target.files?.[0])}
+                  onChange={(event) => void uploadImage(event.target.files?.[0], imageUploadActionRef.current)}
                 />
               </div>
               {imageError ? <div className="core-form-error" role="alert">{imageError}</div> : null}
             </section>
             <div className="core-product-overview-content">
-              <div className="core-product-overview-actions">
-                {canEdit ? <Button size="2" variant={productEditing ? "soft" : "solid"} color={productEditing ? "gray" : undefined} onClick={() => setProductEditing((current) => !current)}><PencilSimple />{t(productEditing ? "取消编辑" : "编辑商品")}</Button> : null}
-              </div>
-              <dl className="core-product-facts">
-                {!productEditing ? <>
-                  <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
-                  <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
-                </> : null}
-                <div className="core-product-category-fact">
-                  <dt>{t("分类")}</dt>
-                  <dd>
-                    {canEdit ? (
-                      <span className="core-product-category-control">
-                        <DropdownMenu.Root>
-                          <DropdownMenu.Trigger>
-                            <Button variant="soft" color="gray" disabled={categorySaving}>
-                              {selectedCategoryIds.size
-                                ? t("已选 {count} 个分类", { count: selectedCategoryIds.size })
-                                : t("未分类")}
-                              <CaretDown />
-                            </Button>
-                          </DropdownMenu.Trigger>
-                          <DropdownMenu.Content className="core-product-category-menu" align="start">
-                            {categoryOptions.map((category) => (
-                              <DropdownMenu.CheckboxItem
-                                key={category.id}
-                                checked={selectedCategoryIds.has(category.id)}
-                                onSelect={(event) => event.preventDefault()}
-                                onCheckedChange={(checked) => {
-                                  setSelectedCategoryIds((current) => {
-                                    const next = new Set(current);
-                                    if (checked) next.add(category.id);
-                                    else next.delete(category.id);
-                                    return next;
-                                  });
-                                  setCategoryError("");
-                                }}
-                              >
-                                {category.path?.trim() || category.name}
-                              </DropdownMenu.CheckboxItem>
-                            ))}
-                          </DropdownMenu.Content>
-                        </DropdownMenu.Root>
-                        {categorySelectionChanged ? (
-                          <Button
-                            size="1"
-                            variant="soft"
-                            loading={categorySaving}
-                            disabled={categorySaving}
-                            onClick={() => void saveCategory()}
-                          >
-                            {t("保存")}
-                          </Button>
-                        ) : null}
-                      </span>
-                    ) : (
-                      <span>{product.categories.map((category) => category.name).join("、") || primaryCategoryLabel(product.category) || t("未分类")}</span>
-                    )}
-                  </dd>
-                </div>
-                <div><dt>{t("供应商")}</dt><dd>{product.supplier || t("未设置")}</dd></div>
-              </dl>
-              {categoryError ? <div className="core-form-error" role="alert">{categoryError}</div> : null}
-              {productEditing ? <ProductEditor product={sourceProduct} onChanged={onChanged} /> : (
-                <section className="core-product-description">
-                  <Text size="1" color="gray">{t("商品描述")}</Text>
-                  <p>{product.description || t("暂无描述")}</p>
-                </section>
+              {canEdit ? (
+                <ProductEditor product={sourceProduct} categories={categories} onChanged={onChanged} />
+              ) : (
+                <>
+                  <dl className="core-product-facts">
+                    <div><dt>{t("商品编码")}</dt><dd className="core-tabular">{product.productCode || t("未设置")}</dd></div>
+                    <div><dt>{t("计量单位")}</dt><dd>{product.defaultUnit || t("未设置")}</dd></div>
+                    <div className="core-product-category-fact"><dt>{t("分类")}</dt><dd>{product.categories.map((category) => category.name).join("、") || primaryCategoryLabel(product.category) || t("未分类")}</dd></div>
+                  </dl>
+                  <section className="core-product-description">
+                    <Text size="1" color="gray">{t("商品描述")}</Text>
+                    <p>{product.description || t("暂无描述")}</p>
+                  </section>
+                </>
               )}
             </div>
           </div>
@@ -3012,7 +3068,9 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
   const [skuMoqUnit, setSkuMoqUnit] = useState(product.defaultUnit || "piece");
   const [skuPackingQuantity, setSkuPackingQuantity] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
-  const [editingSkuId, setEditingSkuId] = useState<string>();
+  const [editingSkuId, setEditingSkuId] = useState<string | undefined>(() => (
+    canManageSku ? initialSkuId : undefined
+  ));
   const [expandedSkuIds, setExpandedSkuIds] = useState<Set<string>>(() => new Set(initialSkuId ? [initialSkuId] : []));
   const [busySkuId, setBusySkuId] = useState<string>();
   const [creating, setCreating] = useState(false);
@@ -3020,10 +3078,10 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
   const [selectedSkuIds, setSelectedSkuIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    setEditingSkuId(undefined);
+    setEditingSkuId(canManageSku ? initialSkuId : undefined);
     setExpandedSkuIds(new Set(initialSkuId ? [initialSkuId] : []));
     setSelectedSkuIds(new Set());
-  }, [initialSkuId, product.id]);
+  }, [canManageSku, initialSkuId, product.id]);
   const loadOffers = useCallback(async () => {
     if (!canViewCatalog) { setOffers([]); return; }
     try { setOffers(await listPublicCatalogOffers(product.id)); }
@@ -3091,8 +3149,16 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
   };
 
   const editSku = (skuId: string) => {
-    setExpandedSkuIds((current) => new Set(current).add(skuId));
-    setEditingSkuId((current) => current === skuId ? undefined : skuId);
+    setEditingSkuId((current) => {
+      const closing = current === skuId;
+      setExpandedSkuIds((expandedIds) => {
+        const next = new Set(expandedIds);
+        if (closing) next.delete(skuId);
+        else next.add(skuId);
+        return next;
+      });
+      return closing ? undefined : skuId;
+    });
   };
 
   return (
@@ -3100,7 +3166,7 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
       <div className="core-sku-detail-heading">
         <div>
           <Heading size="4">{t("SKU 详情")}</Heading>
-          <Text size="1" color="gray">{t("共 {count} 个 SKU，可逐条展开查看", { count: product.skus.length })}</Text>
+          <Text size="1" color="gray">{t("共 {count} 个 SKU", { count: product.skus.length })}</Text>
         </div>
         <div className="core-sku-detail-heading-actions">
           {canEnhanceImages ? <Button size="2" variant="soft" color="blue" disabled={!selectedSkuIds.size} onClick={() => { onEnhanceSkus(product.id, [...selectedSkuIds]); setSelectedSkuIds(new Set()); }}><Sparkle />{t("图片变清晰")}</Button> : null}
@@ -3148,7 +3214,10 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
                   className="core-sku-detail-main"
                   aria-expanded={expanded}
                   aria-controls={`sku-details-${sku.id}`}
-                  onClick={() => toggleSkuDetails(sku.id)}
+                  onClick={() => {
+                    if (canManageSku) editSku(sku.id);
+                    else toggleSkuDetails(sku.id);
+                  }}
                 >
                   <Tag />
                   <span>
@@ -3168,10 +3237,15 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
                 </Badge>
                 <Badge color={skuStatusColor(sku.status)}>{t(skuStatusLabel[sku.status])}</Badge>
                 <div className="core-sku-detail-actions">
-                  <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
-                    <CaretDown className="core-sku-detail-action-caret" data-expanded={expanded || undefined} />{t(expanded ? "收起" : "展开")}
-                  </Button>
-                  {canManageSku ? <Button size="1" variant="soft" color="gray" onClick={() => editSku(sku.id)}><PencilSimple />{t(editing ? "取消编辑" : "编辑")}</Button> : null}
+                  {canManageSku ? (
+                    <Button size="1" variant={editing ? "solid" : "soft"} color={editing ? undefined : "gray"} onClick={() => editSku(sku.id)}>
+                      {editing ? <X /> : <PencilSimple />}{t(editing ? "收起" : "编辑")}
+                    </Button>
+                  ) : (
+                    <Button size="1" variant="ghost" color="gray" onClick={() => toggleSkuDetails(sku.id)}>
+                      <CaretDown className="core-sku-detail-action-caret" data-expanded={expanded || undefined} />{t(expanded ? "收起" : "查看")}
+                    </Button>
+                  )}
                   {canEdit ? (
                     <Button
                       size="1"
@@ -3185,7 +3259,7 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
                   ) : null}
                 </div>
               </div>
-              {expanded ? (
+              {expanded && !editing ? (
                 <div className="core-sku-expanded-details" id={`sku-details-${sku.id}`}>
                   <div className="core-sku-expanded-field is-wide">
                     <span>{t("规格")}</span>
@@ -3211,7 +3285,7 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
                   managedTags={managedTags}
                   onCancel={() => setEditingSkuId(undefined)}
                   onRefresh={async () => { await loadOffers(); await onChanged(); }}
-                  onChanged={async () => { await loadOffers(); await onChanged(); setEditingSkuId(undefined); }}
+                  onChanged={async () => { await loadOffers(); await onChanged(); }}
                 />
               ) : null}
             </Card>
@@ -3277,6 +3351,9 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     const numericPackingQuantity = packingQuantity.trim() ? Number(packingQuantity) : null;
     const numericWeight = weight.trim() ? Number(weight) : null;
     const numericPrice = Number(price || "0");
+    const normalizedOptionKeys = optionRows
+      .map((row) => row.key.trim().toLocaleLowerCase())
+      .filter(Boolean);
     if (
       (numericMoq !== null && (!Number.isFinite(numericMoq) || numericMoq < 0))
       || (numericPackingQuantity !== null && (!Number.isFinite(numericPackingQuantity) || numericPackingQuantity < 0))
@@ -3284,6 +3361,18 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
       || (canPublishOffer && (!Number.isFinite(numericPrice) || numericPrice < 0))
     ) {
       setError(t("起订数、装箱数和价格必须是大于或等于 0 的数字。"));
+      return;
+    }
+    if (canEditSku && !skuCode.trim()) {
+      setError(t("SKU 编码不能为空。"));
+      return;
+    }
+    if (new Set(normalizedOptionKeys).size !== normalizedOptionKeys.length) {
+      setError(t("规格名称不能重复。"));
+      return;
+    }
+    if (optionRows.some((row) => row.isVariant && (!row.key.trim() || !row.value.trim()))) {
+      setError(t("前台可选规格必须同时填写规格名称和规格值。"));
       return;
     }
     setBusy(true);
@@ -3351,47 +3440,68 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
 
   return (
     <div className="core-sku-quick-editor">
-      <div className="core-sku-quick-fields">
-        {canEditSku ? <>
-          <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
-          {sku.sourceSkuCode !== undefined ? <label><Text size="1" color="gray">{t("来源 SKU")}</Text><TextField.Root value={sourceSkuCode} onChange={(event) => setSourceSkuCode(event.target.value)} /></label> : null}
-          <label><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
-          <label><Text size="1" color="gray">{t("条码")}</Text><TextField.Root value={barcode} onChange={(event) => setBarcode(event.target.value)} /></label>
+      <div className="core-sku-quick-actions">
+        <Button variant="ghost" color="gray" disabled={busy} onClick={onCancel}>{t("取消")}</Button>
+        <Button size="3" disabled={busy} loading={busy} onClick={() => void save()}>{t(busy ? "保存中…" : "保存")}</Button>
+      </div>
+      <section className="core-sku-editor-section is-storefront">
+        <div className="core-sku-editor-section-heading">
+          <Text size="2" weight="bold">{t("前台展示")}</Text>
+        </div>
+        <div className="core-sku-quick-fields core-sku-storefront-fields">
+          {canEditSku ? <>
+            <label className="is-wide"><Text size="1" color="gray">{t("SKU 名称")}</Text><TextField.Root value={skuName} onChange={(event) => setSkuName(event.target.value)} /></label>
+            <label><Text size="1" color="gray">{t("SKU 编码")}</Text><TextField.Root value={skuCode} onChange={(event) => setSkuCode(event.target.value)} /></label>
+            <label><Text size="1" color="gray">{t("状态")}</Text><select value={skuStatus} onChange={(event) => setSkuStatus(event.target.value as ProductSku["status"])}><option value="DRAFT">{t("草稿")}</option><option value="ACTIVE">{t("在售")}</option><option value="INACTIVE">{t("已下架")}</option><option value="ARCHIVED">{t("已归档")}</option></select></label>
+          </> : null}
+          {canPublishOffer ? <>
+            <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
+            <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
+            <label><Text size="1" color="gray">{t("是否发布")}</Text><select value={publicationStatus} onChange={(event) => setPublicationStatus(event.target.value as PublicCatalogOffer["publicationStatus"])} disabled={busy}>
+              <option value="DRAFT">{t("未发布")}</option>
+              <option value="PUBLISHED">{t("已发布")}</option>
+              <option value="SUSPENDED">{t("暂停公开")}</option>
+            </select></label>
+          </> : null}
+        </div>
+        {canEditSku ? <div className="core-sku-option-editor">
+          <div className="core-sku-option-editor-heading"><Text size="2" weight="bold">{t("商品规格")}</Text><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "", isVariant: true }])}><Plus />{t("添加规格")}</Button></div>
+          {optionRows.length ? <div className="core-sku-option-editor-list">
+            <div className="core-sku-option-editor-labels"><span>{t("前台展示")}</span><span>{t("规格名称")}</span><span>{t("规格值")}</span><span /></div>
+            {optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={`${row.key}-${index}`}>
+              <label className="core-sku-option-editor-variant">
+                <Checkbox checked={row.isVariant} onCheckedChange={(checked) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, isVariant: checked === true } : item))} />
+                <span>{t("前台展示")}</span>
+              </label>
+              <TextField.Root value={row.key} placeholder={t("规格名称")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
+              <TextField.Root value={row.value} placeholder={t("规格值")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
+              <Button size="1" variant="ghost" color="red" aria-label={t("删除规格")} onClick={() => setOptionRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
+            </div>)}
+          </div> : <Text size="1" color="gray">{t("暂无规格")}</Text>}
+        </div> : null}
+        {canPublishOffer ? <div className="core-sku-quick-tags">
+          <Text size="1" color="gray">{t("选择标签")}</Text>
+          <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />
+        </div> : null}
+      </section>
+      {canEditSku ? <section className="core-sku-editor-section">
+        <div className="core-sku-editor-section-heading"><Text size="2" weight="bold">{t("起订数")} · {t("装箱数")}</Text></div>
+        <div className="core-sku-quick-fields core-sku-packing-fields">
           <label><Text size="1" color="gray">{t("起订数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={defaultMoq} onChange={(event) => setDefaultMoq(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("起订单位")}</Text><TextField.Root maxLength={32} value={moqUnit} onChange={(event) => setMoqUnit(event.target.value)} placeholder="piece" /></label>
           <label><Text size="1" color="gray">{t("装箱数")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={packingQuantity} onChange={(event) => setPackingQuantity(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("毛重")}</Text><TextField.Root type="number" min="0" step="0.000001" inputMode="decimal" value={weight} onChange={(event) => setWeight(event.target.value)} /></label>
           <label><Text size="1" color="gray">{t("重量单位")}</Text><TextField.Root maxLength={32} value={weightUnit} onChange={(event) => setWeightUnit(event.target.value)} placeholder="kg" /></label>
-          <label><Text size="1" color="gray">{t("状态")}</Text><select value={skuStatus} onChange={(event) => setSkuStatus(event.target.value as ProductSku["status"])}><option value="DRAFT">{t("草稿")}</option><option value="ACTIVE">{t("在售")}</option><option value="INACTIVE">{t("已下架")}</option><option value="ARCHIVED">{t("已归档")}</option></select></label>
-        </> : null}
-        {canPublishOffer ? <>
-          <label><Text size="1" color="gray">{t("公开价")}</Text><TextField.Root type="number" min="0" step="0.01" value={price} onChange={(event) => setPrice(event.target.value)} /></label>
-          <label><Text size="1" color="gray">{t("币种")}</Text><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option>CNY</option><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option></select></label>
-          <label><Text size="1" color="gray">{t("是否发布")}</Text><select value={publicationStatus} onChange={(event) => setPublicationStatus(event.target.value as PublicCatalogOffer["publicationStatus"])} disabled={busy}>
-            <option value="DRAFT">{t("未发布")}</option>
-            <option value="PUBLISHED">{t("已发布")}</option>
-            <option value="SUSPENDED">{t("暂停公开")}</option>
-          </select></label>
-        </> : null}
-      </div>
-      {canEditSku ? <div className="core-sku-option-editor">
-        <div className="core-sku-option-editor-heading"><div><Text size="2" weight="bold">{t("商品规格")}</Text><Text size="1" color="gray">{t("规格字段")}</Text></div><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "", isVariant: true }])}><Plus />{t("添加规格")}</Button></div>
-        {optionRows.length ? optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={`${row.key}-${index}`}>
-          <span className="core-sku-option-editor-variant">{row.isVariant ? <Badge color="jade" variant="soft">{t("商品规格")}</Badge> : null}</span>
-          <TextField.Root value={row.key} placeholder={t("规格名称")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))} />
-          <TextField.Root value={row.value} placeholder={t("规格值")} onChange={(event) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} />
-          <Button size="1" variant="ghost" color="red" aria-label={t("删除规格")} onClick={() => setOptionRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash /></Button>
-        </div>) : <Text size="1" color="gray">{t("暂无规格")}</Text>}
-      </div> : null}
-      {canPublishOffer ? <div className="core-sku-quick-tags">
-        <Text size="1" color="gray">{t("选择标签")}</Text>
-        <ManagedTagPicker tags={managedTags} selected={selectedTags} onChange={setSelectedTags} disabled={busy} />
-      </div> : <Text size="1" color="gray">{t("当前角色没有目录发布权限。")}</Text>}
+        </div>
+      </section> : null}
+      {canEditSku ? <details className="core-sku-internal-fields">
+        <summary><span>{t("更多信息")}</span><CaretDown aria-hidden="true" /></summary>
+        <div className="core-sku-quick-fields">
+          {sku.sourceSkuCode !== undefined ? <label><Text size="1" color="gray">{t("来源 SKU")}</Text><TextField.Root value={sourceSkuCode} onChange={(event) => setSourceSkuCode(event.target.value)} /></label> : null}
+          <label><Text size="1" color="gray">{t("条码")}</Text><TextField.Root value={barcode} onChange={(event) => setBarcode(event.target.value)} /></label>
+        </div>
+      </details> : null}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}
-      <div className="core-sku-quick-actions">
-        <Button variant="ghost" color="gray" disabled={busy} onClick={onCancel}>{t("取消")}</Button>
-        <Button disabled={busy} onClick={() => void save()}>{t(busy ? "保存中…" : "保存")}</Button>
-      </div>
     </div>
   );
 }

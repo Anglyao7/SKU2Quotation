@@ -53,7 +53,7 @@ export function createImageSwipeHandlers(onSwipe: (step: -1 | 1) => void): DOMAt
       suppressClick = false;
       release();
       const control = (event.target as Element).closest("button, a, input, textarea, select, [role='button']");
-      // Arrow buttons inside the lightbox keep their own normal clicks.
+      // Nested controls keep their own normal clicks.
       if (control && control !== event.currentTarget) return;
       gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, element: event.currentTarget };
       event.currentTarget.setPointerCapture(event.pointerId);

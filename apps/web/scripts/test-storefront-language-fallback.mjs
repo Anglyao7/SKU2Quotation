@@ -108,7 +108,7 @@ assert.ok(
   (appSource.match(/if \(accountKey && accountId\)/g) || []).length >= 4
     && appSource.includes("`${storefrontBasePath(store.slug)}/products/")
     && appSource.includes("`${storefrontBasePath(store.slug)}/skus/")
-    && appSource.includes('const suffix = /\\/me\\/?$/u.test(currentUrl.pathname) ? "/me" : "";'),
+    && appSource.includes('const suffix = /\\/me\\/(?:orders|history|favorites)\\/?$/u.test(currentUrl.pathname)'),
   "Legacy child storefront URLs must redirect to canonical account-only paths",
 );
 

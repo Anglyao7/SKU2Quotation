@@ -29,6 +29,7 @@ import {
   FloppyDisk,
   ImageSquare,
   Info,
+  MagnifyingGlassPlus,
   BookOpen,
   LockKey,
   Palette,
@@ -90,12 +91,14 @@ import { ProformaInvoicePanel } from "./ProformaInvoicePanel";
 import { DocumentPreviewModeSwitch } from "./DocumentPreviewModeSwitch";
 import type { DocumentPreviewMode } from "../documentExcelPreview";
 import { quoteDocumentSearch, quoteDocumentTab, type QuoteDocumentTab } from "../quoteDocumentNavigation";
+import { availableQuoteLocales } from "../quoteLocaleAvailability";
 import "./QuoteWorkbenchPage.css";
 
 type QuoteDocumentStyle = PublicQuoteDraft["documentStyle"];
 type QuoteItemEditField = "unitPrice" | "quantity" | "name" | "description" | "specification" | "category" | "unitCode";
 type QuoteItemEdit = Partial<Record<QuoteItemEditField, string>>;
 type PreviewPan = { x: number; y: number };
+type QuoteItemImagePreview = { src: string; alt: string };
 type ExcelPreviewColumn = {
   key: string;
   header: string;
@@ -499,6 +502,7 @@ export function QuoteWorkbenchPage() {
   const [manualOpen, setManualOpen] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [switchingLocale, setSwitchingLocale] = useState<StorefrontLocale>();
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [statusUpdating, setStatusUpdating] = useState<"COMPLETED" | "CANCELLED" | null>(null);
@@ -511,6 +515,7 @@ export function QuoteWorkbenchPage() {
   const [bulkSaving, setBulkSaving] = useState(false);
   const [itemsDrawerOpen, setItemsDrawerOpen] = useState(false);
   const [selectedItemId, setSelectedItemId] = useState<string>();
+  const [itemImagePreview, setItemImagePreview] = useState<QuoteItemImagePreview>();
   const [priceDrafts, setPriceDrafts] = useState<Record<string, string>>({});
   const [savingItemId, setSavingItemId] = useState<string>();
   const [syncingItemId, setSyncingItemId] = useState<string>();
@@ -547,12 +552,16 @@ export function QuoteWorkbenchPage() {
     panY: number;
   } | undefined>(undefined);
 
+  const enabledLocaleCodes = useMemo(() => availableQuoteLocales(settings), [settings]);
   const enabledLocales = useMemo(() => {
-    const allowed = settings?.storefrontLocales;
-    if (!allowed?.length) return locales;
-    return locales.filter((row) => allowed.includes(row.value));
-  }, [settings?.storefrontLocales]);
-
+    const allowed = new Set(enabledLocaleCodes);
+    return locales.filter((row) => allowed.has(row.value));
+  }, [enabledLocaleCodes]);
+  const localeOptions = useMemo(() => (
+    enabledLocales.length
+      ? enabledLocales
+      : locales.filter((row) => row.value === locale)
+  ), [enabledLocales, locale]);
   useEffect(() => {
     if (!profile?.context.subscriptionTier || canUseExtendedDocuments) return;
     if (requestedDocument === "quotation") return;
@@ -621,6 +630,10 @@ export function QuoteWorkbenchPage() {
   // Keep this flag at the UI boundary as well as enforcing it in the API so a
   // read-only workbench never sends a mutation that is guaranteed to fail.
   const isReadOnly = Boolean(draft?.readOnly);
+  const localeSelectionDisabled = Boolean(draft?.readOnly)
+    || saving
+    || Boolean(switchingLocale)
+    || enabledLocales.length <= 1;
   const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const documentSellerName = isCustomerSubaccount
     ? profile?.user.displayName?.trim() || ""
@@ -1017,6 +1030,23 @@ export function QuoteWorkbenchPage() {
       setSaving(false);
     }
   }, [activeDocument, canUseExtendedDocuments, notify, t]);
+
+  const changeDocumentLocale = useCallback(async (value: string) => {
+    const nextLocale = value as StorefrontLocale;
+    if (
+      !draft
+      || nextLocale === locale
+      || switchingLocale
+      || !enabledLocaleCodes.includes(nextLocale)
+    ) return;
+    const previousLocale = locale;
+    const payload = { ...latestSettingsRef.current, locale: nextLocale };
+    setLocale(nextLocale);
+    setSwitchingLocale(nextLocale);
+    const updated = await persistSettings(draft, payload, true);
+    if (!updated) setLocale(previousLocale);
+    setSwitchingLocale(undefined);
+  }, [draft, enabledLocaleCodes, locale, persistSettings, switchingLocale]);
 
   const save = useCallback(async () => {
     if (!draft) return draft;
@@ -1588,7 +1618,7 @@ export function QuoteWorkbenchPage() {
           </DropdownMenu.Root>
         </div>
         <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}><span className="quote-style-swatch" style={{ backgroundColor: option.color }} aria-hidden="true" />{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
-        <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
+        <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled}><Select.Trigger>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
       </div>
       <div className="quote-workbench-actions">
         <Button variant="soft" color="blue" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || converting} loading={converting} onClick={openCurrencyConversion}><CurrencyDollar />{t("币种")} · {normalizedCurrency(draft.currency)}</Button>
@@ -1773,7 +1803,7 @@ export function QuoteWorkbenchPage() {
       </Dialog.Content>
     </Dialog.Root>
 
-    <Dialog.Root open={itemsDrawerOpen} onOpenChange={(open) => { setItemsDrawerOpen(open); if (!open) setSelectedItemId(undefined); }}>
+    <Dialog.Root open={itemsDrawerOpen} onOpenChange={(open) => { setItemsDrawerOpen(open); if (!open) { setSelectedItemId(undefined); setItemImagePreview(undefined); } }}>
       <Dialog.Content className="quote-item-detail-dialog" aria-describedby="quote-items-drawer-description">
         <div className="quote-items-drawer-header">
           <div>
@@ -1791,7 +1821,17 @@ export function QuoteWorkbenchPage() {
         {selectedDrawerItem ? (
           <div className="quote-item-detail-scroll quote-item-detail">
             <div className="quote-item-detail-hero">
-              {selectedDrawerItem.imageUrl ? <img src={selectedDrawerItem.imageUrl} alt={selectedDrawerItem.name} /> : <span className="quote-item-image-placeholder"><ImageSquare size={32} /></span>}
+              {selectedDrawerItem.imageUrl ? (
+                <button
+                  type="button"
+                  className="quote-item-detail-image-trigger"
+                  aria-label={t("查看大图")}
+                  onClick={() => setItemImagePreview({ src: selectedDrawerItem.imageUrl!, alt: selectedDrawerItem.name })}
+                >
+                  <img src={selectedDrawerItem.imageUrl} alt={selectedDrawerItem.name} />
+                  <span className="quote-item-detail-image-affordance" aria-hidden="true"><MagnifyingGlassPlus weight="bold" /><span>{t("查看大图")}</span></span>
+                </button>
+              ) : <span className="quote-item-image-placeholder"><ImageSquare size={32} /></span>}
               <div className="quote-item-detail-title">
                 <Heading size="4">{selectedDrawerItem.name}</Heading>
                 <Text size="1" color="gray" className="mono-text">{selectedDrawerItem.skuCode}</Text>
@@ -1835,6 +1875,21 @@ export function QuoteWorkbenchPage() {
             ) : null}
           </div>
         ) : <div className="quote-item-detail-empty"><Info size={20} /><Text size="2" color="gray">{t("正在读取商品详情…")}</Text></div>}
+      </Dialog.Content>
+    </Dialog.Root>
+
+    <Dialog.Root open={Boolean(itemImagePreview)} onOpenChange={(open) => { if (!open) setItemImagePreview(undefined); }}>
+      <Dialog.Content className="quote-item-image-preview-dialog">
+        <Dialog.Title className="visually-hidden">{itemImagePreview?.alt ?? t("查看大图")}</Dialog.Title>
+        <Dialog.Description className="visually-hidden">{t("查看大图")}</Dialog.Description>
+        <Dialog.Close>
+          <IconButton type="button" className="quote-item-image-preview-close" size="3" variant="soft" color="gray" aria-label={t("关闭图片预览")}>
+            <X weight="bold" />
+          </IconButton>
+        </Dialog.Close>
+        <div className="quote-item-image-preview-stage">
+          {itemImagePreview ? <img src={itemImagePreview.src} alt={itemImagePreview.alt} /> : null}
+        </div>
       </Dialog.Content>
     </Dialog.Root>
 
@@ -1908,12 +1963,12 @@ export function QuoteWorkbenchPage() {
       <Tabs.Content value="proforma">
         <ProformaInvoicePanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} invoice={proformaInvoice} onChange={updateProformaInvoice} items={draft.items.map(effectiveItem)} itemEditor={renderOrderItemsEditor()} locale={locale} sellerName={documentSellerName} accent={selectedStyle.color} readOnly={isReadOnly} saving={saving || savingItems} exporting={downloading} dirty={hasPendingItemEdits || !quoteSettingsEqual(savedSettingsRef.current, currentSettings)} onSave={() => void save()} onExport={(format) => void download(format)} settingsControls={<>
           <div className="packing-field"><span>{t("PDF 样式")}</span><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly || saving || Boolean(downloading)}><Select.Trigger aria-label={t("PDF 样式")} /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></div>
-          <div className="packing-field"><span>{quoteText(locale, "language")}</span><Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly || saving || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")} /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></div>
+          <div className="packing-field"><span>{quoteText(locale, "language")}</span><Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")}>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></div>
           <div className="packing-field"><span>{quoteText(locale, "currency")}</span><Button variant="soft" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || saving || Boolean(downloading)} onClick={openCurrencyConversion}>{draft.currency}</Button></div>
         </>} />
       </Tabs.Content>
       <Tabs.Content value="packing-list">
-        {packingList ? <PackingListPanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} value={packingList} onChange={setPackingList} locale={locale} sellerName={documentSellerName} readOnly={isReadOnly} saving={saving} onSave={() => void save()} onExport={(format) => void download(format)} exporting={downloading} dirty={!quoteSettingsEqual(savedSettingsRef.current, currentSettings)} languageControl={<Select.Root value={locale} onValueChange={(value) => setLocale(value as StorefrontLocale)} disabled={isReadOnly || saving || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")} /><Select.Content position="popper">{enabledLocales.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root>} /> : <CoreLoading />}
+        {packingList ? <PackingListPanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} value={packingList} onChange={setPackingList} locale={locale} sellerName={documentSellerName} readOnly={isReadOnly} saving={saving} onSave={() => void save()} onExport={(format) => void download(format)} exporting={downloading} dirty={!quoteSettingsEqual(savedSettingsRef.current, currentSettings)} languageControl={<Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")}>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root>} /> : <CoreLoading />}
       </Tabs.Content>
       {(["sales-contract", "commercial-invoice", "customs-declaration"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
       </section>

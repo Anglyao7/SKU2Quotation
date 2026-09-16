@@ -1,6 +1,6 @@
 import { Dialog, IconButton } from "@radix-ui/themes";
-import { CaretLeft, CaretRight, MagnifyingGlassPlus, X } from "@phosphor-icons/react";
-import { useEffect, useLayoutEffect, useMemo, useState, type MouseEvent } from "react";
+import { MagnifyingGlassPlus, X } from "@phosphor-icons/react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createImageSwipeHandlers } from "../lib/imageSwipe";
 
 interface ProductImagePreviewProps {
@@ -9,8 +9,6 @@ interface ProductImagePreviewProps {
   alt: string;
   openLabel: string;
   closeLabel: string;
-  previousLabel?: string;
-  nextLabel?: string;
   onError: () => void;
 }
 
@@ -20,8 +18,6 @@ export function ProductImagePreview({
   alt,
   openLabel,
   closeLabel,
-  previousLabel = "查看上一张图片",
-  nextLabel = "查看下一张图片",
   onError,
 }: ProductImagePreviewProps) {
   const imageUrls = useMemo(
@@ -86,19 +82,6 @@ export function ProductImagePreview({
       .finally(() => markLoaded(url));
   };
 
-  const showPrevious = imageUrls.length > 1 && activeIndex > 0;
-  const showNext = imageUrls.length > 1 && activeIndex < imageUrls.length - 1;
-  const goPrevious = (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setActiveIndex((current) => Math.max(0, current - 1));
-  };
-  const goNext = (event: MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setActiveIndex((current) => Math.min(imageUrls.length - 1, current + 1));
-  };
-
   return (
     <Dialog.Root>
       <div className="sku-detail-image-gallery">
@@ -132,26 +115,6 @@ export function ProductImagePreview({
             </span>
           </button>
         </Dialog.Trigger>
-        {showPrevious ? (
-          <button
-            type="button"
-            className="product-image-gallery-nav is-previous"
-            aria-label={previousLabel}
-            onClick={goPrevious}
-          >
-            <CaretLeft weight="bold" />
-          </button>
-        ) : null}
-        {showNext ? (
-          <button
-            type="button"
-            className="product-image-gallery-nav is-next"
-            aria-label={nextLabel}
-            onClick={goNext}
-          >
-            <CaretRight weight="bold" />
-          </button>
-        ) : null}
         {imageUrls.length > 1 ? (
           <span className="product-image-gallery-count" aria-live="polite">
             {activeIndex + 1} / {imageUrls.length}
@@ -188,26 +151,6 @@ export function ProductImagePreview({
             onLoad={(event) => markDecoded(activeSrc, event.currentTarget)}
             onError={() => markFailed(activeSrc)}
           />
-          {showPrevious ? (
-            <button
-              type="button"
-              className="product-image-lightbox-nav is-previous"
-              aria-label={previousLabel}
-              onClick={goPrevious}
-            >
-              <CaretLeft weight="bold" />
-            </button>
-          ) : null}
-          {showNext ? (
-            <button
-              type="button"
-              className="product-image-lightbox-nav is-next"
-              aria-label={nextLabel}
-              onClick={goNext}
-            >
-              <CaretRight weight="bold" />
-            </button>
-          ) : null}
         </div>
       </Dialog.Content>
     </Dialog.Root>

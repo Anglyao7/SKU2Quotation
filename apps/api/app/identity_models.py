@@ -108,6 +108,21 @@ class TenantRow(AuditTimestampMixin, Base):
     default_locale: Mapped[str] = mapped_column(String(20), default="zh-CN", nullable=False)
     default_currency: Mapped[str] = mapped_column(String(3), default="CNY", nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", nullable=False)
+    dashboard_timezones: Mapped[list[str]] = mapped_column(
+        JSON_DOCUMENT,
+        default=lambda: [
+            "china",
+            "united_states",
+            "spain",
+            "turkey",
+            "arab_region",
+            "united_arab_emirates",
+            "united_kingdom",
+            "japan",
+            "south_korea",
+        ],
+        nullable=False,
+    )
     identity_code: Mapped[str] = mapped_column(
         ForeignKey("merchant_identity_profiles.code", ondelete="RESTRICT"),
         default=DEFAULT_MERCHANT_IDENTITY,

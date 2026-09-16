@@ -6,6 +6,10 @@ const source = await fs.readFile(new URL("../src/core/quoteDocumentNavigation.ts
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
 const { quoteDocumentTab, quoteDocumentSearch, quoteDocumentHref } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
+const localeAvailabilitySource = await fs.readFile(new URL("../src/core/quoteLocaleAvailability.ts", import.meta.url), "utf8");
+const localeAvailabilityCompiled = ts.transpileModule(localeAvailabilitySource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
+const { availableQuoteLocales } = await import(`data:text/javascript;base64,${Buffer.from(localeAvailabilityCompiled).toString("base64")}`);
+
 assert.equal(quoteDocumentTab(new URLSearchParams()), "quotation");
 assert.equal(quoteDocumentTab(new URLSearchParams("document=unknown")), "quotation");
 for (const tab of ["quotation", "proforma", "sales-contract", "commercial-invoice", "packing-list", "customs-declaration"]) {
@@ -18,4 +22,15 @@ assert.equal(next.get("document"), "proforma");
 assert.equal(current.get("document"), "commercial-invoice");
 assert.equal(quoteDocumentHref("draft-123", "proforma"), "/console/quotes/draft-123/workbench?document=proforma");
 assert.equal(quoteDocumentHref("id/with?query", "proforma"), "/console/quotes/id%2Fwith%3Fquery/workbench?document=proforma");
+assert.deepEqual(availableQuoteLocales(undefined), []);
+assert.deepEqual(availableQuoteLocales({
+  storefrontLocales: ["zh-CN", "en-US", "es", "en-US"],
+  configuredStorefrontLocales: ["zh-CN", "en-US"],
+}), ["zh-CN", "en-US"]);
+
+const workbench = await fs.readFile(new URL("../src/core/pages/QuoteWorkbenchPage.tsx", import.meta.url), "utf8");
+assert.ok(workbench.includes('className="quote-item-detail-image-trigger"'), "Quote item detail images must expose a large-image action");
+assert.ok(workbench.includes('className="quote-item-image-preview-dialog"'), "Quote item images must open in a dedicated lightbox");
+assert.ok(workbench.includes('aria-label={t("关闭图片预览")}'), "The image lightbox must have an accessible close action");
+assert.ok(workbench.includes("changeDocumentLocale"), "Quote language changes must persist immediately so localized item data refreshes");
 console.log("Document tabs: PI/CI separation, direct entry, reload state and invalid fallback passed");

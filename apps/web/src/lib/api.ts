@@ -79,6 +79,7 @@ interface StoreSkuFilters {
   includeFacets?: boolean;
   page?: number;
   locale?: StorefrontLocale;
+  searchLocale?: StorefrontLocale;
   sourceLocale?: StorefrontLocale;
   shareToken?: string;
   accountId?: string;
@@ -457,6 +458,7 @@ async function getCachedStoreProducts(
   // Request source content explicitly: an omitted locale can invoke the
   // merchant's default-language translation again on the server.
   params.set("locale", filters.sourceLocale || "zh-CN");
+  if (filters.searchLocale) params.set("search_locale", filters.searchLocale);
   if (filters.q) params.set("q", filters.q);
   if (filters.category) params.set("category", filters.category);
   if (filters.tags?.length) params.set("tags", filters.tags.join(","));

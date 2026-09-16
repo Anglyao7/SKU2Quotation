@@ -9,14 +9,17 @@ from sqlalchemy.orm import Session
 
 from ..db_models import SupplierRow
 from ..domain.errors import ApplicationError
+from ..identity_models import TenantRow
 from ..model_mixins import mark_deleted
 from ..repositories import workspace_repository as repository
 from ..services import query_cache
-from ..services.world_market import get_dashboard_market_snapshot
+from ..services.world_market import get_dashboard_market_snapshot, normalize_location_keys
 from ..workspace_schemas import (
     DashboardDataHealth,
     DashboardMetric,
     DashboardResponse,
+    DashboardTimezoneSettingsRequest,
+    DashboardTimezoneSettingsResponse,
     SupplyChainCreateRequest,
     SupplyChainPageResponse,
     SupplyChainUpdateRequest,
@@ -61,6 +64,7 @@ def get_dashboard(
         account_scope != "CUSTOMER_SUBACCOUNT"
         and bool({"system.user_manage", "supplier.manage", "quotation.approve"} & permissions)
     )
+    tenant = session.get(TenantRow, tenant_id) if isinstance(session, Session) else None
     cache_slot = query_cache.lookup(
         tenant_id=tenant_id,
         domain=query_cache.DOMAIN_DASHBOARD,
@@ -97,8 +101,6 @@ def get_dashboard(
         metrics.append(DashboardMetric(key="pending_quotations", label="待确认报价", value=data["pending_quotes"], destination="/quotations"))
     if "product.review" in permissions:
         metrics.append(DashboardMetric(key="pending_product_reviews", label="等待复核", value=data["pending_reviews"], destination="/review"))
-    if "supplier.view" in permissions:
-        metrics.append(DashboardMetric(key="active_suppliers", label="合作供应链", value=data["active_suppliers"], destination="/supply-chain"))
 
     active_products = int(data["active_products"])
     data_health = None
@@ -133,7 +135,10 @@ def get_dashboard(
         # remains on the product/SKU records and import-job detail screens.
         recent_imports=[],
         data_health=data_health,
-        market=get_dashboard_market_snapshot(now),
+        market=get_dashboard_market_snapshot(
+            now,
+            location_keys=tenant.dashboard_timezones if tenant is not None else None,
+        ),
     )
     query_cache.store(
         cache_slot,
@@ -145,6 +150,37 @@ def get_dashboard(
         ),
     )
     return response
+
+
+def update_dashboard_timezones(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    account_scope: str,
+    request: DashboardTimezoneSettingsRequest,
+) -> DashboardTimezoneSettingsResponse:
+    """Persist the world-clock cards visible on the merchant dashboard."""
+
+    if account_scope == "CUSTOMER_SUBACCOUNT":
+        raise ApplicationError(
+            "PERMISSION_DENIED",
+            "Customer subaccounts cannot change merchant dashboard settings.",
+            kind="forbidden",
+        )
+    _require_any(permissions, "product.view", "inquiry.view", "quotation.view", "supplier.view")
+    tenant = session.get(TenantRow, tenant_id)
+    if tenant is None:
+        raise ApplicationError("TENANT_NOT_FOUND", "Tenant was not found.", kind="not_found")
+    selected = list(normalize_location_keys(request.timezones))
+    tenant.dashboard_timezones = selected
+    query_cache.mark_tenant_dirty(
+        session,
+        tenant_id=tenant_id,
+        domains=(query_cache.DOMAIN_DASHBOARD,),
+    )
+    session.commit()
+    return DashboardTimezoneSettingsResponse(timezones=selected)
 
 
 def _score(row: object | None) -> SupplierScoreSummary | None:

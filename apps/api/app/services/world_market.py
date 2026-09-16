@@ -27,6 +27,7 @@ import httpx
 from ..workspace_schemas import (
     DashboardExchangeRate,
     DashboardMarketSnapshot,
+    DashboardTimezoneOption,
     DashboardWorldTime,
 )
 
@@ -112,11 +113,46 @@ _CURRENCY_META: dict[str, tuple[str, str]] = {
     "ZAR": ("南非兰特", "R"),
 }
 
+DEFAULT_LOCATION_KEYS: tuple[str, ...] = tuple(location.key for location in LOCATIONS)
+_LOCATION_BY_KEY = {location.key: location for location in LOCATIONS}
+
 _CACHE_LOCK = RLock()
-_CACHE: DashboardMarketSnapshot | None = None
-_CACHE_AT = 0.0
+_CACHE: dict[tuple[str, ...], DashboardMarketSnapshot] = {}
+_CACHE_AT: dict[tuple[str, ...], float] = {}
 _RATE_CACHE: DashboardMarketSnapshot | None = None
 _RATE_CACHE_AT = 0.0
+
+
+def normalize_location_keys(value: object | None) -> tuple[str, ...]:
+    """Return configured location keys in the canonical market order.
+
+    ``None`` means the legacy/default dashboard set. An explicitly empty list
+    is preserved so an owner can temporarily hide every clock and add them
+    back later from the dashboard controls.
+    """
+
+    if value is None:
+        return DEFAULT_LOCATION_KEYS
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return DEFAULT_LOCATION_KEYS
+    selected = {str(item).strip() for item in value if str(item).strip()}
+    return tuple(location.key for location in LOCATIONS if location.key in selected)
+
+
+def location_options() -> list[DashboardTimezoneOption]:
+    return [
+        DashboardTimezoneOption(
+            key=location.key,
+            label=location.label,
+            city=location.city,
+            country_code=location.country_code,
+            flag=location.flag,
+            language=location.language,
+            timezone=location.timezone,
+            currency=location.currency,
+        )
+        for location in LOCATIONS
+    ]
 
 
 def _cache_seconds() -> int:
@@ -285,17 +321,22 @@ def _fetch_exchange_rates(previous: DashboardMarketSnapshot | None) -> tuple[lis
         return fallback, fallback_date, "cached" if previous is not None else "fallback"
 
 
-def _snapshot(observed_at: datetime, previous: DashboardMarketSnapshot | None) -> DashboardMarketSnapshot:
+def _snapshot(
+    observed_at: datetime,
+    previous: DashboardMarketSnapshot | None,
+    location_keys: tuple[str, ...] = DEFAULT_LOCATION_KEYS,
+) -> DashboardMarketSnapshot:
+    locations = [_LOCATION_BY_KEY[key] for key in location_keys if key in _LOCATION_BY_KEY]
     times: list[DashboardWorldTime] = []
-    with ThreadPoolExecutor(max_workers=min(8, len(LOCATIONS))) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(locations)))) as executor:
         futures = {
             executor.submit(_fetch_world_time, location, observed_at): location
-            for location in LOCATIONS
+            for location in locations
         }
         rates_future = executor.submit(_fetch_exchange_rates, previous)
         for future in as_completed(futures):
             times.append(future.result())
-    order = {location.key: index for index, location in enumerate(LOCATIONS)}
+    order = {location.key: index for index, location in enumerate(locations)}
     times.sort(key=lambda item: order.get(item.key, len(order)))
     rates, rate_date, rate_source = rates_future.result()
     time_sources = {item.source for item in times}
@@ -309,6 +350,7 @@ def _snapshot(observed_at: datetime, previous: DashboardMarketSnapshot | None) -
     return DashboardMarketSnapshot(
         observed_at=observed_at,
         world_times=times,
+        available_timezones=location_options(),
         exchange_rates=rates,
         rate_date=rate_date,
         time_source=time_source,
@@ -316,24 +358,30 @@ def _snapshot(observed_at: datetime, previous: DashboardMarketSnapshot | None) -
     )
 
 
-def get_dashboard_market_snapshot(observed_at: datetime | None = None) -> DashboardMarketSnapshot:
+def get_dashboard_market_snapshot(
+    observed_at: datetime | None = None,
+    location_keys: object | None = None,
+) -> DashboardMarketSnapshot:
     """Return cached dashboard market context without making it a hard dependency."""
 
     global _CACHE, _CACHE_AT, _RATE_CACHE, _RATE_CACHE_AT
     now = observed_at or datetime.now(UTC)
+    cache_key = normalize_location_keys(location_keys)
     with _CACHE_LOCK:
-        if _CACHE is not None and monotonic() - _CACHE_AT < _cache_seconds():
-            return _CACHE
-        previous = _CACHE
+        cached = _CACHE.get(cache_key)
+        cached_at = _CACHE_AT.get(cache_key, 0.0)
+        if cached is not None and monotonic() - cached_at < _cache_seconds():
+            return cached
+        previous = cached
         try:
-            current = _snapshot(now, previous)
+            current = _snapshot(now, previous, cache_key)
         except Exception as exc:  # pragma: no cover - defensive fail-open guard
             logger.warning("Dashboard market snapshot failed: %s", type(exc).__name__)
-            current = previous or _snapshot_local_only(now)
-        _CACHE = current
-        _CACHE_AT = monotonic()
+            current = previous or _snapshot_local_only(now, cache_key)
+        _CACHE[cache_key] = current
+        _CACHE_AT[cache_key] = monotonic()
         _RATE_CACHE = _rate_only_snapshot(current)
-        _RATE_CACHE_AT = _CACHE_AT
+        _RATE_CACHE_AT = _CACHE_AT[cache_key]
         return current
 
 
@@ -381,18 +429,22 @@ def get_exchange_rate_snapshot(
             and monotonic() - _RATE_CACHE_AT < _rate_cache_seconds(_RATE_CACHE)
         ):
             return _RATE_CACHE
+        default_market = _CACHE.get(DEFAULT_LOCATION_KEYS)
+        default_market_at = _CACHE_AT.get(DEFAULT_LOCATION_KEYS, 0.0)
         if (
-            _CACHE is not None
-            and monotonic() - _CACHE_AT < cache_ttl
-            and _has_foreign_rates(_CACHE)
+            default_market is not None
+            and monotonic() - default_market_at < cache_ttl
+            and _has_foreign_rates(default_market)
         ):
-            _RATE_CACHE = _rate_only_snapshot(_CACHE)
-            _RATE_CACHE_AT = _CACHE_AT
+            _RATE_CACHE = _rate_only_snapshot(default_market)
+            _RATE_CACHE_AT = default_market_at
             return _RATE_CACHE
 
         previous = _RATE_CACHE
-        if previous is None and _CACHE is not None:
-            previous = _rate_only_snapshot(_CACHE)
+        if previous is None:
+            default_market = _CACHE.get(DEFAULT_LOCATION_KEYS)
+            if default_market is not None:
+                previous = _rate_only_snapshot(default_market)
         rates, rate_date, rate_source = _fetch_exchange_rates(previous)
         current = DashboardMarketSnapshot(
             observed_at=now,
@@ -407,10 +459,15 @@ def get_exchange_rate_snapshot(
         return current
 
 
-def _snapshot_local_only(observed_at: datetime) -> DashboardMarketSnapshot:
+def _snapshot_local_only(
+    observed_at: datetime,
+    location_keys: tuple[str, ...] = DEFAULT_LOCATION_KEYS,
+) -> DashboardMarketSnapshot:
+    locations = [_LOCATION_BY_KEY[key] for key in location_keys if key in _LOCATION_BY_KEY]
     return DashboardMarketSnapshot(
         observed_at=observed_at,
-        world_times=[_local_time_fallback(location, observed_at) for location in LOCATIONS],
+        world_times=[_local_time_fallback(location, observed_at) for location in locations],
+        available_timezones=location_options(),
         exchange_rates=_fallback_rates(None),
         time_source="system",
         rate_source="fallback",
@@ -422,7 +479,7 @@ def reset_dashboard_market_cache() -> None:
 
     global _CACHE, _CACHE_AT, _RATE_CACHE, _RATE_CACHE_AT
     with _CACHE_LOCK:
-        _CACHE = None
-        _CACHE_AT = 0.0
+        _CACHE.clear()
+        _CACHE_AT.clear()
         _RATE_CACHE = None
         _RATE_CACHE_AT = 0.0

@@ -16014,6 +16014,76 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
     finally:
         workbook.close()
 
+    gallery_buffer = BytesIO()
+    Image.new("RGB", (240, 160), color=(38, 90, 140)).save(
+        gallery_buffer,
+        format="PNG",
+    )
+    gallery_uploaded = client.post(
+        f"/api/v1/products/{product_id}/images/gallery",
+        files={"image": ("catalog-gallery.png", gallery_buffer.getvalue(), "image/png")},
+    )
+    assert gallery_uploaded.status_code == 201, gallery_uploaded.text
+    gallery_payload = gallery_uploaded.json()
+    gallery_image_id = UUID(gallery_payload["id"])
+    assert gallery_payload["image_role"] == "GALLERY"
+    assert gallery_payload["sort_order"] == 1
+
+    refreshed_detail = client.get(f"/api/v1/products/{product_id}")
+    assert refreshed_detail.status_code == 200, refreshed_detail.text
+    detail_images = refreshed_detail.json()["images"]
+    assert [row["image_role"] for row in detail_images] == ["MAIN", "GALLERY"]
+    assert [UUID(row["id"]) for row in detail_images] == [
+        UUID(uploaded_payload["id"]),
+        gallery_image_id,
+    ]
+
+    with SessionLocal() as session:
+        gallery_row = session.get(ProductImageRow, gallery_image_id)
+        assert gallery_row is not None
+        old_gallery_key = gallery_row.object_key
+
+    gallery_replacement = BytesIO()
+    Image.new("RGB", (200, 200), color=(72, 122, 65)).save(
+        gallery_replacement,
+        format="JPEG",
+    )
+    replaced_gallery = client.post(
+        f"/api/v1/products/{product_id}/images/{gallery_image_id}/replace",
+        files={
+            "image": (
+                "catalog-gallery-replacement.jpg",
+                gallery_replacement.getvalue(),
+                "image/jpeg",
+            )
+        },
+    )
+    assert replaced_gallery.status_code == 200, replaced_gallery.text
+    replaced_gallery_payload = replaced_gallery.json()
+    assert UUID(replaced_gallery_payload["id"]) == gallery_image_id
+    assert replaced_gallery_payload["image_role"] == "GALLERY"
+    assert replaced_gallery_payload["sort_order"] == 1
+    assert replaced_gallery_payload["width"] == 200
+    assert replaced_gallery_payload["height"] == 200
+
+    with SessionLocal() as session:
+        gallery_row = session.get(ProductImageRow, gallery_image_id)
+        assert gallery_row is not None
+        replacement_gallery_key = gallery_row.object_key
+    assert replacement_gallery_key != old_gallery_key
+    assert not get_object_storage().exists(old_gallery_key)
+    assert get_object_storage().exists(replacement_gallery_key)
+
+    gallery_download = client.get(
+        f"/api/v1/products/{product_id}/images/{gallery_image_id}/download"
+    )
+    assert gallery_download.status_code == 200, gallery_download.text
+    assert "catalog-gallery-replacement.webp" in gallery_download.headers[
+        "content-disposition"
+    ]
+    with Image.open(BytesIO(gallery_download.content)) as downloaded_image:
+        assert downloaded_image.size == (200, 200)
+
 
 def test_sku_catalog_export_round_trip_updates_existing_rows(
     request: pytest.FixtureRequest,
@@ -16876,7 +16946,8 @@ def test_dashboard_and_supplier_profiles_use_tenant_scoped_authoritative_data() 
     payload = dashboard.json()
     assert payload["data_scope"] == "TENANT"
     metric_keys = {metric["key"] for metric in payload["metrics"]}
-    assert {"active_skus", "today_inquiries", "pending_quotations", "active_suppliers"}.issubset(metric_keys)
+    assert {"active_skus", "today_inquiries", "pending_quotations"}.issubset(metric_keys)
+    assert "active_suppliers" not in metric_keys
     assert payload["data_health"]["active_products"] >= 1
     assert 0 <= payload["data_health"]["score"] <= 100
     for coverage_field in (
@@ -18942,9 +19013,41 @@ def test_catalog_translation_job_reports_progress_and_caches_results(
             json={"locale": "zh-CN", "style": "indigo"},
         )
         assert switched_to_source.status_code == 200, switched_to_source.text
-        assert switched_to_source.json()["items"][0]["name_snapshot"] == (
-            quote_sku["name"]
+        source_item = switched_to_source.json()["items"][0]
+        assert source_item["name_snapshot"] == quote_sku["name"]
+        assert source_item["description_snapshot"] == quote_sku["description"]
+        expected_public_options = {
+            key: value
+            for key, value in quote_sku["option_values"].items()
+            if not key.startswith("_")
+        }
+        assert all(
+            source_item["option_values_snapshot"].get(key) == value
+            for key, value in expected_public_options.items()
         )
+        if expected_public_options:
+            assert source_item["specification_snapshot"] == (
+                public_catalog_use_cases._quote_specification(
+                    source_item["option_values_snapshot"]
+                )
+            )
+        with SessionLocal() as session:
+            persisted_localized_draft = session.get(
+                PublicQuoteDraftRow,
+                UUID(localized_draft["id"]),
+            )
+            assert persisted_localized_draft is not None
+            assert persisted_localized_draft.snapshot["submission_locale"] == "en-US"
+            assert persisted_localized_draft.snapshot["document_locale"] == "zh-CN"
+            legacy_snapshot = dict(persisted_localized_draft.snapshot)
+            legacy_snapshot.pop("submission_locale")
+            persisted_localized_draft.snapshot = legacy_snapshot
+            session.commit()
+        legacy_source = client.get(
+            f"/api/v1/public-quote-drafts/{localized_draft['id']}"
+        )
+        assert legacy_source.status_code == 200, legacy_source.text
+        assert legacy_source.json()["items"][0]["name_snapshot"] == quote_sku["name"]
 
         source_quote = client.post(
             "/api/store/demo/quotes",

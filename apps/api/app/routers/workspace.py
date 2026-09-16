@@ -10,6 +10,8 @@ from ..services.auth.dependencies import current_context, get_authenticated_sess
 from ..use_cases import workspace as use_cases
 from ..workspace_schemas import (
     DashboardResponse,
+    DashboardTimezoneSettingsRequest,
+    DashboardTimezoneSettingsResponse,
     SupplierCreateRequest,
     SupplierProfileDetail,
     SupplierProfileSummary,
@@ -37,6 +39,24 @@ def get_dashboard(
             permissions=context.permissions,
             import_limit=import_limit,
             account_scope=context.account_scope,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch("/dashboard/timezones", response_model=DashboardTimezoneSettingsResponse)
+def update_dashboard_timezones(
+    request: DashboardTimezoneSettingsRequest,
+    session: Session = Depends(get_authenticated_session),
+) -> DashboardTimezoneSettingsResponse:
+    context = current_context(session)
+    try:
+        return use_cases.update_dashboard_timezones(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            account_scope=context.account_scope,
+            request=request,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

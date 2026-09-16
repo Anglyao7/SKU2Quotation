@@ -311,13 +311,18 @@ def list_public_products(
     page_size: int = Query(default=24, ge=1, le=100),
     sort: str = Query(default="default", max_length=20),
     locale: str | None = Query(default=None, max_length=20),
+    search_locale: str | None = Query(default=None, max_length=20),
     share: str | None = Query(default=None, min_length=8, max_length=64),
     account: UUID | None = Query(default=None),
     session: Session = Depends(get_session),
     identity_session: Session = Depends(get_auth_session),
 ) -> PublicProductPage:
     response.headers.update(NO_STORE_HEADERS)
-    if locale and locale.casefold().replace("_", "-") not in {"zh", "zh-cn"}:
+    translation_locales = [value for value in (locale, search_locale) if value]
+    if any(
+        value.casefold().replace("_", "-") not in {"zh", "zh-cn"}
+        for value in translation_locales
+    ):
         enforce_rate_limit(
             request,
             scope="public-live-catalog-translation",
@@ -364,6 +369,7 @@ def list_public_products(
             page_size=page_size,
             sort_mode=sort,
             locale=locale,
+            search_locale=search_locale,
             share_token=share,
             subaccount_membership_id=(submitter[0].id if submitter else None),
         )

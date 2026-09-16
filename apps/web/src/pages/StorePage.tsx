@@ -745,6 +745,7 @@ export function StorePage() {
         includeFacets,
         page: targetPage,
         locale,
+        searchLocale: locale,
         sourceLocale: loadedStore.source_locale,
         shareToken: shareToken || undefined,
         accountId,

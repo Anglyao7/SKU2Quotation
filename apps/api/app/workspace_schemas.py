@@ -52,6 +52,17 @@ class DashboardWorldTime(BaseModel):
     source: str = "system"
 
 
+class DashboardTimezoneOption(BaseModel):
+    key: str
+    label: str
+    city: str
+    country_code: str
+    flag: str
+    language: str
+    timezone: str
+    currency: str
+
+
 class DashboardExchangeRate(BaseModel):
     currency: str
     name: str
@@ -68,6 +79,7 @@ class DashboardExchangeRate(BaseModel):
 class DashboardMarketSnapshot(BaseModel):
     observed_at: datetime
     world_times: list[DashboardWorldTime] = Field(default_factory=list)
+    available_timezones: list[DashboardTimezoneOption] = Field(default_factory=list)
     exchange_rates: list[DashboardExchangeRate] = Field(default_factory=list)
     rate_date: str | None = None
     time_source: str = "system"
@@ -81,6 +93,14 @@ class DashboardResponse(BaseModel):
     recent_imports: list[DashboardImport]
     data_health: DashboardDataHealth | None
     market: DashboardMarketSnapshot | None = None
+
+
+class DashboardTimezoneSettingsRequest(BaseModel):
+    timezones: list[str] = Field(default_factory=list, max_length=32)
+
+
+class DashboardTimezoneSettingsResponse(BaseModel):
+    timezones: list[str]
 
 
 class SupplierScoreSummary(BaseModel):

@@ -12,6 +12,7 @@ import {
 } from "@radix-ui/themes";
 import {
   ArrowRight,
+  CaretUp,
   CheckCircle,
   FilePdf,
   FileXls,
@@ -133,6 +134,7 @@ function CartLineImage({ sku }: { sku: Sku }) {
 
 export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmail, contactImages, showPrices = true, lines, onQuantity, onNote, onClear, onRefreshSkus, locale }: CartDrawerProps) {
   const [open, setOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const [reviewReminderOpen, setReviewReminderOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [downloading, setDownloading] = useState<"pdf" | "xlsx" | null>(null);
@@ -274,6 +276,78 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
 
   return (
     <>
+    <Dialog.Root open={previewOpen} onOpenChange={setPreviewOpen}>
+      {itemCount > 0 && !open && !previewOpen && typeof document !== "undefined" ? createPortal(
+        <Button
+          className="cart-floating-trigger"
+          aria-label={t("查看报价清单，已选 {skus} 个 SKU，共 {items} 件", { skus: lines.length, items: itemCount })}
+          aria-expanded={previewOpen}
+          onClick={() => setPreviewOpen(true)}
+        >
+          <span className="floating-cart-icon"><ShoppingCartSimple size={21} weight="bold" /></span>
+          <span className="floating-cart-copy">
+            <small>{t("已选 {skus} 个 SKU · 共 {items} 件", { skus: lines.length, items: itemCount })}</small>
+            {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
+          </span>
+          <CaretUp className="floating-cart-caret" size={21} weight="bold" aria-hidden="true" />
+        </Button>,
+        document.body,
+      ) : null}
+      <Dialog.Content className="cart-preview-sheet" aria-describedby="cart-preview-description">
+        <div className="cart-preview-header">
+          <div>
+            <Text size="1" className="cart-preview-eyebrow">{t("报价清单")}</Text>
+            <Dialog.Title>{t("已选商品")}</Dialog.Title>
+            <Dialog.Description id="cart-preview-description">
+              {t("{skus} 个 SKU，共 {items} 件", { skus: lines.length, items: itemCount })}
+            </Dialog.Description>
+          </div>
+          <Dialog.Close>
+            <IconButton variant="ghost" color="gray" className="cart-preview-close" aria-label={t("关闭报价清单")}>
+              <X size={19} />
+            </IconButton>
+          </Dialog.Close>
+        </div>
+
+        <div className="cart-preview-list">
+          {lines.map(({ sku, quantity }) => (
+            <div className="cart-preview-line" key={sku.id}>
+              <span className="cart-preview-image"><CartLineImage sku={sku} /></span>
+              <div className="cart-preview-copy">
+                <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
+                <Text size="1" className="cart-preview-code mono-text">{sku.sku_code}</Text>
+                <Text size="1" className="cart-preview-meta">
+                  {skuCartonSize(sku)
+                    ? `${t("数量")} × ${quantity} · ${t("箱数")} × ${cartCartons(sku, quantity)}`
+                    : `${t("数量")} × ${quantity}`}
+                </Text>
+              </div>
+              {showPrices ? (
+                <div className="cart-preview-price">
+                  <Text size="1">{money(sku.price, sku.currency)}</Text>
+                  <Text size="2" weight="bold">{money((Number(sku.price) || 0) * quantity, sku.currency)}</Text>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+
+        <div className="cart-preview-footer">
+          <div className="cart-preview-total">
+            <span>{t("已选 {skus} 个 SKU · 共 {items} 件", { skus: lines.length, items: itemCount })}</span>
+            {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
+          </div>
+          <div className="cart-preview-actions">
+            <Dialog.Close>
+              <Button size="3" variant="soft">{t("继续选品")}</Button>
+            </Dialog.Close>
+            <Button size="3" onClick={() => { setPreviewOpen(false); setOpen(true); }}>
+              {t("查看清单")}<ArrowRight size={18} />
+            </Button>
+          </div>
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
     <Dialog.Root open={open} onOpenChange={handleOpen}>
       <Dialog.Trigger>
         <Button className="cart-trigger" size="3">
@@ -282,19 +356,6 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
           {itemCount > 0 && <span className="header-count">{itemCount}</span>}
         </Button>
       </Dialog.Trigger>
-      {itemCount > 0 && !open && typeof document !== "undefined" ? createPortal(
-        <Dialog.Trigger>
-          <Button className="cart-floating-trigger" aria-label={t("查看报价清单，已选 {skus} 个 SKU，共 {items} 件", { skus: lines.length, items: itemCount })}>
-            <span className="floating-cart-icon"><ShoppingCartSimple size={21} weight="bold" /></span>
-            <span className="floating-cart-copy">
-              <small>{t("已选 {skus} 个 SKU · 共 {items} 件", { skus: lines.length, items: itemCount })}</small>
-              {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
-            </span>
-            <span className="floating-cart-action">{t("查看清单")}<ArrowRight size={17} /></span>
-          </Button>
-        </Dialog.Trigger>,
-        document.body,
-      ) : null}
       <Dialog.Content className="cart-drawer" aria-describedby="cart-description">
         <div className="drawer-header">
           <div>
