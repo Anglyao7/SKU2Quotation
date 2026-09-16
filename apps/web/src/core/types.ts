@@ -692,10 +692,26 @@ export interface ProductActivity {
   occurredAt: string;
 }
 
+export interface ProductImage {
+  id: string;
+  productId: string;
+  url: string;
+  originalFilename?: string;
+  contentType: string;
+  byteSize: number;
+  width?: number;
+  height?: number;
+  imageRole: "MAIN" | "GALLERY" | "DETAIL" | "PACKAGING" | "CERTIFICATE";
+  sortOrder: number;
+  approvalStatus: "SOURCE" | "PENDING" | "APPROVED" | "REJECTED";
+  createdAt: string;
+}
+
 export interface ProductDetail extends CoreProduct {
   description?: string;
   defaultUnit?: string;
   attributes: ProductAttribute[];
+  images: ProductImage[];
   skus: ProductSku[];
   sources: ProductOffer[];
   activity: ProductActivity[];

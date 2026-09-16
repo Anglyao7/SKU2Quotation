@@ -707,6 +707,7 @@ class ProductImageResponse(BaseModel):
     width: int | None
     height: int | None
     image_role: str
+    sort_order: int = Field(ge=0)
     approval_status: str
     created_at: datetime
 
@@ -726,6 +727,7 @@ class ProductDetail(ProductCard):
     description: str | None
     default_unit: str | None
     attributes: list[ProductAttributeResponse]
+    images: list[ProductImageResponse] = Field(default_factory=list)
     skus: list[SkuResponse]
     sources: list[ProductOfferSummary]
     activity: list[ProductAuditEventResponse]

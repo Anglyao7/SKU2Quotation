@@ -181,6 +181,10 @@ MAX_PRODUCT_IMAGE_EDGE = max(
     320,
     int(os.getenv("PRODUCT_IMAGE_MAX_EDGE", "2400")),
 )
+MAX_PRODUCT_IMAGES_PER_PRODUCT = max(
+    1,
+    int(os.getenv("PRODUCT_IMAGE_MAX_COUNT", "50")),
+)
 MAX_CATEGORY_COVER_BYTES = max(
     1,
     int(os.getenv("CATEGORY_COVER_MAX_BYTES", str(20 * 1024 * 1024))),
@@ -266,6 +270,7 @@ def _image_response(
         width=image.width,
         height=image.height,
         image_role=image.image_role,
+        sort_order=image.sort_order,
         approval_status=image.approval_status,
         created_at=image.created_at,
     )
@@ -1315,16 +1320,18 @@ def get_product(
         )[2]
         if product.id in hidden_product_ids:
             raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    storefront_slug = _storefront_slug(session, tenant_id=tenant_id)
     card = _card(
         session,
         tenant_id=tenant_id,
         product=product,
         permissions=permissions,
-        storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+        storefront_slug=storefront_slug,
         account_scope=account_scope,
         membership_id=membership_id,
     )
     attributes = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
+    images = repository.list_images(session, tenant_id=tenant_id, product_id=product.id)
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
     can_read_owner_data = account_scope != "CUSTOMER_SUBACCOUNT"
     audit = (
@@ -1348,6 +1355,10 @@ def get_product(
                 review_status=row.review_status,
             )
             for row in attributes
+        ],
+        images=[
+            _image_response(row, storefront_slug=storefront_slug)
+            for row in images
         ],
         skus=[
             _scoped_sku_response(row, account_scope=account_scope)
@@ -1924,6 +1935,134 @@ def upload_product_main_image(
     )
 
 
+def upload_product_gallery_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    filename: str | None,
+    content: bytes,
+) -> ProductImageResponse:
+    """Append one storefront image without replacing the current gallery."""
+
+    _require(permissions, "product.edit")
+    if not content:
+        raise ApplicationError("PRODUCT_IMAGE_EMPTY", "请选择一张商品图片。")
+    if len(content) > MAX_PRODUCT_IMAGE_BYTES:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_TOO_LARGE",
+            f"商品图片不能超过 {MAX_PRODUCT_IMAGE_BYTES // (1024 * 1024)} MB。",
+            kind="too_large",
+        )
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError("PRODUCT_NOT_FOUND", "Product was not found.", kind="not_found")
+    current_images = repository.list_images(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if len(current_images) >= MAX_PRODUCT_IMAGES_PER_PRODUCT:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_LIMIT_REACHED",
+            f"每个商品最多上传 {MAX_PRODUCT_IMAGES_PER_PRODUCT} 张图片。",
+            kind="conflict",
+        )
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[product.id],
+    )
+
+    processed, width, height = _normalized_product_image(content)
+    image_id = uuid4()
+    object_key = f"tenants/{tenant_id}/products/{product_id}/images/{image_id}.webp"
+    storage = get_object_storage()
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".webp") as temporary:
+            temporary.write(processed)
+            temporary.flush()
+            storage.put_file(
+                Path(temporary.name),
+                object_key=object_key,
+                content_type="image/webp",
+            )
+    except Exception as exc:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_STORAGE_UNAVAILABLE",
+            "图片上传到对象存储失败，请稍后重试。",
+            kind="unavailable",
+        ) from exc
+
+    now = utcnow()
+    image = ProductImageRow(
+        id=image_id,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        storage_provider=storage.backend_name.upper(),
+        bucket=os.getenv("OBJECT_STORAGE_BUCKET", "local") or "local",
+        object_key=object_key,
+        original_filename=(filename or f"{product.name}.webp")[:500],
+        content_type="image/webp",
+        byte_size=len(processed),
+        sha256=sha256(processed).hexdigest(),
+        width=width,
+        height=height,
+        image_role="MAIN" if not current_images else "GALLERY",
+        sort_order=max((row.sort_order for row in current_images), default=-1) + 1,
+        approval_status="APPROVED",
+        alt_text=product.name,
+        created_by=user_id,
+    )
+    session.add(image)
+    product.current_version += 1
+    product.updated_by = user_id
+    product.updated_at = now
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(product.id),
+            action="product.image.added",
+            before={"image_count": len(current_images)},
+            after={
+                "image_id": str(image.id),
+                "image_count": len(current_images) + 1,
+                "image_role": image.image_role,
+                "sort_order": image.sort_order,
+            },
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    try:
+        _commit(
+            session,
+            conflict_code="PRODUCT_IMAGE_CONFLICT",
+            conflict_message="Product image could not be indexed.",
+        )
+    except Exception:
+        try:
+            storage.delete(object_key)
+        except Exception:
+            pass
+        raise
+    session.refresh(image)
+    return _image_response(
+        image,
+        storefront_slug=_storefront_slug(session, tenant_id=tenant_id),
+    )
+
+
 def replace_product_main_image(
     session: Session,
     *,
@@ -1935,6 +2074,7 @@ def replace_product_main_image(
     source_image_id: UUID | None,
     filename: str | None,
     content: bytes,
+    allow_any_role: bool = False,
 ) -> ProductImageResponse:
     """Replace the existing main-image record and remove its old object.
 
@@ -1969,10 +2109,14 @@ def replace_product_main_image(
         (
             candidate
             for candidate in images
-            if candidate.image_role == "MAIN"
+            if (allow_any_role or candidate.image_role == "MAIN")
             and (source_image_id is None or candidate.id == source_image_id)
         ),
-        next((candidate for candidate in images if candidate.image_role == "MAIN"), None),
+        (
+            next((candidate for candidate in images if candidate.image_role == "MAIN"), None)
+            if not allow_any_role
+            else None
+        ),
     )
     if image is None:
         raise ApplicationError(
@@ -2022,8 +2166,9 @@ def replace_product_main_image(
     image.sha256 = sha256(processed).hexdigest()
     image.width = width
     image.height = height
-    image.image_role = "MAIN"
-    image.sort_order = 0
+    if not allow_any_role:
+        image.image_role = "MAIN"
+        image.sort_order = 0
     image.approval_status = "APPROVED"
     image.alt_text = product.name
     image.created_by = user_id
@@ -2089,6 +2234,34 @@ def replace_product_main_image(
     )
 
 
+def replace_product_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    image_id: UUID,
+    filename: str | None,
+    content: bytes,
+) -> ProductImageResponse:
+    """Replace one exact storefront image while retaining its role and order."""
+
+    return replace_product_main_image(
+        session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        membership_id=membership_id,
+        permissions=permissions,
+        product_id=product_id,
+        source_image_id=image_id,
+        filename=filename,
+        content=content,
+        allow_any_role=True,
+    )
+
+
 _PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS = {
     "image/avif": "avif",
     "image/bmp": "bmp",
@@ -2122,6 +2295,7 @@ def download_product_main_image(
     tenant_id: UUID,
     permissions: frozenset[str],
     product_id: UUID,
+    image_id: UUID | None = None,
 ) -> tuple[bytes, str, str]:
     _require(permissions, "product.view")
     product = repository.get_product_row(
@@ -2141,8 +2315,16 @@ def download_product_main_image(
         product_id=product_id,
     )
     image = next(
-        (candidate for candidate in images if candidate.image_role == "MAIN"),
-        images[0] if images else None,
+        (
+            candidate
+            for candidate in images
+            if image_id is not None and candidate.id == image_id
+        ),
+        (
+            next((candidate for candidate in images if candidate.image_role == "MAIN"), None)
+            if image_id is None
+            else None
+        ) or (images[0] if image_id is None and images else None),
     )
     if image is None or not str(image.object_key or "").strip():
         raise ApplicationError(

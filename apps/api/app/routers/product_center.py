@@ -344,6 +344,67 @@ async def upload_product_main_image(
         await image.close()
 
 
+@router.post(
+    "/products/{product_id}/images/gallery",
+    response_model=ProductImageResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_product_gallery_image(
+    product_id: UUID,
+    image: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> ProductImageResponse:
+    context = _context(session)
+    content = await image.read(use_cases.MAX_PRODUCT_IMAGE_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            use_cases.upload_product_gallery_image,
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            filename=image.filename,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await image.close()
+
+
+@router.post(
+    "/products/{product_id}/images/{image_id}/replace",
+    response_model=ProductImageResponse,
+)
+async def replace_product_image(
+    product_id: UUID,
+    image_id: UUID,
+    image: UploadFile = File(...),
+    session: Session = Depends(get_authenticated_session),
+) -> ProductImageResponse:
+    context = _context(session)
+    content = await image.read(use_cases.MAX_PRODUCT_IMAGE_BYTES + 1)
+    try:
+        return await run_in_threadpool(
+            use_cases.replace_product_image,
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            image_id=image_id,
+            filename=image.filename,
+            content=content,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    finally:
+        await image.close()
+
+
 @router.get("/products/{product_id}/images/main/download")
 def download_product_main_image(
     product_id: UUID,
@@ -356,6 +417,37 @@ def download_product_main_image(
             tenant_id=context.tenant_id,
             permissions=context.permissions,
             product_id=product_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(
+        content=content,
+        media_type=content_type,
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="product-image"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/products/{product_id}/images/{image_id}/download")
+def download_product_image(
+    product_id: UUID,
+    image_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = _context(session)
+    try:
+        content, content_type, filename = use_cases.download_product_main_image(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            image_id=image_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

@@ -3892,5 +3892,18 @@
   "语言库": "Bibliothèque de langues",
   "语言配置读取失败。": "Impossible de charger la configuration des langues.",
   "暂无商品属性": "Aucun attribut produit pour le moment",
-  "正在读取语言配置…": "Chargement de la configuration des langues…"
+  "正在读取语言配置…": "Chargement de la configuration des langues…",
+  "规格名称不能重复。": "Les noms de spécification ne peuvent pas être dupliqués.",
+  "前台可选规格必须同时填写规格名称和规格值。": "Les spécifications sélectionnables dans la boutique doivent comporter un nom et une valeur.",
+  "SKU 编码不能为空。": "Le code SKU ne peut pas être vide.",
+  "查看图片 {index}": "Voir l’image {index}",
+  "每个商品最多上传 50 张图片。": "Chaque produit peut contenir jusqu’à 50 images.",
+  "商品图片 {current}/{count}": "Image du produit {current}/{count}",
+  "商品图片列表": "Liste des images du produit",
+  "松开即可上传商品图片": "Déposez pour importer l’image du produit",
+  "松开即可替换当前图片": "Déposez pour remplacer l’image sélectionnée",
+  "图片 {index}": "Visuel {index}",
+  "新增图片": "Ajouter une image",
+  "选择缩略图后可直接替换": "Sélectionnez une miniature pour remplacer cette image",
+  "主图": "Image principale"
 }

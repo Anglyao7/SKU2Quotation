@@ -3892,5 +3892,18 @@
   "语言库": "Dil kitaplığı",
   "语言配置读取失败。": "Dil yapılandırması yüklenemedi.",
   "暂无商品属性": "Henüz ürün özniteliği yok",
-  "正在读取语言配置…": "Dil yapılandırması yükleniyor…"
+  "正在读取语言配置…": "Dil yapılandırması yükleniyor…",
+  "规格名称不能重复。": "Özellik adları tekrarlanamaz.",
+  "前台可选规格必须同时填写规格名称和规格值。": "Mağazada seçilebilir özellikler için hem özellik adı hem de değeri girilmelidir.",
+  "SKU 编码不能为空。": "SKU kodu boş olamaz.",
+  "查看图片 {index}": "Görseli görüntüle {index}",
+  "每个商品最多上传 50 张图片。": "Her ürün için en fazla 50 görsel yüklenebilir.",
+  "商品图片 {current}/{count}": "Ürün görseli {current}/{count}",
+  "商品图片列表": "Ürün görseli listesi",
+  "松开即可上传商品图片": "Ürün görselini yüklemek için bırakın",
+  "松开即可替换当前图片": "Seçili görseli değiştirmek için bırakın",
+  "图片 {index}": "Görsel {index}",
+  "新增图片": "Görsel ekle",
+  "选择缩略图后可直接替换": "Değiştirmek istediğiniz görselin küçük resmini seçin",
+  "主图": "Ana görsel"
 }

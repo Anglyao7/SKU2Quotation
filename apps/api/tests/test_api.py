@@ -16014,6 +16014,76 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
     finally:
         workbook.close()
 
+    gallery_buffer = BytesIO()
+    Image.new("RGB", (240, 160), color=(38, 90, 140)).save(
+        gallery_buffer,
+        format="PNG",
+    )
+    gallery_uploaded = client.post(
+        f"/api/v1/products/{product_id}/images/gallery",
+        files={"image": ("catalog-gallery.png", gallery_buffer.getvalue(), "image/png")},
+    )
+    assert gallery_uploaded.status_code == 201, gallery_uploaded.text
+    gallery_payload = gallery_uploaded.json()
+    gallery_image_id = UUID(gallery_payload["id"])
+    assert gallery_payload["image_role"] == "GALLERY"
+    assert gallery_payload["sort_order"] == 1
+
+    refreshed_detail = client.get(f"/api/v1/products/{product_id}")
+    assert refreshed_detail.status_code == 200, refreshed_detail.text
+    detail_images = refreshed_detail.json()["images"]
+    assert [row["image_role"] for row in detail_images] == ["MAIN", "GALLERY"]
+    assert [UUID(row["id"]) for row in detail_images] == [
+        UUID(uploaded_payload["id"]),
+        gallery_image_id,
+    ]
+
+    with SessionLocal() as session:
+        gallery_row = session.get(ProductImageRow, gallery_image_id)
+        assert gallery_row is not None
+        old_gallery_key = gallery_row.object_key
+
+    gallery_replacement = BytesIO()
+    Image.new("RGB", (200, 200), color=(72, 122, 65)).save(
+        gallery_replacement,
+        format="JPEG",
+    )
+    replaced_gallery = client.post(
+        f"/api/v1/products/{product_id}/images/{gallery_image_id}/replace",
+        files={
+            "image": (
+                "catalog-gallery-replacement.jpg",
+                gallery_replacement.getvalue(),
+                "image/jpeg",
+            )
+        },
+    )
+    assert replaced_gallery.status_code == 200, replaced_gallery.text
+    replaced_gallery_payload = replaced_gallery.json()
+    assert UUID(replaced_gallery_payload["id"]) == gallery_image_id
+    assert replaced_gallery_payload["image_role"] == "GALLERY"
+    assert replaced_gallery_payload["sort_order"] == 1
+    assert replaced_gallery_payload["width"] == 200
+    assert replaced_gallery_payload["height"] == 200
+
+    with SessionLocal() as session:
+        gallery_row = session.get(ProductImageRow, gallery_image_id)
+        assert gallery_row is not None
+        replacement_gallery_key = gallery_row.object_key
+    assert replacement_gallery_key != old_gallery_key
+    assert not get_object_storage().exists(old_gallery_key)
+    assert get_object_storage().exists(replacement_gallery_key)
+
+    gallery_download = client.get(
+        f"/api/v1/products/{product_id}/images/{gallery_image_id}/download"
+    )
+    assert gallery_download.status_code == 200, gallery_download.text
+    assert "catalog-gallery-replacement.webp" in gallery_download.headers[
+        "content-disposition"
+    ]
+    with Image.open(BytesIO(gallery_download.content)) as downloaded_image:
+        assert downloaded_image.size == (200, 200)
+
 
 def test_sku_catalog_export_round_trip_updates_existing_rows(
     request: pytest.FixtureRequest,

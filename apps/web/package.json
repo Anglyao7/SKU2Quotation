@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "test:console-search": "node scripts/test-console-search-entry.mjs",
     "test:admin-usability": "node scripts/test-admin-usability.mjs",
+    "test:product-editor": "node scripts/test-product-detail-editor.mjs",
     "test:auth": "node scripts/test-auth-password.mjs",
     "test:account": "node scripts/test-account-password.mjs",
     "test:import": "node scripts/test-import-queue.mjs",
