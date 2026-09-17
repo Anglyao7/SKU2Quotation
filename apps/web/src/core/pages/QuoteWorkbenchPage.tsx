@@ -49,8 +49,10 @@ import { canUseExtendedQuoteDocuments } from "../../lib/subscriptionTier";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   CoreApiError,
+  addPublicQuoteDraftItems,
   adjustPublicQuoteDraftPrices,
   convertPublicQuoteDraftCurrency,
+  deletePublicQuoteDraftItem,
   deleteProductImage,
   downloadPublicQuoteDraftDocument,
   getProduct,
@@ -59,6 +61,7 @@ import {
   getPublicQuoteDraft,
   getPublicQuoteDraftPurchaseOrder,
   listQuoteExcelTemplates,
+  listSkus,
   syncPublicQuoteDraftItemPrice,
   updatePublicQuoteDraftItems,
   updatePublicQuoteDraftPurchaseOrder,
@@ -91,6 +94,7 @@ import type {
   QuoteExcelTemplate,
   QuoteTemplateField,
   DashboardSnapshot,
+  SkuListItem,
 } from "../types";
 import type { StorefrontLocale } from "../../types";
 import type { PackingListSettings } from "../types";
@@ -536,6 +540,16 @@ export function QuoteWorkbenchPage() {
   const [error, setError] = useState("");
   const [itemEdits, setItemEdits] = useState<Record<string, QuoteItemEdit>>({});
   const [savingItems, setSavingItems] = useState(false);
+  const [itemPickerOpen, setItemPickerOpen] = useState(false);
+  const [itemPickerQuery, setItemPickerQuery] = useState("");
+  const [itemPickerPage, setItemPickerPage] = useState(1);
+  const [itemPickerPages, setItemPickerPages] = useState(0);
+  const [itemPickerRows, setItemPickerRows] = useState<SkuListItem[]>([]);
+  const [itemPickerLoading, setItemPickerLoading] = useState(false);
+  const [itemPickerError, setItemPickerError] = useState("");
+  const [itemPickerQuantities, setItemPickerQuantities] = useState<Record<string, string>>({});
+  const [itemMutationId, setItemMutationId] = useState<string>();
+  const [removeItem, setRemoveItem] = useState<PublicQuoteDraftItem>();
   const [bulkPriceOpen, setBulkPriceOpen] = useState(false);
   const [bulkPercentage, setBulkPercentage] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
@@ -926,6 +940,51 @@ export function QuoteWorkbenchPage() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
+    if (!itemPickerOpen) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setItemPickerLoading(true);
+      setItemPickerError("");
+      void listSkus({
+        q: itemPickerQuery.trim() || undefined,
+        statuses: ["ACTIVE"],
+        page: itemPickerPage,
+        pageSize: 30,
+      })
+        .then((page) => {
+          if (cancelled) return;
+          const published = page.items.filter((row) => row.publicOfferStatus === "PUBLISHED");
+          setItemPickerRows(published);
+          setItemPickerPages(page.pages);
+          setItemPickerQuantities((current) => {
+            const next = { ...current };
+            for (const row of published) {
+              if (next[row.id] !== undefined) continue;
+              const packing = Number(row.packingQuantity);
+              const moq = Number(row.defaultMoq);
+              next[row.id] = String(
+                Number.isFinite(packing) && packing > 0
+                  ? packing
+                  : Number.isFinite(moq) && moq > 0 ? moq : 1,
+              );
+            }
+            return next;
+          });
+        })
+        .catch((reason) => {
+          if (!cancelled) setItemPickerError(reason instanceof Error ? reason.message : t("商品库加载失败"));
+        })
+        .finally(() => {
+          if (!cancelled) setItemPickerLoading(false);
+        });
+    }, itemPickerQuery.trim() ? 260 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [itemPickerOpen, itemPickerPage, itemPickerQuery, t]);
+
+  useEffect(() => {
     if (
       activeDocument !== "purchase-order"
       || !canUsePurchaseOrder
@@ -1162,6 +1221,89 @@ export function QuoteWorkbenchPage() {
     if (!edited) return undefined;
     return persistSettings(edited, currentSettings);
   }, [currentSettings, draft, persistSettings, saveAllItemEdits, hasDuplicateCustomFieldLabels, hasIncompleteCustomFields, hasIncompleteExtraInformation, t]);
+
+  const applyQuoteItemStructure = useCallback((next: PublicQuoteDraft) => {
+    const nextSelectedItemId = selectedItemId && next.items.some((item) => item.id === selectedItemId)
+      ? selectedItemId
+      : undefined;
+    setDraft(next);
+    setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
+    setItemEdits({});
+    setCustomFields(next.customFields ?? []);
+    setPackingList(next.packingList);
+    setProformaInvoice(next.proformaInvoice);
+    setSelectedItemId(nextSelectedItemId);
+    setItemsDrawerOpen((current) => current && Boolean(nextSelectedItemId));
+    setPurchaseOrder(undefined);
+    purchaseOrderDraftIdRef.current = undefined;
+    savedPurchaseOrderRef.current = "";
+    savedSettingsRef.current = {
+      locale: next.locale,
+      style: next.documentStyle,
+      templateId: next.quoteTemplateId ?? null,
+      quoteNumber: next.quoteNumber.trim(),
+      visibleColumns: [...activeColumns],
+      extraInformation: (next.extraInformation ?? []).map((entry) => ({ ...entry })),
+      customFields: (next.customFields ?? []).map((field) => ({ ...field, values: { ...field.values } })),
+      proformaInvoice: { ...next.proformaInvoice },
+      packingList: next.packingList,
+    };
+    failedItemsRef.current = undefined;
+    setSaveFailed(false);
+  }, [activeColumns, selectedItemId]);
+
+  const addQuoteItem = useCallback(async (candidate: SkuListItem) => {
+    if (!draft || !canEditPrices || itemMutationId) return;
+    const rawQuantity = (itemPickerQuantities[candidate.id] ?? "1").trim();
+    const quantity = Number(rawQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setItemPickerError(t("请输入有效的商品数量。"));
+      return;
+    }
+    const packing = Number(candidate.packingQuantity);
+    if (Number.isFinite(packing) && packing > 0) {
+      const quantityUnits = Math.round(quantity * 1_000_000);
+      const packingUnits = Math.round(packing * 1_000_000);
+      if (quantityUnits % packingUnits !== 0) {
+        setItemPickerError(storefrontText(locale, "数量必须为装箱数 {size} 的整数倍。", { size: packing }));
+        return;
+      }
+    }
+    setItemMutationId(candidate.id);
+    setItemPickerError("");
+    setError("");
+    try {
+      const saved = await save();
+      if (!saved) return;
+      const next = await addPublicQuoteDraftItems(saved.id, [{ skuId: candidate.id, quantity }]);
+      applyQuoteItemStructure(next);
+      notify(t("商品已加入报价单。"), { kind: "success" });
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : t("商品添加失败");
+      setItemPickerError(message);
+      setError(message);
+    } finally {
+      setItemMutationId(undefined);
+    }
+  }, [applyQuoteItemStructure, canEditPrices, draft, itemMutationId, itemPickerQuantities, locale, notify, save, t]);
+
+  const deleteQuoteItem = useCallback(async () => {
+    if (!draft || !removeItem || !canEditPrices || itemMutationId) return;
+    setItemMutationId(removeItem.id);
+    setError("");
+    try {
+      const saved = await save();
+      if (!saved) return;
+      const next = await deletePublicQuoteDraftItem(saved.id, removeItem.id);
+      applyQuoteItemStructure(next);
+      setRemoveItem(undefined);
+      notify(t("商品已从报价单移除。"), { kind: "success" });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("商品删除失败"));
+    } finally {
+      setItemMutationId(undefined);
+    }
+  }, [applyQuoteItemStructure, canEditPrices, draft, itemMutationId, notify, removeItem, save, t]);
 
   useEffect(() => {
     if (!draft || !canEditPrices || loadedDraftIdRef.current !== draft.id) return;
@@ -1767,9 +1909,12 @@ export function QuoteWorkbenchPage() {
         <div className="quote-editor-items-heading">
           <div>
             <Text size="2" weight="medium">{t("订单商品")}</Text>
-            <Text size="1" color="gray">{t("客户本次询价的全部商品")}</Text>
+            <Text size="1" color="gray">{t("报价单商品")}</Text>
           </div>
-          <Badge color="gray">{draft.items.length}</Badge>
+          <div className="quote-editor-items-heading-actions">
+            <Badge color="gray">{draft.items.length}</Badge>
+            {canEditPrices ? <Button size="1" variant="soft" onClick={() => setItemPickerOpen(true)}><Plus />{t("添加商品")}</Button> : null}
+          </div>
         </div>
         {renderCustomFieldManager()}
         <div className="quote-editor-item-list">
@@ -1836,11 +1981,13 @@ export function QuoteWorkbenchPage() {
                   </label>)}
                   <div className="quote-editor-item-actions">
                     <Button size="1" variant="soft" color="amber" disabled={!canEditPrices || savingItemId === item.id || syncingItemId === item.id} loading={syncingItemId === item.id} onClick={() => requestItemPriceSync(item)}>{t("同步商品库")}</Button>
+                    <Button size="1" variant="soft" color="red" disabled={!canEditPrices || Boolean(itemMutationId)} onClick={() => setRemoveItem(sourceItem)}><Trash />{t("移除")}</Button>
                   </div>
                 </div>
               </Card>
             );
           })}
+          {!draft.items.length ? <div className="quote-editor-items-empty"><ClipboardText size={24} /><Text size="2" color="gray">{t("报价单中暂无商品")}</Text><Button size="2" onClick={() => setItemPickerOpen(true)}><Plus />{t("添加商品")}</Button></div> : null}
         </div>
       </section>
     );
@@ -2080,6 +2227,84 @@ export function QuoteWorkbenchPage() {
         <div className="quote-sync-confirm-actions"><Dialog.Close><Button variant="soft" color="gray" disabled={bulkSaving}>{t("取消")}</Button></Dialog.Close><Button color="green" disabled={!canEditPrices || !bulkPercentage.trim()} loading={bulkSaving} onClick={() => void applyBulkPriceAdjustment()}>{t("应用调价")}</Button></div>
       </Dialog.Content>
     </Dialog.Root>
+
+    <Dialog.Root open={itemPickerOpen} onOpenChange={(open) => {
+      if (itemMutationId) return;
+      setItemPickerOpen(open);
+      if (!open) setItemPickerError("");
+    }}>
+      <Dialog.Content className="quote-item-picker-dialog" maxWidth="880px">
+        <div className="quote-item-picker-heading">
+          <div><Dialog.Title>{t("添加商品")}</Dialog.Title><Dialog.Description>{t("从当前账号可见的已发布 SKU 中选择")}</Dialog.Description></div>
+          <Dialog.Close><IconButton variant="ghost" color="gray" aria-label={t("关闭")}><X /></IconButton></Dialog.Close>
+        </div>
+        <TextField.Root
+          value={itemPickerQuery}
+          placeholder={t("搜索商品名称或 SKU 编码")}
+          onChange={(event) => { setItemPickerQuery(event.target.value); setItemPickerPage(1); }}
+          autoFocus
+        >
+          <TextField.Slot><MagnifyingGlassPlus /></TextField.Slot>
+        </TextField.Root>
+        {itemPickerError ? <div className="core-form-error" role="alert">{itemPickerError}</div> : null}
+        <div className="quote-item-picker-list" aria-busy={itemPickerLoading}>
+          {itemPickerLoading ? <CoreLoading label={t("正在读取商品库")} /> : itemPickerRows.map((candidate) => {
+            const alreadyAdded = Boolean(draft?.items.some((item) => item.skuId === candidate.id));
+            const price = candidate.publicPrice;
+            const quantity = itemPickerQuantities[candidate.id] ?? "1";
+            return <div className="quote-item-picker-row" key={candidate.id}>
+              {candidate.thumbnailUrl ? <img src={candidate.thumbnailUrl} alt="" loading="lazy" /> : <span className="quote-item-image-placeholder"><ImageSquare /></span>}
+              <div className="quote-item-picker-copy">
+                <strong>{candidate.productName}</strong>
+                <span>{candidate.name !== candidate.productName ? candidate.name : ""}</span>
+                <small className="mono-text">{candidate.skuCode}</small>
+              </div>
+              <div className="quote-item-picker-price">
+                <Text size="1" color="gray">{t("当前售价")}</Text>
+                <strong>{price == null ? "—" : money(price, candidate.publicCurrency || draft?.currency || "CNY")}</strong>
+              </div>
+              <label className="quote-item-picker-quantity">
+                <Text size="1" color="gray">{t("数量")}</Text>
+                <TextField.Root
+                  type="number"
+                  min={candidate.packingQuantity || "0.000001"}
+                  step={candidate.packingQuantity || "0.000001"}
+                  value={quantity}
+                  disabled={alreadyAdded || itemMutationId === candidate.id}
+                  onChange={(event) => setItemPickerQuantities((current) => ({ ...current, [candidate.id]: event.target.value }))}
+                />
+                {candidate.packingQuantity ? <small>{t("装箱数")} × {candidate.packingQuantity}</small> : null}
+              </label>
+              <Button
+                size="2"
+                variant={alreadyAdded ? "soft" : "solid"}
+                color={alreadyAdded ? "gray" : "blue"}
+                disabled={alreadyAdded || Boolean(itemMutationId) || price == null}
+                loading={itemMutationId === candidate.id}
+                onClick={() => void addQuoteItem(candidate)}
+              >{alreadyAdded ? <><Check />{t("已添加")}</> : <><Plus />{t("添加")}</>}</Button>
+            </div>;
+          })}
+          {!itemPickerLoading && !itemPickerRows.length ? <div className="quote-item-picker-empty"><ImageSquare size={24} /><Text size="2" color="gray">{t("没有找到可添加的已发布 SKU")}</Text></div> : null}
+        </div>
+        {itemPickerPages > 1 ? <div className="quote-item-picker-pagination">
+          <Button size="1" variant="soft" disabled={itemPickerPage <= 1 || itemPickerLoading} onClick={() => setItemPickerPage((page) => Math.max(1, page - 1))}>{t("上一页")}</Button>
+          <Text size="1" color="gray">{t("第 {page} / {pages} 页", { page: itemPickerPage, pages: itemPickerPages })}</Text>
+          <Button size="1" variant="soft" disabled={itemPickerPage >= itemPickerPages || itemPickerLoading} onClick={() => setItemPickerPage((page) => Math.min(itemPickerPages, page + 1))}>{t("下一页")}</Button>
+        </div> : null}
+      </Dialog.Content>
+    </Dialog.Root>
+
+    <AlertDialog.Root open={Boolean(removeItem)} onOpenChange={(open) => { if (!open && !itemMutationId) setRemoveItem(undefined); }}>
+      <AlertDialog.Content maxWidth="460px">
+        <AlertDialog.Title>{t("从报价单移除商品")}</AlertDialog.Title>
+        <AlertDialog.Description size="2">{removeItem ? t("确认移除 {name}？保存后，预览和导出文件会同步更新。", { name: removeItem.name }) : ""}</AlertDialog.Description>
+        <div className="quote-sync-confirm-actions">
+          <AlertDialog.Cancel><Button variant="soft" color="gray" disabled={Boolean(itemMutationId)}>{t("取消")}</Button></AlertDialog.Cancel>
+          <Button color="red" disabled={!removeItem || Boolean(itemMutationId)} loading={itemMutationId === removeItem?.id} onClick={() => void deleteQuoteItem()}><Trash />{t("确认移除")}</Button>
+        </div>
+      </AlertDialog.Content>
+    </AlertDialog.Root>
 
     <Dialog.Root open={itemsDrawerOpen} onOpenChange={(open) => { setItemsDrawerOpen(open); if (!open) { setSelectedItemId(undefined); setItemImagePreview(undefined); } }}>
       <Dialog.Content className="quote-item-detail-dialog" aria-describedby="quote-items-drawer-description">

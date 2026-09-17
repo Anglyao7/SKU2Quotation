@@ -3954,5 +3954,21 @@
   "未命名字段": "Champ sans nom",
   "请填写自定义字段名称。": "Nommez chaque champ personnalisé.",
   "自定义字段名称不能重复。": "Les noms de champs personnalisés doivent être uniques.",
-  "Excel 预览": "Aperçu Excel"
+  "Excel 预览": "Aperçu Excel",
+  "报价单商品": "Produits du devis",
+  "报价单中暂无商品": "Ce devis ne contient aucun produit",
+  "从报价单移除商品": "Retirer le produit du devis",
+  "从当前账号可见的已发布 SKU 中选择": "Sélectionnez parmi les SKU publiés visibles pour ce compte",
+  "当前售价": "Prix de vente actuel",
+  "没有找到可添加的已发布 SKU": "Aucun SKU publié ne peut être ajouté",
+  "确认移除": "Retirer",
+  "确认移除 {name}？保存后，预览和导出文件会同步更新。": "Retirer {name} ? L’aperçu et les fichiers exportés seront actualisés après l’enregistrement.",
+  "商品库加载失败": "Impossible de charger le catalogue de produits",
+  "商品删除失败": "Impossible de retirer le produit",
+  "商品添加失败": "Impossible d’ajouter le produit",
+  "商品已从报价单移除。": "Produit retiré du devis.",
+  "商品已加入报价单。": "Produit ajouté au devis.",
+  "搜索商品名称或 SKU 编码": "Rechercher par nom de produit ou code SKU",
+  "添加商品": "Ajouter un produit",
+  "已添加": "Ajouté"
 }

@@ -277,6 +277,13 @@
   min-width: 0;
 }
 
+.quote-editor-items-heading > .quote-editor-items-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .quote-editor-item-list {
   display: grid;
   gap: 10px;
@@ -381,7 +388,101 @@
   display: flex;
   align-items: end;
   justify-content: flex-end;
+  gap: 8px;
   min-width: 0;
+}
+
+.quote-editor-items-empty {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 32px 18px;
+  border: 1px dashed var(--gray-a6);
+  border-radius: 10px;
+  background: var(--gray-a2);
+}
+
+.quote-item-picker-dialog {
+  display: grid;
+  gap: 14px;
+  width: min(880px, calc(100vw - 40px));
+  max-height: min(760px, calc(100dvh - 40px));
+}
+
+.quote-item-picker-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.quote-item-picker-heading > div:first-child { display: grid; gap: 4px; }
+
+.quote-item-picker-list {
+  min-height: 260px;
+  max-height: min(520px, calc(100dvh - 250px));
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.quote-item-picker-row {
+  display: grid;
+  grid-template-columns: 58px minmax(220px, 1fr) minmax(110px, auto) 130px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--gray-a5);
+  border-radius: 10px;
+  background: var(--color-panel);
+}
+
+.quote-item-picker-row > img,
+.quote-item-picker-row > .quote-item-image-placeholder {
+  width: 58px;
+  height: 58px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--gray-a3);
+}
+
+.quote-item-picker-copy,
+.quote-item-picker-price,
+.quote-item-picker-quantity {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.quote-item-picker-copy strong,
+.quote-item-picker-copy span,
+.quote-item-picker-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-item-picker-copy strong { font-size: 13px; }
+.quote-item-picker-copy span,
+.quote-item-picker-copy small,
+.quote-item-picker-quantity small { color: var(--gray-10); font-size: 11px; }
+.quote-item-picker-price strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+
+.quote-item-picker-empty {
+  min-height: 240px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+}
+
+.quote-item-picker-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
 }
 
 .quote-workbench-manual {

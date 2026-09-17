@@ -3954,5 +3954,21 @@
   "未命名字段": "Adsız alan",
   "请填写自定义字段名称。": "Her özel alan için bir ad girin.",
   "自定义字段名称不能重复。": "Özel alan adları tekrarlanamaz.",
-  "Excel 预览": "Excel önizlemesi"
+  "Excel 预览": "Excel önizlemesi",
+  "报价单商品": "Teklif ürünleri",
+  "报价单中暂无商品": "Bu teklifte ürün yok",
+  "从报价单移除商品": "Ürünü tekliften kaldır",
+  "从当前账号可见的已发布 SKU 中选择": "Bu hesabın görebildiği yayımlanmış SKU’lardan seçim yapın",
+  "当前售价": "Güncel satış fiyatı",
+  "没有找到可添加的已发布 SKU": "Eklenebilecek yayımlanmış SKU bulunamadı",
+  "确认移除": "Kaldır",
+  "确认移除 {name}？保存后，预览和导出文件会同步更新。": "{name} kaldırılsın mı? Kaydettikten sonra önizleme ve dışa aktarılan dosyalar güncellenir.",
+  "商品库加载失败": "Ürün kataloğu yüklenemedi",
+  "商品删除失败": "Ürün kaldırılamadı",
+  "商品添加失败": "Ürün eklenemedi",
+  "商品已从报价单移除。": "Ürün tekliften kaldırıldı.",
+  "商品已加入报价单。": "Ürün teklife eklendi.",
+  "搜索商品名称或 SKU 编码": "Ürün adı veya SKU koduyla ara",
+  "添加商品": "Ürün ekle",
+  "已添加": "Eklendi"
 }

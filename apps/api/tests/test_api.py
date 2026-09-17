@@ -22412,6 +22412,128 @@ def test_public_carton_orders_validate_source_and_freeze_quote_rule() -> None:
             session.commit()
 
 
+def test_pending_public_quote_can_add_and_remove_catalog_items() -> None:
+    listing = client.get("/api/store/demo/skus", params={"page_size": 100})
+    assert listing.status_code == 200, listing.text
+    candidates = [row for row in listing.json()["items"] if row.get("price") is not None]
+    assert len(candidates) >= 2
+    first, second = candidates[:2]
+
+    def valid_quantity(row: dict[str, object]) -> Decimal:
+        packing = Decimal(str(row.get("packing_quantity") or "0"))
+        if packing > 0:
+            return packing
+        moq = Decimal(str(row.get("minimum_order_quantity") or "1"))
+        return moq if moq > 0 else Decimal("1")
+
+    first_quantity = valid_quantity(first)
+    second_quantity = valid_quantity(second)
+    created = client.post(
+        "/api/store/demo/quotes",
+        json={
+            "customer_name": "Mutable quotation items",
+            "privacy_acknowledged": True,
+            "items": [{"sku_id": first["id"], "quantity": str(first_quantity)}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    original = created.json()
+    quote_id = original["id"]
+
+    duplicate = client.post(
+        f"/api/v1/public-quote-drafts/{quote_id}/items",
+        json={"items": [{"sku_id": first["id"], "quantity": str(first_quantity)}]},
+    )
+    assert duplicate.status_code == 409, duplicate.text
+    assert duplicate.json()["detail"]["code"] == "PUBLIC_QUOTE_SKU_ALREADY_ADDED"
+
+    added = client.post(
+        f"/api/v1/public-quote-drafts/{quote_id}/items",
+        json={"items": [{"sku_id": second["id"], "quantity": str(second_quantity)}]},
+    )
+    assert added.status_code == 200, added.text
+    with_second = added.json()
+    assert [item["position"] for item in with_second["items"]] == [1, 2]
+    added_item = next(item for item in with_second["items"] if item["sku_id"] == second["id"])
+    assert Decimal(str(with_second["total"])) == sum(
+        (Decimal(str(item["line_total"])) for item in with_second["items"]),
+        Decimal("0"),
+    )
+
+    removed_item_id = with_second["items"][0]["id"]
+    with SessionLocal() as session:
+        stored = session.get(PublicQuoteDraftRow, UUID(quote_id))
+        assert stored is not None
+        snapshot = dict(stored.snapshot or {})
+        snapshot["custom_fields"] = [
+            {"id": "field-1", "label": "Custom", "values": {removed_item_id: "remove me"}}
+        ]
+        snapshot["packing_list"] = {
+            "items": [{"item_id": removed_item_id, "carton_count": "1"}],
+            "custom_fields": [
+                {"id": "packing-field", "label": "Packing", "values": {removed_item_id: "remove me"}}
+            ],
+        }
+        snapshot["purchase_order"] = {
+            "items": [{"item_id": removed_item_id, "supplier_id": None}],
+            "custom_fields": [
+                {"id": "po-field", "label": "PO", "values": {removed_item_id: "remove me"}}
+            ],
+        }
+        stored.snapshot = snapshot
+        session.commit()
+
+    removed = client.delete(
+        f"/api/v1/public-quote-drafts/{quote_id}/items/{removed_item_id}"
+    )
+    assert removed.status_code == 200, removed.text
+    remaining = removed.json()
+    assert len(remaining["items"]) == 1
+    assert remaining["items"][0]["sku_id"] == second["id"]
+    assert remaining["items"][0]["position"] == 1
+    assert Decimal(str(remaining["total"])) == Decimal(str(added_item["line_total"]))
+
+    with SessionLocal() as session:
+        stored = session.get(PublicQuoteDraftRow, UUID(quote_id))
+        assert stored is not None
+        snapshot = stored.snapshot
+        assert removed_item_id not in snapshot["custom_fields"][0]["values"]
+        assert snapshot["packing_list"]["items"] == []
+        assert removed_item_id not in snapshot["packing_list"]["custom_fields"][0]["values"]
+        assert snapshot["purchase_order"]["items"] == []
+        assert removed_item_id not in snapshot["purchase_order"]["custom_fields"][0]["values"]
+
+    confirmed = client.patch(
+        f"/api/v1/public-quote-drafts/{quote_id}/status",
+        json={"status": "CONFIRMED"},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    rejected_add = client.post(
+        f"/api/v1/public-quote-drafts/{quote_id}/items",
+        json={"items": [{"sku_id": second["id"], "quantity": str(second_quantity)}]},
+    )
+    assert rejected_add.status_code == 409, rejected_add.text
+    rejected_delete = client.delete(
+        f"/api/v1/public-quote-drafts/{quote_id}/items/{remaining['items'][0]['id']}"
+    )
+    assert rejected_delete.status_code == 409, rejected_delete.text
+    with SessionLocal() as session:
+        session.execute(
+            delete(StorefrontOrderRecordRow).where(
+                StorefrontOrderRecordRow.source_quote_draft_id == UUID(quote_id)
+            )
+        )
+        session.execute(
+            delete(PublicQuoteDraftItemRow).where(
+                PublicQuoteDraftItemRow.quote_draft_id == UUID(quote_id)
+            )
+        )
+        session.execute(
+            delete(PublicQuoteDraftRow).where(PublicQuoteDraftRow.id == UUID(quote_id))
+        )
+        session.commit()
+
+
 def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safety(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

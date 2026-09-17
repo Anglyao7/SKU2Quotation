@@ -7303,6 +7303,35 @@ export async function updatePublicQuoteDraftItems(
   ));
 }
 
+export async function addPublicQuoteDraftItems(
+  draftId: string,
+  items: Array<{ skuId: string; quantity: number; customerNote?: string }>,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        items: items.map((item) => ({
+          sku_id: item.skuId,
+          quantity: item.quantity,
+          customer_note: item.customerNote?.trim() || null,
+        })),
+      }),
+    },
+  ));
+}
+
+export async function deletePublicQuoteDraftItem(
+  draftId: string,
+  itemId: string,
+): Promise<PublicQuoteDraft> {
+  return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/items/${encodeURIComponent(itemId)}`,
+    { method: "DELETE" },
+  ));
+}
+
 export async function adjustPublicQuoteDraftPrices(
   draftId: string,
   percentage: number,

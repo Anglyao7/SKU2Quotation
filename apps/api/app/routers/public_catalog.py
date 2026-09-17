@@ -32,6 +32,7 @@ from ..public_catalog_schemas import (
     PublicProductPage,
     PublicQuoteDraftCreate,
     PublicQuoteDraftCurrencyConversion,
+    PublicQuoteDraftItemsAdd,
     PublicQuoteDraftItemsUpdate,
     PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftItemPriceUpdate,
@@ -866,6 +867,58 @@ def update_tenant_public_quote_draft_status(
             quote_draft_id=quote_draft_id,
             request=payload,
             account_scope=context.account_scope,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.post(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items",
+    response_model=PublicQuoteDraftResponse,
+)
+def add_tenant_public_quote_draft_items(
+    quote_draft_id: UUID,
+    payload: PublicQuoteDraftItemsAdd,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.add_tenant_quote_draft_items(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.delete(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/items/{item_id}",
+    response_model=PublicQuoteDraftResponse,
+)
+def delete_tenant_public_quote_draft_item(
+    quote_draft_id: UUID,
+    item_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PublicQuoteDraftResponse:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.delete_tenant_quote_draft_item(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            item_id=item_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
         )
     except ApplicationError as exc:
         raise application_http_error(exc) from exc

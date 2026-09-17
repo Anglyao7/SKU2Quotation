@@ -591,6 +591,19 @@ class PublicQuoteDraftItemsUpdate(BaseModel):
         return self
 
 
+class PublicQuoteDraftItemsAdd(BaseModel):
+    """Catalog SKUs appended to an editable quotation."""
+
+    items: list[PublicCartItem] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_sku_ids(self) -> "PublicQuoteDraftItemsAdd":
+        sku_ids = [item.sku_id for item in self.items]
+        if len(sku_ids) != len(set(sku_ids)):
+            raise ValueError("duplicate sku_id in quote item additions")
+        return self
+
+
 class PurchaseOrderSupplierOption(BaseModel):
     """Internal supplier choice for one quoted SKU.
 

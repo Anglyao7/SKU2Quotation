@@ -46,6 +46,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDocument,
     PublicQuoteDraftCreate,
     PublicQuoteDraftCurrencyConversion,
+    PublicQuoteDraftItemsAdd,
     PublicQuoteDraftItemPatch,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftItemPriceUpdate,
@@ -6140,11 +6141,20 @@ def _refresh_quote_draft_snapshot(
         for entry in existing_items
         if isinstance(entry, dict) and str(entry.get("position", "")).isdigit()
     } if isinstance(existing_items, list) else {}
+    by_sku_id = {
+        str(entry.get("sku_id")): dict(entry)
+        for entry in existing_items
+        if isinstance(entry, dict) and entry.get("sku_id")
+    } if isinstance(existing_items, list) else {}
     snapshot_items: list[dict[str, object]] = []
     for item in items:
-        entry = by_position.get(item.position, {})
+        # Position changes after a line is removed. Match the stable SKU first
+        # so document-only metadata never shifts from the deleted row onto a
+        # different product during reindexing.
+        entry = by_sku_id.get(str(item.sku_id), by_position.get(item.position, {}))
         entry.update(
             {
+                "item_id": str(item.id),
                 "position": item.position,
                 "sku_id": str(item.sku_id),
                 "product_id": str(item.product_id_snapshot),
@@ -6399,6 +6409,426 @@ def update_tenant_quote_draft_items(
             item.image_url_snapshot = patch.image_url
 
     _recalculate_quote_draft_totals(draft, items)
+    session.commit()
+    return _quote_draft_item_edit_response(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+    )
+
+
+def add_tenant_quote_draft_items(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PublicQuoteDraftItemsAdd,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
+) -> PublicQuoteDraftResponse:
+    """Append public catalog SKUs to an editable quotation.
+
+    The catalog lookup deliberately follows the same publication, account
+    visibility and effective-price rules as storefront quote submission. The
+    resulting rows are snapshots, so later catalog changes do not silently
+    rewrite the document.
+    """
+
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以增减商品。",
+            kind="conflict",
+        )
+
+    existing_items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    existing_sku_ids = {item.sku_id for item in existing_items}
+    requested_sku_ids = [item.sku_id for item in request.items]
+    duplicate_sku_ids = existing_sku_ids.intersection(requested_sku_ids)
+    if duplicate_sku_ids:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_SKU_ALREADY_ADDED",
+            "所选 SKU 已在当前报价单中，请直接修改现有数量。",
+            kind="conflict",
+        )
+
+    tenant = repository.get_active_tenant(session, tenant_id=tenant_id)
+    if tenant is None:
+        raise ApplicationError(
+            "TENANT_NOT_FOUND",
+            "Tenant was not found.",
+            kind="not_found",
+        )
+    now = utcnow()
+    rows = repository.list_public_catalog_rows_by_sku_ids(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=requested_sku_ids,
+        now=now,
+    )
+    row_by_sku = {row[1].id: row for row in rows}
+    missing = [str(sku_id) for sku_id in requested_sku_ids if sku_id not in row_by_sku]
+    if missing:
+        raise ApplicationError(
+            "PUBLIC_SKU_NOT_FOUND",
+            "一个或多个 SKU 当前未发布或不可用：" + ", ".join(missing),
+            kind="not_found",
+        )
+
+    effective_membership_id = (
+        membership_id if account_scope == "CUSTOMER_SUBACCOUNT" else None
+    )
+    pricing_markup_percent, pricing_overrides, hidden_product_ids = subaccount_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=effective_membership_id,
+        product_ids={row[2].id for row in rows},
+    )
+    if hidden_product_ids:
+        hidden_skus = [
+            str(row[1].id) for row in rows if row[2].id in hidden_product_ids
+        ]
+        if hidden_skus:
+            raise ApplicationError(
+                "PUBLIC_SKU_NOT_FOUND",
+                "一个或多个所选商品对当前账号不可见。",
+                kind="not_found",
+            )
+    category_markup_by_id = subaccount_category_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=effective_membership_id,
+        category_ids={row[3].id for row in rows if row[3] is not None},
+    )
+    sku_price_overrides = subaccount_sku_price_rules(
+        session,
+        tenant_id=tenant_id,
+        membership_id=effective_membership_id,
+        sku_ids=set(requested_sku_ids),
+    )
+
+    snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+    source_locale = _normalized_locale(
+        snapshot.get("source_locale")
+        if isinstance(snapshot.get("source_locale"), str)
+        else getattr(tenant, "default_locale", None),
+    )
+    target_locale = _normalized_locale(
+        getattr(draft, "document_locale", None),
+        default=source_locale,
+    )
+    sku_translations, product_translations = _quote_translation_maps(
+        session,
+        tenant_id=tenant_id,
+        rows=rows,
+        source_locale=source_locale,
+        target_locale=target_locale,
+        allow_live_fallback=False,
+    )
+    images = repository.approved_image_map(
+        session,
+        tenant_id=tenant_id,
+        product_ids={row[2].id for row in rows},
+    )
+
+    base_currency = _canonical_quote_currency(
+        getattr(tenant, "default_currency", None)
+    )
+    target_currency = _canonical_quote_currency(draft.currency)
+    factor = Decimal("1")
+    if base_currency != target_currency:
+        factor = _currency_conversion_factor(
+            get_dashboard_market_snapshot(),
+            source_currency=base_currency,
+            target_currency=target_currency,
+        ) or Decimal("0")
+        if factor <= 0:
+            raise ApplicationError(
+                "QUOTE_CURRENCY_RATE_UNAVAILABLE",
+                f"当前暂未取得 {base_currency} 到 {target_currency} 的汇率，请稍后重试。",
+                kind="conflict",
+            )
+
+    max_position = max((item.position for item in existing_items), default=0)
+    base_prices_for_new_items: dict[UUID, Decimal] = {}
+    new_items: list[PublicQuoteDraftItemRow] = []
+    for offset, cart_item in enumerate(request.items, 1):
+        row = row_by_sku[cart_item.sku_id]
+        offer, sku, product, category = row
+        quantity = Decimal(cart_item.quantity)
+        packing = packing_quantity(sku.option_values)
+        validate_carton_quantity(quantity, packing, sku.sku_code)
+        public_sku = _sku_response(
+            row,
+            image=images.get(product.id),
+            slug=tenant.slug,
+            category_color=None,
+            source_locale=source_locale,
+            locale=target_locale,
+            display_currency=base_currency,
+            translation=sku_translations.get(sku.id),
+            product_translation=product_translations.get(product.id),
+            pricing_markup_percent=pricing_markup_percent,
+            pricing_overrides=pricing_overrides,
+            category_markup_percent=(
+                category_markup_by_id.get(category.id)
+                if category is not None
+                else None
+            ),
+            sku_price_override=sku_price_overrides.get(sku.id),
+        )
+        base_unit_price = _money(Decimal(public_sku.price))
+        unit_price = _money(base_unit_price * factor)
+        source_options = {
+            str(key): value
+            for key, value in public_sku_option_values(sku.option_values or {}).items()
+            if str(key).strip() and not str(key).startswith("_")
+        }
+        if sku.default_moq is not None and not any(
+            re.sub(r"[\s_\-:：]+", "", str(key).strip().casefold())
+            in {"起订数", "起订量", "moq", "minimumorderquantity"}
+            for key in source_options
+        ):
+            source_options = {
+                **source_options,
+                "起订数": str(sku.default_moq),
+            }
+        option_values = {
+            str(key): value
+            for key, value in public_sku_option_values(public_sku.option_values or {}).items()
+            if str(key).strip() and not str(key).startswith("_")
+        }
+        option_values[_PUBLIC_OPTION_INTERNAL_KEY] = {
+            "quote_source_option_values": source_options,
+            "order_packing_quantity": str(packing) if packing is not None else None,
+        }
+        item_id = uuid4()
+        item = PublicQuoteDraftItemRow(
+            id=item_id,
+            tenant_id=tenant_id,
+            quote_draft_id=quote_draft_id,
+            sku_id=sku.id,
+            position=max_position + offset,
+            quantity=quantity,
+            customer_note=cart_item.customer_note,
+            product_id_snapshot=product.id,
+            product_version=product.current_version,
+            sku_version=sku.version,
+            sku_code_snapshot=sku.sku_code,
+            name_snapshot=str(public_sku.name or sku.name or product.name).strip(),
+            description_snapshot=public_sku.description,
+            specification_snapshot=public_specification(
+                public_sku.specification or _quote_specification(option_values)
+            ),
+            option_values_snapshot=public_sku_option_values(option_values),
+            category_snapshot=public_sku.category_label or _category_path(category) or None,
+            tags_snapshot=list(dict.fromkeys(public_sku.tags)),
+            image_url_snapshot=public_sku.image_url,
+            minimum_order_quantity=(
+                sku.default_moq
+                if sku.default_moq is not None and sku.default_moq > 0
+                else Decimal("1")
+            ),
+            unit_code_snapshot=public_sku.unit_code or product.default_unit or "piece",
+            currency_snapshot=target_currency,
+            unit_price_snapshot=unit_price,
+            line_total=_money(unit_price * quantity),
+        )
+        session.add(item)
+        new_items.append(item)
+        base_prices_for_new_items[item_id] = base_unit_price
+
+    conversion = snapshot.get("currency_conversion")
+    conversion_payload = dict(conversion) if isinstance(conversion, dict) else None
+    if conversion_payload is not None:
+        raw_base_prices = conversion_payload.get("base_unit_prices")
+        base_prices = dict(raw_base_prices) if isinstance(raw_base_prices, dict) else {}
+        base_prices.update({str(item_id): str(price) for item_id, price in base_prices_for_new_items.items()})
+        conversion_payload["base_unit_prices"] = base_prices
+    all_items = [*existing_items, *new_items]
+    _recalculate_quote_draft_totals(
+        draft,
+        all_items,
+        conversion=conversion_payload,
+    )
+    session.commit()
+    return _quote_draft_item_edit_response(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+    )
+
+
+def _remove_quote_item_document_values(
+    snapshot: dict[str, object],
+    *,
+    item_id: UUID,
+) -> dict[str, object]:
+    """Remove references to a deleted quote row from document-only settings."""
+
+    result = dict(snapshot)
+    item_key = str(item_id)
+    for section_name in ("custom_fields",):
+        entries = result.get(section_name)
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                cleaned.append(entry)
+                continue
+            next_entry = dict(entry)
+            values = next_entry.get("values")
+            if isinstance(values, dict):
+                next_entry["values"] = {
+                    key: value for key, value in values.items() if str(key) != item_key
+                }
+            cleaned.append(next_entry)
+        result[section_name] = cleaned
+    for section_name in ("packing_list", "purchase_order"):
+        section = result.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        next_section = dict(section)
+        items = next_section.get("items")
+        if isinstance(items, list):
+            next_section["items"] = [
+                entry
+                for entry in items
+                if not isinstance(entry, dict)
+                or str(entry.get("item_id") or "") != item_key
+            ]
+        fields = next_section.get("custom_fields")
+        if isinstance(fields, list):
+            next_fields = []
+            for field in fields:
+                if not isinstance(field, dict):
+                    next_fields.append(field)
+                    continue
+                next_field = dict(field)
+                values = next_field.get("values")
+                if isinstance(values, dict):
+                    next_field["values"] = {
+                        key: value
+                        for key, value in values.items()
+                        if str(key) != item_key
+                    }
+                next_fields.append(next_field)
+            next_section["custom_fields"] = next_fields
+        result[section_name] = next_section
+    conversion = result.get("currency_conversion")
+    if isinstance(conversion, dict):
+        next_conversion = dict(conversion)
+        prices = next_conversion.get("base_unit_prices")
+        if isinstance(prices, dict):
+            next_conversion["base_unit_prices"] = {
+                key: value for key, value in prices.items() if str(key) != item_key
+            }
+        result["currency_conversion"] = next_conversion
+    return result
+
+
+def delete_tenant_quote_draft_item(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    item_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
+) -> PublicQuoteDraftResponse:
+    """Delete one line from a pending quotation and all document references."""
+
+    _require(permissions, "quotation.create")
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
+    if draft.status != "PENDING_CONFIRMATION":
+        raise ApplicationError(
+            "PUBLIC_QUOTE_EDIT_NOT_ALLOWED",
+            "只有待确认状态的报价单可以增减商品。",
+            kind="conflict",
+        )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    target = next((item for item in items if item.id == item_id), None)
+    if target is None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_ITEM_NOT_FOUND",
+            "报价单商品明细不存在。",
+            kind="not_found",
+        )
+    session.delete(target)
+    session.flush()
+    remaining = [item for item in items if item.id != item_id]
+    # The position tuple is unique. Move every surviving row out of the
+    # original range before compacting it so deleting the first/middle row
+    # cannot transiently collide with a position that has not moved yet.
+    position_offset = len(items) + 1
+    for item in remaining:
+        item.position += position_offset
+    session.flush()
+    for position, item in enumerate(remaining, 1):
+        item.position = position
+    session.flush()
+    snapshot = _remove_quote_item_document_values(
+        dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {},
+        item_id=item_id,
+    )
+    draft.snapshot = snapshot
+    conversion = snapshot.get("currency_conversion")
+    _recalculate_quote_draft_totals(
+        draft,
+        remaining,
+        conversion=dict(conversion) if isinstance(conversion, dict) else None,
+    )
     session.commit()
     return _quote_draft_item_edit_response(
         session,

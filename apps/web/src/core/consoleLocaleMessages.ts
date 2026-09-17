@@ -12,6 +12,22 @@ import trGenerated from "./locales/console.tr.json";
 type ConsoleDictionary = Record<string, string>;
 
 const en: ConsoleDictionary = {
+  "报价单商品": "Quotation items",
+  "报价单中暂无商品": "No products in this quotation",
+  "从报价单移除商品": "Remove product from quotation",
+  "从当前账号可见的已发布 SKU 中选择": "Select from published SKUs visible to this account",
+  "当前售价": "Current price",
+  "没有找到可添加的已发布 SKU": "No published SKUs are available to add",
+  "确认移除": "Remove",
+  "确认移除 {name}？保存后，预览和导出文件会同步更新。": "Remove {name}? The preview and exports will update after saving.",
+  "商品库加载失败": "Could not load the product catalog",
+  "商品删除失败": "Could not remove the product",
+  "商品添加失败": "Could not add the product",
+  "商品已从报价单移除。": "Product removed from the quotation.",
+  "商品已加入报价单。": "Product added to the quotation.",
+  "搜索商品名称或 SKU 编码": "Search by product name or SKU code",
+  "添加商品": "Add product",
+  "已添加": "Added",
   "箱数": "Cartons",
   "点击选择语言，保存后生效。": "Click to select languages, then save.",
   "已选中": "Selected",

@@ -3954,5 +3954,21 @@
   "未命名字段": "Campo sem nome",
   "请填写自定义字段名称。": "Atribua um nome a cada campo personalizado.",
   "自定义字段名称不能重复。": "Os nomes dos campos personalizados não podem repetir-se.",
-  "Excel 预览": "Visualização do Excel"
+  "Excel 预览": "Visualização do Excel",
+  "报价单商品": "Produtos da cotação",
+  "报价单中暂无商品": "Esta cotação não contém produtos",
+  "从报价单移除商品": "Remover produto da cotação",
+  "从当前账号可见的已发布 SKU 中选择": "Selecione entre os SKUs publicados visíveis para esta conta",
+  "当前售价": "Preço de venda atual",
+  "没有找到可添加的已发布 SKU": "Não há SKUs publicados disponíveis para adicionar",
+  "确认移除": "Remover",
+  "确认移除 {name}？保存后，预览和导出文件会同步更新。": "Remover {name}? A pré-visualização e os arquivos exportados serão atualizados após salvar.",
+  "商品库加载失败": "Não foi possível carregar o catálogo de produtos",
+  "商品删除失败": "Não foi possível remover o produto",
+  "商品添加失败": "Não foi possível adicionar o produto",
+  "商品已从报价单移除。": "Produto removido da cotação.",
+  "商品已加入报价单。": "Produto adicionado à cotação.",
+  "搜索商品名称或 SKU 编码": "Pesquisar por nome do produto ou código SKU",
+  "添加商品": "Adicionar produto",
+  "已添加": "Adicionado"
 }

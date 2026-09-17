@@ -41,12 +41,24 @@ spec = importlib.util.spec_from_file_location("pending_quote_item_edits", MIGRAT
 assert spec is not None and spec.loader is not None
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+ITEM_STRUCTURE_MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations/versions/20260917_0144_allow_pending_quote_item_add_remove.py"
+item_structure_spec = importlib.util.spec_from_file_location(
+    "pending_quote_item_structure", ITEM_STRUCTURE_MIGRATION_PATH
+)
+assert item_structure_spec is not None and item_structure_spec.loader is not None
+item_structure_migration = importlib.util.module_from_spec(item_structure_spec)
+item_structure_spec.loader.exec_module(item_structure_migration)
 ROLE = "atc_quote_test_app_0135"
 
 
 def migrate(connection, direction="upgrade"):
     with Operations.context(MigrationContext.configure(connection)):
         getattr(migration, direction)()
+
+
+def migrate_item_structure(connection, direction="upgrade"):
+    with Operations.context(MigrationContext.configure(connection)):
+        getattr(item_structure_migration, direction)()
 
 
 def test_sqlite_migration_is_a_noop():
@@ -57,6 +69,19 @@ def test_sqlite_migration_is_a_noop():
         with engine.begin() as connection:
             migrate(connection)
             migrate(connection, "downgrade")
+        assert statements == []
+    finally:
+        engine.dispose()
+
+
+def test_item_structure_sqlite_migration_is_a_noop():
+    engine = create_engine("sqlite://")
+    statements = []
+    event.listen(engine, "before_cursor_execute", lambda c, cur, stmt, p, ctx, many: statements.append(stmt))
+    try:
+        with engine.begin() as connection:
+            migrate_item_structure(connection)
+            migrate_item_structure(connection, "downgrade")
         assert statements == []
     finally:
         engine.dispose()
@@ -251,6 +276,46 @@ def test_pending_currency_edit_and_zero_price_allowed_but_delete_rejected(pg_eng
         assert item.unit_price_snapshot == Decimal("0")
         with pytest.raises(DBAPIError, match="cannot be deleted"):
             session.execute(text("DELETE FROM public_quote_draft_items WHERE id=:item_id"), quote)
+
+
+def test_latest_trigger_allows_pending_reorder_and_delete(pg_engine, quote):
+    with pg_engine.begin() as connection:
+        migrate_item_structure(connection)
+    try:
+        with tenant_session(pg_engine, quote["tenant_id"]) as session:
+            session.execute(
+                text("UPDATE public_quote_draft_items SET position=2 WHERE id=:item_id"),
+                quote,
+            )
+            session.commit()
+            assert session.get(PublicQuoteDraftItemRow, quote["item_id"]).position == 2
+            session.execute(
+                text("DELETE FROM public_quote_draft_items WHERE id=:item_id"),
+                quote,
+            )
+            session.commit()
+            assert session.get(PublicQuoteDraftItemRow, quote["item_id"]) is None
+    finally:
+        with pg_engine.begin() as connection:
+            migrate(connection)
+
+
+def test_latest_trigger_rejects_delete_after_confirmation(pg_engine, quote):
+    with pg_engine.begin() as connection:
+        migrate_item_structure(connection)
+    try:
+        with Session(pg_engine) as session:
+            session.get(PublicQuoteDraftRow, quote["draft_id"]).status = "CONFIRMED"
+            session.commit()
+        with tenant_session(pg_engine, quote["tenant_id"]) as session:
+            with pytest.raises(DBAPIError, match="only pending"):
+                session.execute(
+                    text("DELETE FROM public_quote_draft_items WHERE id=:item_id"),
+                    quote,
+                )
+    finally:
+        with pg_engine.begin() as connection:
+            migrate(connection)
 
 
 def test_tenant_rls_and_invoker_security_remain_in_force(pg_engine, quote):
