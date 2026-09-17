@@ -8,7 +8,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import lru_cache
 from types import SimpleNamespace
@@ -32,6 +32,7 @@ from ..identity_models import (
 )
 from ..knowledge_embedding_schemas import DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS
 from ..model_mixins import utcnow
+from ..product_center_models import SupplierPriceRow
 from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
@@ -50,12 +51,16 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftItemPriceUpdate,
     PublicQuoteDraftItemsUpdate,
     PublicQuoteExtraInformation,
+    PublicQuoteCustomField,
     PublicProformaInvoiceSettings,
     PublicQuoteDraftPriceAdjustment,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
+    PurchaseOrderItem,
+    PurchaseOrderSettings,
+    PurchaseOrderSupplierOption,
     StorefrontOrderCurrencyStatistics,
     StorefrontOrderPeriodStatistics,
     StorefrontOrderStatistics,
@@ -72,6 +77,7 @@ from ..public_catalog_schemas import (
 )
 from ..repositories import public_catalog_repository as repository
 from ..repositories import catalog_translation_repository
+from ..repositories import product_center_repository
 from ..repositories import quote_template_repository
 from ..repositories import search_analytics_repository
 from ..services.catalog_translation import (
@@ -152,6 +158,18 @@ def _require_extended_quote_documents(session: Session, tenant_id: UUID) -> None
     raise ApplicationError(
         "QUOTE_DOCUMENT_TIER_REQUIRED",
         "当前档位仅支持报价单，形式发票、装箱单及其他单证需要 Elite 档位。",
+        kind="forbidden",
+    )
+
+
+def _require_internal_purchase_order(account_scope: str) -> None:
+    """Keep supplier and procurement facts out of reseller workspaces."""
+
+    if account_scope == "STAFF":
+        return
+    raise ApplicationError(
+        "PURCHASE_ORDER_OWNER_ONLY",
+        "采购单包含内部供应商与采购成本信息，仅主账号和员工可以使用。",
         kind="forbidden",
     )
 
@@ -3620,6 +3638,23 @@ def _draft_extra_information(draft: PublicQuoteDraftRow) -> list[PublicQuoteExtr
     return result
 
 
+def _draft_custom_fields(draft: PublicQuoteDraftRow) -> list[PublicQuoteCustomField]:
+    """Read document-only custom columns without trusting old snapshots."""
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    raw = snapshot.get("custom_fields")
+    if not isinstance(raw, list):
+        return []
+    result: list[PublicQuoteCustomField] = []
+    for entry in raw[:12]:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            result.append(PublicQuoteCustomField.model_validate(entry))
+        except Exception:
+            continue
+    return result
+
+
 def _default_proforma_invoice_number(draft: PublicQuoteDraftRow) -> str:
     source = str(
         getattr(draft, "quotation_number", None) or draft.request_number
@@ -3663,6 +3698,225 @@ def _draft_packing_list(draft, items):
     from ..services.packing_lists import packing_settings
 
     return packing_settings(draft, items)
+
+
+def _default_purchase_order_number(draft: PublicQuoteDraftRow) -> str:
+    source = str(
+        getattr(draft, "quotation_number", None) or draft.request_number
+    ).strip()
+    if source.upper().startswith(("QD-", "QT-")):
+        return f"PO-{source[3:]}"[:80]
+    return f"PO-{source}"[:80]
+
+
+def _purchase_supplier_options(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    items: list[PublicQuoteDraftItemRow],
+) -> dict[UUID, list[PurchaseOrderSupplierOption]]:
+    """Resolve supplier choices in one bounded batch for purchase documents."""
+
+    if not items:
+        return {}
+    sku_ids = {item.sku_id for item in items}
+    product_ids = {item.product_id_snapshot for item in items}
+    source_rows = product_center_repository.list_supplier_rows_for_sku_page(
+        session,
+        tenant_id=tenant_id,
+        sku_ids=sku_ids,
+        product_ids=product_ids,
+    )
+    source_ids = {source.id for source, _supplier in source_rows}
+    prices = list(
+        session.scalars(
+            select(SupplierPriceRow)
+            .where(
+                SupplierPriceRow.tenant_id == tenant_id,
+                SupplierPriceRow.supplier_product_id.in_(source_ids),
+                SupplierPriceRow.status == "CONFIRMED",
+            )
+            .order_by(
+                SupplierPriceRow.supplier_product_id,
+                SupplierPriceRow.valid_from.desc(),
+                SupplierPriceRow.created_at.desc(),
+            )
+        ).all()
+    ) if source_ids else []
+    prices_by_source: dict[UUID, list[SupplierPriceRow]] = {}
+    for price in prices:
+        prices_by_source.setdefault(price.supplier_product_id, []).append(price)
+
+    options: dict[UUID, list[PurchaseOrderSupplierOption]] = {
+        item.id: [] for item in items
+    }
+    for item in items:
+        seen: set[str] = set()
+        exact = [row for row in source_rows if row[0].sku_id == item.sku_id]
+        inherited = [
+            row for row in source_rows
+            if row[0].sku_id is None and row[0].product_id == item.product_id_snapshot
+        ]
+        for source, supplier in [*exact, *inherited]:
+            if supplier.id in seen:
+                continue
+            seen.add(supplier.id)
+            applicable_prices = [
+                price for price in prices_by_source.get(source.id, [])
+                if Decimal(price.min_quantity) <= Decimal(item.quantity)
+                and (
+                    price.max_quantity is None
+                    or Decimal(price.max_quantity) >= Decimal(item.quantity)
+                )
+            ]
+            price = applicable_prices[0] if applicable_prices else (
+                prices_by_source.get(source.id, [None])[0]
+                if prices_by_source.get(source.id)
+                else None
+            )
+            options[item.id].append(
+                PurchaseOrderSupplierOption(
+                    supplier_id=supplier.id,
+                    supplier_name=supplier.name,
+                    supplier_code=supplier.supplier_code,
+                    supplier_sku=source.supplier_sku,
+                    unit_price=price.unit_price if price is not None else None,
+                    currency=(str(price.currency).upper() if price is not None else None),
+                    moq=source.moq,
+                    moq_unit=source.moq_unit,
+                    lead_time_days=source.lead_time_days,
+                    contact_name=supplier.contact_name,
+                    phone=supplier.phone,
+                    email=supplier.email,
+                    address=supplier.address,
+                )
+            )
+    return options
+
+
+def _draft_purchase_order(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+) -> PurchaseOrderSettings:
+    supplier_options = _purchase_supplier_options(
+        session,
+        tenant_id=tenant_id,
+        items=items,
+    )
+    snapshot = draft.snapshot if isinstance(draft.snapshot, dict) else {}
+    raw = snapshot.get("purchase_order")
+    raw_items = {
+        str(entry.get("item_id")): entry
+        for entry in (raw.get("items", []) if isinstance(raw, dict) else [])
+        if isinstance(entry, dict) and entry.get("item_id")
+    }
+    result_items: list[PurchaseOrderItem] = []
+    for item in items:
+        choices = supplier_options.get(item.id, [])
+        selected = raw_items.get(str(item.id), {})
+        selected_supplier_id = str(selected.get("supplier_id") or "").strip() or None
+        default_choice = next(
+            (choice for choice in choices if choice.supplier_id == selected_supplier_id),
+            choices[0] if choices else None,
+        )
+        defaults: dict[str, object] = {
+            "item_id": item.id,
+            "position": item.position,
+            "supplier_id": default_choice.supplier_id if default_choice else None,
+            "supplier_name": default_choice.supplier_name if default_choice else "未指定供应商",
+            "supplier_sku": default_choice.supplier_sku if default_choice else None,
+            "sku_code": item.sku_code_snapshot,
+            "name": item.name_snapshot,
+            "specification": item.specification_snapshot or "",
+            "image_url": item.image_url_snapshot,
+            "quantity": item.quantity,
+            "unit_code": item.unit_code_snapshot,
+            "unit_price": default_choice.unit_price if default_choice else None,
+            "currency": (
+                default_choice.currency
+                if default_choice and default_choice.currency
+                else item.currency_snapshot
+            ),
+            "notes": getattr(item, "customer_note", None) or "",
+            "supplier_options": choices,
+        }
+        if selected:
+            for key in (
+                "supplier_id", "supplier_name", "supplier_sku", "sku_code",
+                "name", "specification", "quantity", "unit_code",
+                "unit_price", "currency", "notes",
+            ):
+                if key in selected:
+                    defaults[key] = selected[key]
+        defaults["supplier_options"] = choices
+        defaults["position"] = item.position
+        defaults["image_url"] = item.image_url_snapshot
+        try:
+            result_items.append(PurchaseOrderItem.model_validate(defaults))
+        except Exception:
+            # Preserve access to the document even if an old snapshot contains
+            # malformed values.  The live quote row remains the safe fallback.
+            result_items.append(PurchaseOrderItem.model_validate({
+                "item_id": item.id,
+                "position": item.position,
+                "supplier_id": default_choice.supplier_id if default_choice else None,
+                "supplier_name": default_choice.supplier_name if default_choice else "未指定供应商",
+                "supplier_sku": default_choice.supplier_sku if default_choice else None,
+                "sku_code": item.sku_code_snapshot,
+                "name": item.name_snapshot,
+                "specification": item.specification_snapshot or "",
+                "image_url": item.image_url_snapshot,
+                "quantity": item.quantity,
+                "unit_code": item.unit_code_snapshot,
+                "unit_price": default_choice.unit_price if default_choice else None,
+                "currency": (
+                    default_choice.currency
+                    if default_choice and default_choice.currency
+                    else item.currency_snapshot
+                ),
+                "notes": getattr(item, "customer_note", None) or "",
+                "supplier_options": choices,
+            }))
+
+    issue_date = (
+        draft.created_at.date()
+        if isinstance(getattr(draft, "created_at", None), datetime)
+        else utcnow().date()
+    )
+    purchase_order_number = _default_purchase_order_number(draft)
+    if isinstance(raw, dict):
+        purchase_order_number = str(
+            raw.get("purchase_order_number") or purchase_order_number
+        ).strip()
+        try:
+            issue_date = date.fromisoformat(str(raw.get("issue_date") or issue_date))
+        except ValueError:
+            pass
+    custom_fields: list[PublicQuoteCustomField] = []
+    valid_item_ids = {item.item_id for item in result_items}
+    for entry in (raw.get("custom_fields", []) if isinstance(raw, dict) else []):
+        if not isinstance(entry, dict):
+            continue
+        try:
+            field = PublicQuoteCustomField.model_validate(entry)
+        except Exception:
+            continue
+        custom_fields.append(field.model_copy(update={
+            "values": {
+                item_id: value
+                for item_id, value in field.values.items()
+                if item_id in valid_item_ids
+            }
+        }))
+    return PurchaseOrderSettings(
+        purchase_order_number=purchase_order_number,
+        issue_date=issue_date,
+        items=result_items,
+        custom_fields=custom_fields,
+    )
 
 
 def _quote_specification(option_values: dict[str, object]) -> str | None:
@@ -4097,6 +4351,7 @@ def _draft_response(
         disclaimer=quote_text(document_locale, "disclaimer"),
         disclaimer_version=draft.disclaimer_version,
         extra_information=_draft_extra_information(draft),
+        custom_fields=_draft_custom_fields(draft),
         proforma_invoice=_draft_proforma_invoice(draft),
         packing_list=_draft_packing_list(draft, items),
         items=[_item_response(item) for item in items],
@@ -5408,6 +5663,134 @@ def get_tenant_quote_draft(
     )
 
 
+def get_tenant_purchase_order(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
+) -> PurchaseOrderSettings:
+    """Load the internal purchase worksheet derived from one customer quote."""
+
+    _require(permissions, "quotation.view")
+    _require_internal_purchase_order(account_scope)
+    _require_extended_quote_documents(session, tenant_id)
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=False,
+    )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    return _draft_purchase_order(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+        items=items,
+    )
+
+
+def update_tenant_purchase_order(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    permissions: frozenset[str],
+    quote_draft_id: UUID,
+    request: PurchaseOrderSettings,
+    account_scope: str = "STAFF",
+    membership_id: UUID | None = None,
+) -> PurchaseOrderSettings:
+    """Persist editable procurement rows without copying live supplier choices."""
+
+    _require(permissions, "quotation.create")
+    _require_internal_purchase_order(account_scope)
+    _require_extended_quote_documents(session, tenant_id)
+    draft = repository.get_quote_draft(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+        for_update=True,
+    )
+    if draft is None or draft.deleted_at is not None:
+        raise ApplicationError(
+            "PUBLIC_QUOTE_DRAFT_NOT_FOUND",
+            "Public quote draft was not found.",
+            kind="not_found",
+        )
+    _ensure_quote_draft_access(
+        session,
+        draft=draft,
+        tenant_id=tenant_id,
+        account_scope=account_scope,
+        membership_id=membership_id,
+        mutate=True,
+    )
+    items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    expected_ids = {item.id for item in items}
+    requested_ids = {item.item_id for item in request.items}
+    if requested_ids != expected_ids:
+        raise ApplicationError(
+            "PURCHASE_ORDER_ITEMS_CHANGED",
+            "采购单商品与当前报价不一致，请刷新后重试。",
+            kind="conflict",
+        )
+
+    snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+    snapshot["purchase_order"] = {
+        "purchase_order_number": request.purchase_order_number,
+        "issue_date": request.issue_date.isoformat(),
+        "items": [
+            item.model_dump(
+                mode="json",
+                exclude={"supplier_options", "image_url"},
+            )
+            for item in request.items
+        ],
+        "custom_fields": [
+            field.model_dump(mode="json") for field in request.custom_fields
+        ],
+    }
+    draft.snapshot = snapshot
+    draft.content_hash = _quote_snapshot_content_hash(snapshot)
+    draft.updated_at = utcnow()
+    session.commit()
+    session.refresh(draft)
+    refreshed_items = repository.list_quote_draft_items(
+        session,
+        tenant_id=tenant_id,
+        quote_draft_id=quote_draft_id,
+    )
+    return _draft_purchase_order(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+        items=refreshed_items,
+    )
+
+
 def update_tenant_quote_draft_settings(
     session: Session,
     *,
@@ -5504,6 +5887,24 @@ def update_tenant_quote_draft_settings(
     if request.extra_information is not None:
         snapshot["extra_information"] = [
             entry.model_dump(mode="json") for entry in request.extra_information
+        ]
+    if request.custom_fields is not None:
+        quote_items = repository.list_quote_draft_items(
+            session, tenant_id=tenant_id, quote_draft_id=quote_draft_id
+        )
+        valid_item_ids = {item.id for item in quote_items}
+        if any(
+            item_id not in valid_item_ids
+            for field in request.custom_fields
+            for item_id in field.values
+        ):
+            raise ApplicationError(
+                "QUOTE_CUSTOM_FIELD_ITEM_NOT_FOUND",
+                "自定义字段包含不属于当前订单的商品，请刷新后重试。",
+                kind="conflict",
+            )
+        snapshot["custom_fields"] = [
+            field.model_dump(mode="json") for field in request.custom_fields
         ]
     if request.proforma_invoice is not None:
         previous_freight = _draft_proforma_invoice(draft).freight
@@ -5994,6 +6395,8 @@ def update_tenant_quote_draft_items(
             item.category_snapshot = patch.category
         if "unit_code" in fields:
             item.unit_code_snapshot = patch.unit_code or "piece"
+        if "image_url" in fields:
+            item.image_url_snapshot = patch.image_url
 
     _recalculate_quote_draft_totals(draft, items)
     session.commit()

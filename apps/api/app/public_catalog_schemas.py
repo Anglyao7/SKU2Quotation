@@ -268,6 +268,32 @@ class PublicQuoteExtraInformation(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class PublicQuoteCustomField(BaseModel):
+    """One merchant-defined line-item column stored only on this document."""
+
+    id: UUID
+    label: str = Field(min_length=1, max_length=80)
+    values: dict[UUID, str] = Field(default_factory=dict, max_length=200)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def normalize_label(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("values", mode="before")
+    @classmethod
+    def normalize_values(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        normalized: dict[object, str] = {}
+        for item_id, content in value.items():
+            text = str(content).strip() if content is not None else ""
+            if len(text) > 2_000:
+                raise ValueError("custom field value is too long")
+            normalized[item_id] = text
+        return normalized
+
+
 class PublicProformaInvoiceSettings(BaseModel):
     """Merchant-authored fields that turn a quotation into a usable PI."""
 
@@ -419,6 +445,7 @@ class PublicQuoteDraftResponse(BaseModel):
     disclaimer: str = PUBLIC_DRAFT_DISCLAIMER
     disclaimer_version: str = PUBLIC_DRAFT_DISCLAIMER_VERSION
     extra_information: list[PublicQuoteExtraInformation] = Field(default_factory=list)
+    custom_fields: list[PublicQuoteCustomField] = Field(default_factory=list)
     proforma_invoice: PublicProformaInvoiceSettings | None = None
     packing_list: PublicPackingListSettings | None = None
     items: list[PublicQuoteDraftItemResponse]
@@ -445,6 +472,10 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
         default=None,
         max_length=20,
     )
+    custom_fields: list[PublicQuoteCustomField] | None = Field(
+        default=None,
+        max_length=12,
+    )
     proforma_invoice: PublicProformaInvoiceSettings | None = None
     packing_list: PublicPackingListSettings | None = None
 
@@ -469,6 +500,22 @@ class PublicQuoteDraftSettingsUpdate(BaseModel):
         value: list[QuoteTemplateField] | None,
     ) -> list[QuoteTemplateField] | None:
         return list(dict.fromkeys(value)) if value is not None else None
+
+    @field_validator("custom_fields")
+    @classmethod
+    def unique_custom_fields(
+        cls,
+        value: list[PublicQuoteCustomField] | None,
+    ) -> list[PublicQuoteCustomField] | None:
+        if value is None:
+            return None
+        ids = [field.id for field in value]
+        labels = [field.label.casefold() for field in value]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate custom field id")
+        if len(labels) != len(set(labels)):
+            raise ValueError("duplicate custom field label")
+        return value
 
 
 class PublicQuoteDraftCurrencyConversion(BaseModel):
@@ -506,6 +553,7 @@ class PublicQuoteDraftItemPatch(BaseModel):
     specification: str | None = Field(default=None, max_length=10000)
     category: str | None = Field(default=None, max_length=200)
     unit_code: str | None = Field(default=None, max_length=32)
+    image_url: str | None = Field(default=None, max_length=2000)
 
     @field_validator(
         "name",
@@ -513,6 +561,7 @@ class PublicQuoteDraftItemPatch(BaseModel):
         "specification",
         "category",
         "unit_code",
+        "image_url",
         mode="before",
     )
     @classmethod
@@ -539,6 +588,108 @@ class PublicQuoteDraftItemsUpdate(BaseModel):
         ids = [item.item_id for item in self.items]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate quote item id")
+        return self
+
+
+class PurchaseOrderSupplierOption(BaseModel):
+    """Internal supplier choice for one quoted SKU.
+
+    These records are available only from the authenticated merchant purchase
+    order endpoint.  They must never be attached to a public storefront quote
+    response or a customer-subaccount response.
+    """
+
+    supplier_id: str
+    supplier_name: str
+    supplier_code: str
+    supplier_sku: str | None = None
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=20)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    moq: Decimal | None = Field(default=None, ge=0, max_digits=20)
+    moq_unit: str | None = Field(default=None, max_length=32)
+    lead_time_days: int | None = Field(default=None, ge=0)
+    contact_name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=320)
+    address: str | None = Field(default=None, max_length=2_000)
+
+
+class PurchaseOrderItem(BaseModel):
+    item_id: UUID
+    position: int = Field(ge=1)
+    supplier_id: str | None = Field(default=None, max_length=40)
+    supplier_name: str = Field(default="未指定供应商", min_length=1, max_length=300)
+    sku_code: str = Field(min_length=1, max_length=200)
+    supplier_sku: str | None = Field(default=None, max_length=200)
+    name: str = Field(min_length=1, max_length=1_000)
+    specification: str = Field(default="", max_length=10_000)
+    image_url: str | None = Field(default=None, max_length=2_000)
+    quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=6)
+    unit_code: str = Field(min_length=1, max_length=32)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=20, decimal_places=6)
+    currency: str = Field(default="CNY", min_length=3, max_length=3)
+    notes: str = Field(default="", max_length=2_000)
+    supplier_options: list[PurchaseOrderSupplierOption] = Field(default_factory=list)
+
+    @field_validator(
+        "supplier_id",
+        "supplier_name",
+        "sku_code",
+        "supplier_sku",
+        "name",
+        "specification",
+        "unit_code",
+        "currency",
+        "notes",
+        mode="before",
+    )
+    @classmethod
+    def normalize_purchase_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_purchase_currency(cls, value: str) -> str:
+        return value.upper()
+
+
+class PurchaseOrderSettings(BaseModel):
+    purchase_order_number: str = Field(min_length=1, max_length=80)
+    issue_date: date
+    items: list[PurchaseOrderItem] = Field(default_factory=list, max_length=200)
+    custom_fields: list[PublicQuoteCustomField] = Field(
+        default_factory=list,
+        max_length=12,
+    )
+
+    @field_validator("purchase_order_number", mode="before")
+    @classmethod
+    def normalize_purchase_order_number(cls, value: object) -> object:
+        normalized = value.strip() if isinstance(value, str) else value
+        if isinstance(normalized, str) and any(
+            ord(character) < 32 or ord(character) == 127 for character in normalized
+        ):
+            raise ValueError("purchase order number cannot contain control characters")
+        return normalized
+
+    @model_validator(mode="after")
+    def unique_purchase_items(self) -> "PurchaseOrderSettings":
+        item_ids = [item.item_id for item in self.items]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("duplicate purchase order item")
+        field_ids = [field.id for field in self.custom_fields]
+        field_labels = [field.label.casefold() for field in self.custom_fields]
+        if len(field_ids) != len(set(field_ids)):
+            raise ValueError("duplicate purchase order custom field id")
+        if len(field_labels) != len(set(field_labels)):
+            raise ValueError("duplicate purchase order custom field label")
+        valid_item_ids = set(item_ids)
+        if any(
+            item_id not in valid_item_ids
+            for field in self.custom_fields
+            for item_id in field.values
+        ):
+            raise ValueError("purchase order custom field item was not found")
         return self
 
 

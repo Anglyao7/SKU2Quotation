@@ -34,8 +34,11 @@ import {
   LockKey,
   Palette,
   PaperPlaneTilt,
+  Plus,
   SlidersHorizontal,
   ShieldCheck,
+  Storefront,
+  Trash,
   X,
   XCircle,
 } from "@phosphor-icons/react";
@@ -48,17 +51,21 @@ import {
   CoreApiError,
   adjustPublicQuoteDraftPrices,
   convertPublicQuoteDraftCurrency,
+  deleteProductImage,
   downloadPublicQuoteDraftDocument,
   getProduct,
   getDashboard,
   getMerchantSettings,
   getPublicQuoteDraft,
+  getPublicQuoteDraftPurchaseOrder,
   listQuoteExcelTemplates,
   syncPublicQuoteDraftItemPrice,
   updatePublicQuoteDraftItems,
+  updatePublicQuoteDraftPurchaseOrder,
   updatePublicQuoteDraftItemPrice,
   updatePublicQuoteDraftSettings,
   updatePublicQuoteDraftStatus,
+  uploadProductGalleryImage,
 } from "../api";
 import { useCoreAuth } from "../AuthContext";
 import { CoreError, CoreLoading, coreDate } from "../CoreUi";
@@ -78,6 +85,8 @@ import type {
   ProformaInvoiceSettings,
   PublicQuoteDraft,
   PublicQuoteDraftItem,
+  QuotePurchaseOrderSettings,
+  QuoteCustomField,
   QuoteExtraInformation,
   QuoteExcelTemplate,
   QuoteTemplateField,
@@ -88,6 +97,7 @@ import type { PackingListSettings } from "../types";
 import { packingErrors } from "../packingList";
 import { PackingListPanel } from "./PackingListPanel";
 import { ProformaInvoicePanel } from "./ProformaInvoicePanel";
+import { PurchaseOrderPanel } from "./PurchaseOrderPanel";
 import { DocumentPreviewModeSwitch } from "./DocumentPreviewModeSwitch";
 import type { DocumentPreviewMode } from "../documentExcelPreview";
 import { quoteDocumentSearch, quoteDocumentTab, type QuoteDocumentTab } from "../quoteDocumentNavigation";
@@ -103,6 +113,7 @@ type ExcelPreviewColumn = {
   key: string;
   header: string;
   field?: QuoteTemplateField;
+  customFieldId?: string;
   width: number;
 };
 type QuoteSettingsPayload = {
@@ -112,6 +123,7 @@ type QuoteSettingsPayload = {
   quoteNumber: string;
   visibleColumns: QuoteTemplateField[];
   extraInformation: QuoteExtraInformation[];
+  customFields: QuoteCustomField[];
   proformaInvoice: ProformaInvoiceSettings;
   packingList?: PackingListSettings;
 };
@@ -158,6 +170,7 @@ function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: Quote
       entry.title === right.extraInformation[index]?.title
       && entry.content === right.extraInformation[index]?.content
     ))
+    && JSON.stringify(left.customFields) === JSON.stringify(right.customFields)
     && JSON.stringify(left.proformaInvoice) === JSON.stringify(right.proformaInvoice)
     && JSON.stringify(left.packingList) === JSON.stringify(right.packingList));
 }
@@ -453,7 +466,12 @@ function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, loc
 
 export function QuoteWorkbenchPage() {
   const { quoteDraftId } = useParams<{ quoteDraftId: string }>();
-  const { profile } = useCoreAuth();
+  const { profile, hasPermission } = useCoreAuth();
+  const accountScope = profile?.context.accountScope;
+  const isCustomerSubaccount = accountScope === "CUSTOMER_SUBACCOUNT";
+  // Supplier, cost and procurement data is internal. Fail closed while the
+  // profile is loading or if a future account scope is introduced.
+  const canViewSupplierData = accountScope === "STAFF";
   const { t } = useLocale();
   const { notify } = useToast();
   const [draft, setDraft] = useState<PublicQuoteDraft>();
@@ -466,14 +484,21 @@ export function QuoteWorkbenchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedDocument = quoteDocumentTab(searchParams);
   const canUseExtendedDocuments = canUseExtendedQuoteDocuments(profile?.context.subscriptionTier);
+  const canUsePurchaseOrder = canUseExtendedDocuments && canViewSupplierData;
   // Fail closed while the authenticated profile is loading: only the basic
   // quotation tab is rendered until an Elite subscription is confirmed.
-  const activeDocument = canUseExtendedDocuments ? requestedDocument : "quotation";
+  const activeDocument = canUseExtendedDocuments && (requestedDocument !== "purchase-order" || canUsePurchaseOrder)
+    ? requestedDocument
+    : "quotation";
   const setActiveDocument = (document: QuoteDocumentTab) => {
     if (!canUseExtendedDocuments && document !== "quotation") return;
+    if (document === "purchase-order" && !canUsePurchaseOrder) return;
     setSearchParams((current) => quoteDocumentSearch(current, document), { replace: true });
   };
   const [packingList, setPackingList] = useState<PackingListSettings>();
+  const [purchaseOrder, setPurchaseOrder] = useState<QuotePurchaseOrderSettings>();
+  const [purchaseOrderLoading, setPurchaseOrderLoading] = useState(false);
+  const [purchaseOrderSaving, setPurchaseOrderSaving] = useState(false);
   const [proformaInvoice, setProformaInvoice] = useState<ProformaInvoiceSettings>({
     invoiceNumber: "",
     issueDate: "",
@@ -498,6 +523,7 @@ export function QuoteWorkbenchPage() {
   const [previewMode, setPreviewMode] = useState<DocumentPreviewMode>("pdf");
   const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultVisibleTableFields);
   const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
+  const [customFields, setCustomFields] = useState<QuoteCustomField[]>([]);
   const [collapsedExtraRows, setCollapsedExtraRows] = useState<Record<number, boolean>>({});
   const [manualOpen, setManualOpen] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -522,6 +548,10 @@ export function QuoteWorkbenchPage() {
   const [syncItem, setSyncItem] = useState<PublicQuoteDraftItem>();
   const [productDetails, setProductDetails] = useState<Record<string, ProductDetail | null>>({});
   const [detailLoadingId, setDetailLoadingId] = useState<string>();
+  const [managedImageId, setManagedImageId] = useState<string>();
+  const [imageManaging, setImageManaging] = useState<"upload" | "delete">();
+  const [imageManagementError, setImageManagementError] = useState("");
+  const workbenchImageInputRef = useRef<HTMLInputElement>(null);
   const [previewScale, setPreviewScale] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 520px)").matches
       ? PREVIEW_SCALE_MIN
@@ -542,6 +572,8 @@ export function QuoteWorkbenchPage() {
   const failedItemsRef = useRef<Record<string, QuoteItemEdit> | undefined>(undefined);
   const [saveFailed, setSaveFailed] = useState(false);
   const loadedDraftIdRef = useRef<string | undefined>(undefined);
+  const purchaseOrderDraftIdRef = useRef<string | undefined>(undefined);
+  const savedPurchaseOrderRef = useRef<string>("");
   const previewViewportRef = useRef<HTMLDivElement>(null);
   const previewSheetRef = useRef<HTMLDivElement>(null);
   const previewDragRef = useRef<{
@@ -568,6 +600,12 @@ export function QuoteWorkbenchPage() {
     setSearchParams((current) => quoteDocumentSearch(current, "quotation"), { replace: true });
   }, [canUseExtendedDocuments, profile?.context.subscriptionTier, requestedDocument, setSearchParams]);
 
+  useEffect(() => {
+    if (!profile?.context.subscriptionTier) return;
+    if (requestedDocument !== "purchase-order" || canUsePurchaseOrder) return;
+    setSearchParams((current) => quoteDocumentSearch(current, "quotation"), { replace: true });
+  }, [canUsePurchaseOrder, profile?.context.subscriptionTier, requestedDocument, setSearchParams]);
+
   const readyTemplates = useMemo(() => templates.filter((row) => row.isReady), [templates]);
   const selectedTemplate = useMemo(
     () => readyTemplates.find((template) => template.id === templateId),
@@ -591,9 +629,14 @@ export function QuoteWorkbenchPage() {
     extraInformation: extraInformation
       .filter((entry) => entry.title.trim() && entry.content.trim())
       .map((entry) => ({ title: entry.title.trim(), content: entry.content.trim() })),
+    customFields: customFields.map((field) => ({
+      id: field.id,
+      label: field.label.trim(),
+      values: Object.fromEntries(Object.entries(field.values).map(([itemId, value]) => [itemId, value.trim()])),
+    })),
     proformaInvoice: { ...proformaInvoice },
     packingList,
-  }), [activeColumns, extraInformation, locale, packingList, proformaInvoice, quoteNumber, style, templateId]);
+  }), [activeColumns, customFields, extraInformation, locale, packingList, proformaInvoice, quoteNumber, style, templateId]);
   const latestSettingsRef = useRef(currentSettings);
   latestSettingsRef.current = currentSettings;
   const previewGrid = useMemo(
@@ -601,8 +644,14 @@ export function QuoteWorkbenchPage() {
     [activeColumns],
   );
   const excelPreviewColumns = useMemo<ExcelPreviewColumn[]>(() => {
+    const customColumns: ExcelPreviewColumn[] = customFields.filter((field) => field.label.trim()).map((field) => ({
+      key: `custom-${field.id}`,
+      header: field.label.trim(),
+      customFieldId: field.id,
+      width: 150,
+    }));
     if (selectedTemplate?.columns.length) {
-      return [...selectedTemplate.columns]
+      const templateColumns: ExcelPreviewColumn[] = [...selectedTemplate.columns]
         .sort((left, right) => left.index - right.index)
         .map((column, index) => {
           const field = selectedTemplate.columnMappings[column.key];
@@ -617,14 +666,16 @@ export function QuoteWorkbenchPage() {
             width: excelPreviewColumnWidth(field),
           };
         });
+      return [...templateColumns, ...customColumns];
     }
-    return defaultExcelTableFields.map((field, index) => ({
+    const defaultColumns: ExcelPreviewColumn[] = defaultExcelTableFields.map((field, index) => ({
       key: spreadsheetColumnName(index + 1),
       header: fieldLabel(field, t, undefined, locale),
       field,
       width: excelPreviewColumnWidth(field),
     }));
-  }, [locale, selectedTemplate, t]);
+    return [...defaultColumns, ...customColumns];
+  }, [customFields, locale, selectedTemplate, t]);
   // A parent account can inspect a child-owned inquiry, but the child remains
   // the only operator allowed to edit, confirm, or otherwise advance it.
   // Keep this flag at the UI boundary as well as enforcing it in the API so a
@@ -634,17 +685,27 @@ export function QuoteWorkbenchPage() {
     || saving
     || Boolean(switchingLocale)
     || enabledLocales.length <= 1;
-  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const documentSellerName = isCustomerSubaccount
     ? profile?.user.displayName?.trim() || ""
     : settings?.name || "";
   const canEditPrices = draft?.status === "PENDING_CONFIRMATION" && !isReadOnly;
+  const canManageCatalogImages = accountScope === "STAFF" && hasPermission("product.edit");
   const hasPendingItemEdits = Object.values(itemEdits).some((edit) => Object.keys(edit).length > 0);
   const hasIncompleteExtraInformation = extraInformation.some((entry) => Boolean(entry.title.trim()) !== Boolean(entry.content.trim()));
-  const hasUnsavedSettings = !quoteSettingsEqual(savedSettingsRef.current, currentSettings) || hasIncompleteExtraInformation;
+  const hasIncompleteCustomFields = customFields.some((field) => !field.label.trim());
+  const hasDuplicateCustomFieldLabels = new Set(customFields.map((field) => field.label.trim().toLocaleLowerCase()).filter(Boolean)).size
+    !== customFields.filter((field) => field.label.trim()).length;
+  const hasUnsavedSettings = !quoteSettingsEqual(savedSettingsRef.current, currentSettings) || hasIncompleteExtraInformation || hasIncompleteCustomFields || hasDuplicateCustomFieldLabels;
   const documentSaveState = saveState({ readOnly: Boolean(draft?.readOnly), saving: saving || savingItems, dirty: hasUnsavedSettings || hasPendingItemEdits, failed: saveFailed });
   const saveStatusText = t(({ READ_ONLY: "只读", SAVING: "正在保存…", FAILED: "保存失败", UNSAVED: "未保存", SAVED: "已保存" })[documentSaveState]);
-  useUnsavedChanges(Boolean(draft && canEditPrices && (hasUnsavedSettings || hasPendingItemEdits || saving || savingItems)));
+  const purchaseOrderDirty = Boolean(purchaseOrder && JSON.stringify(purchaseOrder) !== savedPurchaseOrderRef.current);
+  useUnsavedChanges(Boolean(
+    draft
+    && (
+      (canEditPrices && (hasUnsavedSettings || hasPendingItemEdits || saving || savingItems))
+      || (!isReadOnly && activeDocument === "purchase-order" && (purchaseOrderDirty || purchaseOrderSaving))
+    )
+  ));
   const currencyOptions = useMemo<QuoteCurrencyOption[]>(() => {
     const available = new Map<string, QuoteCurrencyOption>();
     available.set("CNY", { currency: "CNY", name: "人民币", symbol: "¥", rate: 1 });
@@ -809,6 +870,9 @@ export function QuoteWorkbenchPage() {
     setLoading(true);
     setError("");
     setMarket(undefined);
+    setPurchaseOrder(undefined);
+    purchaseOrderDraftIdRef.current = undefined;
+    savedPurchaseOrderRef.current = "";
     try {
       const [nextDraft, nextTemplates, merchantSettings] = await Promise.all([
         getPublicQuoteDraft(quoteDraftId),
@@ -833,6 +897,7 @@ export function QuoteWorkbenchPage() {
       setPackingList(nextDraft.packingList);
       setVisibleColumns(nextActiveColumns);
       setExtraInformation(nextDraft.extraInformation ?? []);
+      setCustomFields(nextDraft.customFields ?? []);
       setCollapsedExtraRows({});
       savedSettingsRef.current = {
         locale: nextDraft.locale,
@@ -841,6 +906,7 @@ export function QuoteWorkbenchPage() {
         quoteNumber: nextDraft.quoteNumber.trim(),
         visibleColumns: [...nextActiveColumns],
         extraInformation: (nextDraft.extraInformation ?? []).map((entry) => ({ ...entry })),
+        customFields: (nextDraft.customFields ?? []).map((field) => ({ ...field, values: { ...field.values } })),
         proformaInvoice: { ...nextDraft.proformaInvoice },
         packingList: nextDraft.packingList,
       };
@@ -858,6 +924,32 @@ export function QuoteWorkbenchPage() {
   }, [quoteDraftId, t]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (
+      activeDocument !== "purchase-order"
+      || !canUsePurchaseOrder
+      || !draft
+      || purchaseOrderDraftIdRef.current === draft.id
+    ) return;
+    let cancelled = false;
+    setPurchaseOrderLoading(true);
+    setError("");
+    void getPublicQuoteDraftPurchaseOrder(draft.id)
+      .then((next) => {
+        if (cancelled) return;
+        setPurchaseOrder(next);
+        savedPurchaseOrderRef.current = JSON.stringify(next);
+        purchaseOrderDraftIdRef.current = draft.id;
+      })
+      .catch((reason) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : t("采购单加载失败"));
+      })
+      .finally(() => {
+        if (!cancelled) setPurchaseOrderLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [activeDocument, canUsePurchaseOrder, draft, t]);
 
   useEffect(() => {
     if (!draft) return;
@@ -991,6 +1083,7 @@ export function QuoteWorkbenchPage() {
         quoteNumber: payload.quoteNumber,
         visibleColumns: payload.visibleColumns,
         extraInformation: payload.extraInformation,
+        customFields: payload.customFields,
         // A partially typed required PI field must not block unrelated
         // quotation edits. Leaving the nested object out preserves the last
         // valid PI snapshot on the server until the PI is valid again.
@@ -1004,6 +1097,7 @@ export function QuoteWorkbenchPage() {
         setQuoteNumber(next.quoteNumber);
         setVisibleColumns(nextVisibleColumns);
         setExtraInformation((current) => current.some((entry) => !entry.title.trim() || !entry.content.trim()) ? current : next.extraInformation ?? payload.extraInformation);
+        setCustomFields(next.customFields ?? payload.customFields);
         setProformaInvoice(next.proformaInvoice);
         setPackingList(next.packingList);
       }
@@ -1014,6 +1108,7 @@ export function QuoteWorkbenchPage() {
         quoteNumber: next.quoteNumber.trim(),
         visibleColumns: [...nextVisibleColumns],
         extraInformation: (next.extraInformation ?? payload.extraInformation).map((entry) => ({ ...entry })),
+        customFields: (next.customFields ?? payload.customFields).map((field) => ({ ...field, values: { ...field.values } })),
         proformaInvoice: { ...next.proformaInvoice },
         packingList: next.packingList,
       };
@@ -1055,14 +1150,22 @@ export function QuoteWorkbenchPage() {
       setError(t("请完善额外信息的标题和内容。"));
       return undefined;
     }
+    if (hasIncompleteCustomFields) {
+      setError(t("请填写自定义字段名称。"));
+      return undefined;
+    }
+    if (hasDuplicateCustomFieldLabels) {
+      setError(t("自定义字段名称不能重复。"));
+      return undefined;
+    }
     const edited = await saveAllItemEdits();
     if (!edited) return undefined;
     return persistSettings(edited, currentSettings);
-  }, [currentSettings, draft, persistSettings, saveAllItemEdits, hasIncompleteExtraInformation, t]);
+  }, [currentSettings, draft, persistSettings, saveAllItemEdits, hasDuplicateCustomFieldLabels, hasIncompleteCustomFields, hasIncompleteExtraInformation, t]);
 
   useEffect(() => {
     if (!draft || !canEditPrices || loadedDraftIdRef.current !== draft.id) return;
-    if (saving || savingItems || hasPendingItemEdits || hasIncompleteExtraInformation) return;
+    if (saving || savingItems || hasPendingItemEdits || hasIncompleteExtraInformation || hasIncompleteCustomFields || hasDuplicateCustomFieldLabels) return;
     if (quoteSettingsEqual(savedSettingsRef.current, currentSettings)) return;
     // The server may preserve an incomplete PI/packing section. Keep it dirty,
     // but do not repeatedly save the same unchanged input while it is incomplete.
@@ -1075,7 +1178,7 @@ export function QuoteWorkbenchPage() {
     return () => {
       if (autoSettingsTimer.current) window.clearTimeout(autoSettingsTimer.current);
     };
-  }, [activeDocument, canEditPrices, currentSettings, draft, persistSettings, saving, savingItems, hasPendingItemEdits, hasIncompleteExtraInformation]);
+  }, [activeDocument, canEditPrices, currentSettings, draft, persistSettings, saving, savingItems, hasPendingItemEdits, hasIncompleteExtraInformation, hasIncompleteCustomFields, hasDuplicateCustomFieldLabels]);
 
   useEffect(() => {
     if (!draft || !canEditPrices || !hasPendingItemEdits || saving || savingItems || failedItemsRef.current === itemEdits) return;
@@ -1105,6 +1208,56 @@ export function QuoteWorkbenchPage() {
       await downloadPublicQuoteDraftDocument(saved.id, documentNumber, type, documentType);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("报价文件下载失败"));
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  const savePurchaseOrder = async (): Promise<QuotePurchaseOrderSettings | undefined> => {
+    if (!draft || !purchaseOrder || isReadOnly || purchaseOrderSaving) return purchaseOrder;
+    if (!purchaseOrder.purchaseOrderNumber.trim()) {
+      setError(t("采购单号不能为空。"));
+      return undefined;
+    }
+    if (!purchaseOrder.issueDate) {
+      setError(t("采购单日期不能为空。"));
+      return undefined;
+    }
+    if (purchaseOrder.items.some((item) => !item.name.trim() || !item.skuCode.trim() || !item.unitCode.trim() || item.quantity <= 0)) {
+      setError(t("采购单商品名称、SKU、数量和单位必须填写完整。"));
+      return undefined;
+    }
+    setPurchaseOrderSaving(true);
+    setError("");
+    try {
+      const next = await updatePublicQuoteDraftPurchaseOrder(draft.id, purchaseOrder);
+      setPurchaseOrder(next);
+      savedPurchaseOrderRef.current = JSON.stringify(next);
+      notify(t("采购单已保存。"), { kind: "success" });
+      return next;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("采购单保存失败"));
+      return undefined;
+    } finally {
+      setPurchaseOrderSaving(false);
+    }
+  };
+
+  const exportPurchaseOrder = async () => {
+    if (!draft || !purchaseOrder || downloading) return;
+    setDownloading("xlsx");
+    setError("");
+    try {
+      const saved = isReadOnly ? purchaseOrder : await savePurchaseOrder();
+      if (!saved) return;
+      await downloadPublicQuoteDraftDocument(
+        draft.id,
+        saved.purchaseOrderNumber,
+        "xlsx",
+        "purchase_order",
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("采购单下载失败"));
     } finally {
       setDownloading(null);
     }
@@ -1196,6 +1349,7 @@ export function QuoteWorkbenchPage() {
 
   const openItemDetails = useCallback(async (item: PublicQuoteDraftItem) => {
     setSelectedItemId(item.id);
+    setImageManagementError("");
     // The list itself lives in the editor now.  Opening an item should only
     // show its system record in a focused dialog, without hiding the editor.
     setItemsDrawerOpen(true);
@@ -1212,6 +1366,70 @@ export function QuoteWorkbenchPage() {
       setDetailLoadingId(undefined);
     }
   }, [productDetails]);
+
+  const refreshProductAfterImageMutation = async (productId: string) => {
+    const detail = await getProduct(productId);
+    setProductDetails((current) => ({ ...current, [productId]: detail }));
+    const mainImage = detail.images.find((image) => image.imageRole === "MAIN") ?? detail.images[0];
+    setManagedImageId(mainImage?.id);
+    if (draft && canEditPrices) {
+      const affected = draft.items.filter((item) => item.productId === productId);
+      if (affected.length) {
+        const next = await updatePublicQuoteDraftItems(
+          draft.id,
+          affected.map((item) => ({ itemId: item.id, imageUrl: mainImage?.url ?? null })),
+        );
+        setDraft(next);
+      }
+    }
+    return detail;
+  };
+
+  const addWorkbenchProductImage = async (file?: File) => {
+    if (!file || !selectedDrawerItem || !selectedProductDetail || !canManageCatalogImages || imageManaging) return;
+    setImageManagementError("");
+    const supportedExtension = /\.(png|jpe?g|webp)$/i.test(file.name);
+    if ((file.type && !file.type.startsWith("image/")) || (!file.type && !supportedExtension)) {
+      setImageManagementError(t("请选择 PNG、JPG 或 WebP 图片。"));
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setImageManagementError(t("商品图片不能超过 20 MB。"));
+      return;
+    }
+    if (selectedProductDetail.images.length >= 50) {
+      setImageManagementError(t("每个商品最多上传 50 张图片。"));
+      return;
+    }
+    setImageManaging("upload");
+    try {
+      const uploaded = await uploadProductGalleryImage(selectedDrawerItem.productId, file);
+      await refreshProductAfterImageMutation(selectedDrawerItem.productId);
+      setManagedImageId(uploaded.id);
+      notify(t("商品图片已新增。"), { kind: "success" });
+    } catch (reason) {
+      setImageManagementError(reason instanceof Error ? reason.message : t("商品图片上传失败"));
+    } finally {
+      setImageManaging(undefined);
+      if (workbenchImageInputRef.current) workbenchImageInputRef.current.value = "";
+    }
+  };
+
+  const removeWorkbenchProductImage = async (imageId: string) => {
+    if (!selectedDrawerItem || !canManageCatalogImages || imageManaging) return;
+    if (!window.confirm(t("确认删除这张商品图片？"))) return;
+    setImageManagementError("");
+    setImageManaging("delete");
+    try {
+      await deleteProductImage(selectedDrawerItem.productId, imageId);
+      await refreshProductAfterImageMutation(selectedDrawerItem.productId);
+      notify(t("商品图片已删除。"), { kind: "success" });
+    } catch (reason) {
+      setImageManagementError(reason instanceof Error ? reason.message : t("商品图片删除失败"));
+    } finally {
+      setImageManaging(undefined);
+    }
+  };
 
   const saveItemPrice = async (item: PublicQuoteDraftItem, syncToCatalog: boolean) => {
     if (!draft || !canEditPrices) return;
@@ -1290,6 +1508,47 @@ export function QuoteWorkbenchPage() {
     setCollapsedExtraRows((current) => ({ ...current, [index]: !current[index] }));
   };
 
+  const addCustomField = () => {
+    if (isReadOnly || customFields.length >= 12) return;
+    setCustomFields((current) => [...current, {
+      id: crypto.randomUUID(),
+      label: "",
+      values: Object.fromEntries((draft?.items ?? []).map((item) => [item.id, ""])),
+    }]);
+  };
+
+  const renameCustomField = (fieldId: string, label: string) => {
+    setCustomFields((current) => current.map((field) => field.id === fieldId ? { ...field, label } : field));
+  };
+
+  const updateCustomFieldValue = (fieldId: string, itemId: string, value: string) => {
+    setCustomFields((current) => current.map((field) => field.id === fieldId
+      ? { ...field, values: { ...field.values, [itemId]: value } }
+      : field));
+  };
+
+  const removeCustomField = (fieldId: string) => {
+    if (isReadOnly) return;
+    setCustomFields((current) => current.filter((field) => field.id !== fieldId));
+  };
+
+  const renderCustomFieldManager = () => (
+    <div className="quote-custom-field-manager">
+      <div className="quote-custom-field-manager-heading">
+        <div><Text size="2" weight="medium">{t("自定义商品字段")}</Text><Text size="1" color="gray">{t("字段仅用于当前单据，可自由命名并逐项填写。")}</Text></div>
+        <Button size="1" variant="soft" color="blue" disabled={isReadOnly || customFields.length >= 12} onClick={addCustomField}><Plus />{t("新增字段")}</Button>
+      </div>
+      {customFields.length ? <div className="quote-custom-field-list">{customFields.map((field, index) => (
+        <div className="quote-custom-field-definition" key={field.id}>
+          <span>{index + 1}</span>
+          <TextField.Root value={field.label} maxLength={80} placeholder={t("输入字段名")} disabled={isReadOnly} aria-label={t("自定义字段名称")} onChange={(event) => renameCustomField(field.id, event.target.value)} />
+          <IconButton size="1" variant="soft" color="red" disabled={isReadOnly} aria-label={t("删除自定义字段")} onClick={() => removeCustomField(field.id)}><Trash /></IconButton>
+        </div>
+      ))}</div> : null}
+      {hasDuplicateCustomFieldLabels ? <Text size="1" color="red">{t("自定义字段名称不能重复。")}</Text> : null}
+    </div>
+  );
+
   const applyBulkPriceAdjustment = async () => {
     if (!draft || !canEditPrices) return;
     const percentage = Number(bulkPercentage.trim());
@@ -1366,7 +1625,19 @@ export function QuoteWorkbenchPage() {
   const selectedProductDetail = selectedDrawerItem
     ? productDetails[selectedDrawerItem.productId]
     : undefined;
+  const selectedLiveProductImage = selectedProductDetail?.images.find((image) => image.id === managedImageId)
+    ?? selectedProductDetail?.images.find((image) => image.imageRole === "MAIN")
+    ?? selectedProductDetail?.images[0];
+  const selectedDetailImageUrl = selectedLiveProductImage?.url
+    ?? selectedProductDetail?.primaryImageUrl
+    ?? selectedDrawerItem?.imageUrl;
   const selectedLiveSku = selectedProductDetail?.skus.find((sku) => sku.id === selectedDrawerItem?.skuId);
+  const selectedSupplierOffers = canViewSupplierData && selectedProductDetail
+    ? (() => {
+      const exact = selectedProductDetail.sources.filter((source) => source.skuId === selectedDrawerItem?.skuId);
+      return exact.length ? exact : selectedProductDetail.sources;
+    })()
+    : [];
   const previewTotal = draft
     ? draft.items.reduce((sum, item) => sum + effectiveItem(item).lineTotal, 0)
     : 0;
@@ -1388,6 +1659,7 @@ export function QuoteWorkbenchPage() {
 
   const renderExcelPreviewCell = (item: PublicQuoteDraftItem, column: ExcelPreviewColumn) => {
     const effective = effectiveItem(item);
+    if (column.customFieldId) return customFields.find((field) => field.id === column.customFieldId)?.values[item.id] ?? "";
     if (!column.field) return null;
     if (column.field === "product_image") {
       return effective.imageUrl
@@ -1455,7 +1727,7 @@ export function QuoteWorkbenchPage() {
               {draft.items.map((item, itemIndex) => (
                 <tr className="quote-excel-data-row" key={item.id}>
                   <th className="quote-excel-row-number">{itemStartRow + itemIndex}</th>
-                  {columns.map((column) => <td key={`${item.id}-${column.key}`} title={column.field ? previewValue(effectiveItem(item), column.field, locale) : ""}>{renderExcelPreviewCell(item, column)}</td>)}
+                  {columns.map((column) => <td key={`${item.id}-${column.key}`} title={column.field ? previewValue(effectiveItem(item), column.field, locale) : column.customFieldId ? customFields.find((field) => field.id === column.customFieldId)?.values[item.id] ?? "" : ""}>{renderExcelPreviewCell(item, column)}</td>)}
                 </tr>
               ))}
               {[{ label: quoteText(locale, "total"), value: previewTotal }].map((row, index) => (
@@ -1499,6 +1771,7 @@ export function QuoteWorkbenchPage() {
           </div>
           <Badge color="gray">{draft.items.length}</Badge>
         </div>
+        {renderCustomFieldManager()}
         <div className="quote-editor-item-list">
           {draft.items.map((sourceItem) => {
             const item = effectiveItem(sourceItem);
@@ -1557,6 +1830,10 @@ export function QuoteWorkbenchPage() {
                     <Text size="1" color="gray">{t("商品分类")}</Text>
                     <TextField.Root value={category} disabled={!canEditPrices} aria-label={t("商品分类")} onChange={(event) => updateItemEdit(item.id, "category", event.target.value)} />
                   </label>
+                  {customFields.map((field) => <label className="quote-editor-item-field" key={field.id}>
+                    <Text size="1" color="gray">{field.label || t("未命名字段")}</Text>
+                    <TextField.Root value={field.values[item.id] ?? ""} maxLength={2000} disabled={!canEditPrices} aria-label={field.label || t("未命名字段")} onChange={(event) => updateCustomFieldValue(field.id, item.id, event.target.value)} />
+                  </label>)}
                   <div className="quote-editor-item-actions">
                     <Button size="1" variant="soft" color="amber" disabled={!canEditPrices || savingItemId === item.id || syncingItemId === item.id} loading={syncingItemId === item.id} onClick={() => requestItemPriceSync(item)}>{t("同步商品库")}</Button>
                   </div>
@@ -1713,11 +1990,12 @@ export function QuoteWorkbenchPage() {
             <Tabs.Trigger value="sales-contract"><LockKey />{t("销售合同")}</Tabs.Trigger>
             <Tabs.Trigger value="commercial-invoice"><LockKey />{t("商业发票")}（CI）</Tabs.Trigger>
             <Tabs.Trigger value="packing-list"><FileText />{t("装箱单")}</Tabs.Trigger>
+            {canUsePurchaseOrder ? <Tabs.Trigger value="purchase-order"><FileXls />{t("采购单")}</Tabs.Trigger> : null}
             <Tabs.Trigger value="customs-declaration"><LockKey />{t("报关单")}</Tabs.Trigger>
           </> : null}
         </Tabs.List>
         <div className="quote-workbench-header-actions">
-          {activeDocument !== "packing-list" && activeDocument !== "proforma" ? <DropdownMenu.Root>
+          {activeDocument !== "packing-list" && activeDocument !== "proforma" && activeDocument !== "purchase-order" ? <DropdownMenu.Root>
             <DropdownMenu.Trigger><Button variant="soft" disabled={!activeDocumentExportable} loading={Boolean(downloading)}><DownloadSimple />{t("导出")}{downloading ? ` ${downloading.toUpperCase()}` : ""}<CaretDown /></Button></DropdownMenu.Trigger>
             <DropdownMenu.Content align="end"><DropdownMenu.Item disabled={!activeDocumentExportable || Boolean(downloading)} onSelect={() => void download("pdf")}><FilePdf />{t("导出为 PDF")}</DropdownMenu.Item><DropdownMenu.Item disabled={!activeDocumentExportable || Boolean(downloading)} onSelect={() => void download("xlsx")}><FileXls />{t("导出为 Excel")}</DropdownMenu.Item></DropdownMenu.Content>
           </DropdownMenu.Root> : null}
@@ -1729,8 +2007,8 @@ export function QuoteWorkbenchPage() {
       </div>
       {error ? <ToastNotice kind="error" message={error} /> : null}
 
-    <div className={`quote-workbench-grid${activeDocument === "packing-list" || activeDocument === "proforma" ? " quote-workbench-grid--packing" : ""}`}>
-      {activeDocument !== "packing-list" && activeDocument !== "proforma" ? renderEditorPanel() : null}
+    <div className={`quote-workbench-grid${activeDocument === "packing-list" || activeDocument === "proforma" || activeDocument === "purchase-order" ? " quote-workbench-grid--packing" : ""}`}>
+      {activeDocument !== "packing-list" && activeDocument !== "proforma" && activeDocument !== "purchase-order" ? renderEditorPanel() : null}
       <section className="quote-workbench-main">
 
     <Card className="quote-status-card">
@@ -1821,14 +2099,14 @@ export function QuoteWorkbenchPage() {
         {selectedDrawerItem ? (
           <div className="quote-item-detail-scroll quote-item-detail">
             <div className="quote-item-detail-hero">
-              {selectedDrawerItem.imageUrl ? (
+              {selectedDetailImageUrl ? (
                 <button
                   type="button"
                   className="quote-item-detail-image-trigger"
                   aria-label={t("查看大图")}
-                  onClick={() => setItemImagePreview({ src: selectedDrawerItem.imageUrl!, alt: selectedDrawerItem.name })}
+                  onClick={() => setItemImagePreview({ src: selectedDetailImageUrl, alt: selectedDrawerItem.name })}
                 >
-                  <img src={selectedDrawerItem.imageUrl} alt={selectedDrawerItem.name} />
+                  <img src={selectedDetailImageUrl} alt={selectedDrawerItem.name} />
                   <span className="quote-item-detail-image-affordance" aria-hidden="true"><MagnifyingGlassPlus weight="bold" /><span>{t("查看大图")}</span></span>
                 </button>
               ) : <span className="quote-item-image-placeholder"><ImageSquare size={32} /></span>}
@@ -1854,11 +2132,40 @@ export function QuoteWorkbenchPage() {
             {selectedProductDetail ? (
               <Card className="quote-live-product-card">
                 <div className="quote-live-product-heading"><Info size={17} /><Text size="2" weight="medium">{t("商品库实时资料")}</Text></div>
+                <div className="quote-live-image-manager">
+                  <div className="quote-live-image-manager-heading">
+                    <div><Text size="1" color="gray">{t("商品图片")}</Text><strong>{t("{count} 张", { count: selectedProductDetail.images.length })}</strong></div>
+                    {canManageCatalogImages ? (
+                      <div className="quote-live-image-actions">
+                        <Button size="1" variant="soft" disabled={Boolean(imageManaging) || selectedProductDetail.images.length >= 50} loading={imageManaging === "upload"} onClick={() => workbenchImageInputRef.current?.click()}><Plus />{t("新增图片")}</Button>
+                        {selectedLiveProductImage ? <Button size="1" variant="soft" color="red" disabled={Boolean(imageManaging)} loading={imageManaging === "delete"} onClick={() => void removeWorkbenchProductImage(selectedLiveProductImage.id)}><Trash />{t("删除")}</Button> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                  {selectedProductDetail.images.length ? (
+                    <div className="quote-live-image-gallery" aria-label={t("商品图片列表")}>
+                      {selectedProductDetail.images.map((image, index) => (
+                        <button
+                          key={image.id}
+                          type="button"
+                          className={image.id === selectedLiveProductImage?.id ? "is-active" : ""}
+                          aria-label={t("查看图片 {index}", { index: index + 1 })}
+                          aria-pressed={image.id === selectedLiveProductImage?.id}
+                          onClick={() => setManagedImageId(image.id)}
+                        >
+                          <img src={image.url} alt="" />
+                          {image.imageRole === "MAIN" ? <span>{t("主图")}</span> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : <Text size="1" color="gray">{t("暂未上传商品图片")}</Text>}
+                  <input ref={workbenchImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => void addWorkbenchProductImage(event.target.files?.[0])} />
+                  {imageManagementError ? <div className="core-form-error" role="alert">{imageManagementError}</div> : null}
+                </div>
                 <div className="quote-live-product-grid">
                   <div><Text size="1" color="gray">{t("商品名称")}</Text><strong>{selectedProductDetail.name}</strong></div>
                   <div><Text size="1" color="gray">{t("商品编码")}</Text><strong className="mono-text">{selectedProductDetail.productCode || selectedProductDetail.id}</strong></div>
                   <div><Text size="1" color="gray">{t("型号")}</Text><strong>{selectedProductDetail.model || "—"}</strong></div>
-                  {!isCustomerSubaccount ? <div><Text size="1" color="gray">{t("供应商")}</Text><strong>{selectedProductDetail.supplier || "—"}</strong></div> : null}
                   <div><Text size="1" color="gray">{t("商品分类")}</Text><strong>{selectedProductDetail.category || "—"}</strong></div>
                   <div><Text size="1" color="gray">{t("SKU 数量")}</Text><strong>{selectedProductDetail.skuCount}</strong></div>
                 </div>
@@ -1871,6 +2178,17 @@ export function QuoteWorkbenchPage() {
                     {Object.keys(selectedLiveSku.optionValues).length ? <Text size="1" color="gray">{Object.entries(selectedLiveSku.optionValues).map(([key, value]) => `${key}: ${String(value)}`).join(quoteSeparator(locale))}</Text> : null}
                   </div>
                 ) : null}
+                {canViewSupplierData ? <div className="quote-supplier-section">
+                  <div className="quote-live-product-heading"><Storefront size={17} /><Text size="2" weight="medium">{t("供应商与采购信息")}</Text></div>
+                  {selectedSupplierOffers.length ? <div className="quote-supplier-grid">{selectedSupplierOffers.map((source) => <div className="quote-supplier-card" key={source.supplierProductId}>
+                    <div><strong>{source.supplierName}</strong>{source.supplierSku ? <span className="mono-text">{source.supplierSku}</span> : null}</div>
+                    <dl>
+                      <div><dt>{t("采购价")}</dt><dd>{source.unitPrice == null ? t("未录入") : money(source.unitPrice, source.currency || draft.currency)}</dd></div>
+                      <div><dt>{t("交期")}</dt><dd>{source.leadTimeDays == null ? "—" : t("{days} 天", { days: source.leadTimeDays })}</dd></div>
+                      <div><dt>{t("价格有效性")}</dt><dd>{t(source.priceValidity)}</dd></div>
+                    </dl>
+                  </div>)}</div> : <Text size="1" color="gray">{t("当前 SKU 尚未关联供应商。")}</Text>}
+                </div> : null}
               </Card>
             ) : null}
           </div>
@@ -1937,6 +2255,10 @@ export function QuoteWorkbenchPage() {
                   {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
                   <div className="quote-preview-total"><span>{quoteText(locale, "total")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
                 </div>
+                {customFields.some((field) => field.label.trim()) ? <div className="quote-preview-custom-table">
+                  <div className="quote-preview-custom-row quote-preview-custom-head"><strong>{quoteText(locale, "product_name")}</strong>{customFields.filter((field) => field.label.trim()).map((field) => <strong key={field.id}>{field.label}</strong>)}</div>
+                  {draft.items.map((item) => <div className="quote-preview-custom-row" key={`custom-${item.id}`}><span>{effectiveItem(item).name}</span>{customFields.filter((field) => field.label.trim()).map((field) => <span key={field.id}>{field.values[item.id] || "—"}</span>)}</div>)}
+                </div> : null}
                 {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).length ? (
                   <div className="quote-preview-extra-info">
                     {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).map((entry, index) => (
@@ -1961,18 +2283,34 @@ export function QuoteWorkbenchPage() {
         ) : renderExcelPreview()}
       </Tabs.Content>
       <Tabs.Content value="proforma">
-        <ProformaInvoicePanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} invoice={proformaInvoice} onChange={updateProformaInvoice} items={draft.items.map(effectiveItem)} itemEditor={renderOrderItemsEditor()} locale={locale} sellerName={documentSellerName} accent={selectedStyle.color} readOnly={isReadOnly} saving={saving || savingItems} exporting={downloading} dirty={hasPendingItemEdits || !quoteSettingsEqual(savedSettingsRef.current, currentSettings)} onSave={() => void save()} onExport={(format) => void download(format)} settingsControls={<>
+        <ProformaInvoicePanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} invoice={proformaInvoice} onChange={updateProformaInvoice} items={draft.items.map(effectiveItem)} customFields={customFields} itemEditor={renderOrderItemsEditor()} locale={locale} sellerName={documentSellerName} accent={selectedStyle.color} readOnly={isReadOnly} saving={saving || savingItems} exporting={downloading} dirty={hasPendingItemEdits || !quoteSettingsEqual(savedSettingsRef.current, currentSettings)} onSave={() => void save()} onExport={(format) => void download(format)} settingsControls={<>
           <div className="packing-field"><span>{t("PDF 样式")}</span><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly || saving || Boolean(downloading)}><Select.Trigger aria-label={t("PDF 样式")} /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}>{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></div>
           <div className="packing-field"><span>{quoteText(locale, "language")}</span><Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")}>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></div>
           <div className="packing-field"><span>{quoteText(locale, "currency")}</span><Button variant="soft" disabled={!canOpenCurrencyConversion || hasPendingItemEdits || saving || Boolean(downloading)} onClick={openCurrencyConversion}>{draft.currency}</Button></div>
         </>} />
       </Tabs.Content>
       <Tabs.Content value="packing-list">
-        {packingList ? <PackingListPanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} value={packingList} onChange={setPackingList} locale={locale} sellerName={documentSellerName} readOnly={isReadOnly} saving={saving} onSave={() => void save()} onExport={(format) => void download(format)} exporting={downloading} dirty={!quoteSettingsEqual(savedSettingsRef.current, currentSettings)} languageControl={<Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")}>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root>} /> : <CoreLoading />}
+        {packingList ? <PackingListPanel previewMode={previewMode} onPreviewModeChange={setPreviewMode} draft={draft} value={packingList} onChange={setPackingList} customFields={customFields} onCustomFieldChange={updateCustomFieldValue} customFieldManager={renderCustomFieldManager()} locale={locale} sellerName={documentSellerName} readOnly={isReadOnly} saving={saving} onSave={() => void save()} onExport={(format) => void download(format)} exporting={downloading} dirty={!quoteSettingsEqual(savedSettingsRef.current, currentSettings)} languageControl={<Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled || Boolean(downloading)}><Select.Trigger aria-label={t("报价语言")}>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root>} /> : <CoreLoading />}
+      </Tabs.Content>
+      <Tabs.Content value="purchase-order">
+        {purchaseOrderLoading || !purchaseOrder ? <CoreLoading label={t("正在读取供应商与采购信息")} /> : <PurchaseOrderPanel
+          value={purchaseOrder}
+          onChange={setPurchaseOrder}
+          readOnly={isReadOnly}
+          saving={purchaseOrderSaving}
+          exporting={downloading === "xlsx"}
+          dirty={purchaseOrderDirty}
+          onSave={() => void savePurchaseOrder()}
+          onExport={() => void exportPurchaseOrder()}
+          onOpenProduct={(itemId) => {
+            const item = draft.items.find((candidate) => candidate.id === itemId);
+            if (item) void openItemDetails(item);
+          }}
+        />}
       </Tabs.Content>
       {(["sales-contract", "commercial-invoice", "customs-declaration"] as const).map((value) => <Tabs.Content value={value} key={value}><Card className="quote-coming-soon"><LockKey size={28} /><Heading size="4">{t("该单证将在后续版本开放")}</Heading><Text size="2" color="gray">{t("当前先完成报价单的制作、样式设置和文件导出。")}</Text></Card></Tabs.Content>)}
       </section>
-      {activeDocument !== "packing-list" && activeDocument !== "proforma" ? renderManual() : null}
+      {activeDocument !== "packing-list" && activeDocument !== "proforma" && activeDocument !== "purchase-order" ? renderManual() : null}
     </div>
     </Tabs.Root>
   </div>;

@@ -29,6 +29,15 @@ DEFAULT_TIMEZONES = [
 
 def upgrade() -> None:
     connection = op.get_bind()
+    existing_columns = {
+        column["name"]
+        for column in sa.inspect(connection).get_columns("tenants")
+    }
+    # A previous local startup may have applied SQLite's direct ADD COLUMN
+    # before the migration version row was committed. Treat that state as an
+    # interrupted migration and continue without adding the column twice.
+    if "dashboard_timezones" in existing_columns:
+        return
     serialized_default = json.dumps(DEFAULT_TIMEZONES, ensure_ascii=False)
     escaped_default = serialized_default.replace("'", "''")
     if connection.dialect.name == "sqlite":

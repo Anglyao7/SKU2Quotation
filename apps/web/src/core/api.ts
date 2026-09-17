@@ -1,5 +1,6 @@
 import type {
   PackingListSettings,
+  QuotePurchaseOrderSettings,
   AttributeDefinition,
   AnnouncementContentBlock,
   AnnouncementPayload,
@@ -70,6 +71,7 @@ import type {
   QuoteExcelTemplateUpdate,
   QuoteTemplateField,
   QuoteExtraInformation,
+  QuoteCustomField,
   QwenImageEmbeddingDimension,
   QuotationRecord,
   QuotationSummary,
@@ -2418,6 +2420,14 @@ export async function replaceProductImage(productId: string, imageId: string, im
   );
   bumpPublicCatalogRevision();
   return mapProductImageUploadResult(row);
+}
+
+export async function deleteProductImage(productId: string, imageId: string): Promise<void> {
+  await request<void>(
+    `/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}`,
+    { method: "DELETE" },
+  );
+  bumpPublicCatalogRevision();
 }
 
 export async function downloadProductMainImage(
@@ -6893,7 +6903,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
 
 interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; customer_note?: string | null; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
 interface ApiProformaInvoiceSettings { invoice_number: string; issue_date: string; seller_address?: string; seller_email?: string; seller_phone?: string; buyer_address?: string; incoterm?: string; payment_terms?: string; delivery_terms?: string; shipment_method?: string; port_of_loading?: string; port_of_destination?: string; beneficiary_name?: string; bank_name?: string; bank_address?: string; bank_account_number?: string; swift_code?: string; freight?: number | string; remarks?: string }
-interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; proforma_invoice?: ApiProformaInvoiceSettings | null; items: ApiPublicQuoteDraftItem[] }
+interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; custom_fields?: Array<{ id: string; label: string; values: Record<string, string> }>; proforma_invoice?: ApiProformaInvoiceSettings | null; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; visitor_country_code?: string | null; read_only?: boolean; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
 interface ApiStorefrontOrderPeriodStatistics { start_at: string; end_at: string; order_count: number; completed_order_count: number; cancelled_order_count: number; amounts: Array<{ currency: string; total_amount: number | string; completed_amount: number | string; order_count: number }> }
 interface ApiStorefrontOrderStatistics { timezone: string; current_month: ApiStorefrontOrderPeriodStatistics; current_year: ApiStorefrontOrderPeriodStatistics }
@@ -6994,6 +7004,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
     disclaimer: row.disclaimer,
     disclaimerVersion: row.disclaimer_version,
     extraInformation: (row.extra_information ?? []).map((entry) => ({ title: entry.title, content: entry.content })),
+    customFields: (row.custom_fields ?? []).map((field) => ({ id: field.id, label: field.label, values: { ...field.values } })),
     proformaInvoice: {
       sellerName: proforma?.seller_name, sellerContact: proforma?.seller_contact ?? "", sellerWebsite: proforma?.seller_website ?? "", sellerTaxNumber: proforma?.seller_tax_number ?? "",
       buyerName: proforma?.buyer_name, buyerContact: proforma?.buyer_contact, buyerEmail: proforma?.buyer_email, buyerPhone: proforma?.buyer_phone,
@@ -7031,6 +7042,120 @@ export async function getPublicQuoteDraft(draftId: string): Promise<PublicQuoteD
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(`/public-quote-drafts/${encodeURIComponent(draftId)}`));
 }
 
+interface ApiPurchaseOrderSupplierOption {
+  supplier_id: string; supplier_name: string; supplier_code: string; supplier_sku?: string | null;
+  unit_price?: number | string | null; currency?: string | null; moq?: number | string | null;
+  moq_unit?: string | null; lead_time_days?: number | null; contact_name?: string | null;
+  phone?: string | null; email?: string | null; address?: string | null;
+}
+
+interface ApiPurchaseOrderSettings {
+  purchase_order_number: string;
+  issue_date: string;
+  custom_fields: Array<{ id: string; label: string; values: Record<string, string> }>;
+  items: Array<{
+    item_id: string; position: number; supplier_id?: string | null; supplier_name: string;
+    sku_code: string; supplier_sku?: string | null; name: string; specification: string;
+    image_url?: string | null; quantity: number | string; unit_code: string;
+    unit_price?: number | string | null; currency: string; notes: string;
+    supplier_options: ApiPurchaseOrderSupplierOption[];
+  }>;
+}
+
+function mapQuotePurchaseOrder(row: ApiPurchaseOrderSettings): QuotePurchaseOrderSettings {
+  return {
+    purchaseOrderNumber: row.purchase_order_number,
+    issueDate: row.issue_date,
+    customFields: (row.custom_fields ?? []).map((field) => ({ id: field.id, label: field.label, values: { ...field.values } })),
+    items: row.items.map((item) => ({
+      itemId: item.item_id,
+      position: item.position,
+      supplierId: defined(item.supplier_id),
+      supplierName: item.supplier_name,
+      skuCode: item.sku_code,
+      supplierSku: defined(item.supplier_sku),
+      name: item.name,
+      specification: item.specification,
+      imageUrl: defined(item.image_url),
+      quantity: Number(item.quantity),
+      unitCode: item.unit_code,
+      unitPrice: item.unit_price == null ? undefined : Number(item.unit_price),
+      currency: item.currency,
+      notes: item.notes,
+      supplierOptions: item.supplier_options.map((option) => ({
+        supplierId: option.supplier_id,
+        supplierName: option.supplier_name,
+        supplierCode: option.supplier_code,
+        supplierSku: defined(option.supplier_sku),
+        unitPrice: option.unit_price == null ? undefined : Number(option.unit_price),
+        currency: defined(option.currency),
+        moq: option.moq == null ? undefined : Number(option.moq),
+        moqUnit: defined(option.moq_unit),
+        leadTimeDays: option.lead_time_days ?? undefined,
+        contactName: defined(option.contact_name),
+        phone: defined(option.phone),
+        email: defined(option.email),
+        address: defined(option.address),
+      })),
+    })),
+  };
+}
+
+function quotePurchaseOrderPayload(row: QuotePurchaseOrderSettings): ApiPurchaseOrderSettings {
+  return {
+    purchase_order_number: row.purchaseOrderNumber.trim(),
+    issue_date: row.issueDate,
+    custom_fields: row.customFields.map((field) => ({ id: field.id, label: field.label.trim(), values: { ...field.values } })),
+    items: row.items.map((item) => ({
+      item_id: item.itemId,
+      position: item.position,
+      supplier_id: item.supplierId ?? null,
+      supplier_name: item.supplierName.trim() || "未指定供应商",
+      sku_code: item.skuCode.trim(),
+      supplier_sku: item.supplierSku?.trim() || null,
+      name: item.name.trim(),
+      specification: item.specification.trim(),
+      image_url: item.imageUrl ?? null,
+      quantity: item.quantity,
+      unit_code: item.unitCode.trim(),
+      unit_price: item.unitPrice ?? null,
+      currency: item.currency.trim().toUpperCase(),
+      notes: item.notes.trim(),
+      supplier_options: item.supplierOptions.map((option) => ({
+        supplier_id: option.supplierId,
+        supplier_name: option.supplierName,
+        supplier_code: option.supplierCode,
+        supplier_sku: option.supplierSku ?? null,
+        unit_price: option.unitPrice ?? null,
+        currency: option.currency ?? null,
+        moq: option.moq ?? null,
+        moq_unit: option.moqUnit ?? null,
+        lead_time_days: option.leadTimeDays ?? null,
+        contact_name: option.contactName ?? null,
+        phone: option.phone ?? null,
+        email: option.email ?? null,
+        address: option.address ?? null,
+      })),
+    })),
+  };
+}
+
+export async function getPublicQuoteDraftPurchaseOrder(draftId: string): Promise<QuotePurchaseOrderSettings> {
+  return mapQuotePurchaseOrder(await request<ApiPurchaseOrderSettings>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/purchase-order`,
+  ));
+}
+
+export async function updatePublicQuoteDraftPurchaseOrder(
+  draftId: string,
+  input: QuotePurchaseOrderSettings,
+): Promise<QuotePurchaseOrderSettings> {
+  return mapQuotePurchaseOrder(await request<ApiPurchaseOrderSettings>(
+    `/public-quote-drafts/${encodeURIComponent(draftId)}/purchase-order`,
+    { method: "PATCH", body: JSON.stringify(quotePurchaseOrderPayload(input)) },
+  ));
+}
+
 export async function updatePublicQuoteDraftSettings(
   draftId: string,
   input: {
@@ -7040,6 +7165,7 @@ export async function updatePublicQuoteDraftSettings(
     quoteNumber?: string;
     visibleColumns?: QuoteTemplateField[];
     extraInformation?: QuoteExtraInformation[];
+    customFields?: QuoteCustomField[];
     proformaInvoice?: PublicQuoteDraft["proformaInvoice"];
     packingList?: PackingListSettings;
   },
@@ -7055,6 +7181,7 @@ export async function updatePublicQuoteDraftSettings(
         quote_number: input.quoteNumber?.trim() || undefined,
         visible_columns: input.visibleColumns ?? [],
         extra_information: input.extraInformation ?? [],
+        custom_fields: (input.customFields ?? []).map((field) => ({ id: field.id, label: field.label, values: field.values })),
         packing_list: input.packingList ? packingListPayload(input.packingList) : undefined,
         proforma_invoice: input.proformaInvoice ? {
           seller_name: input.proformaInvoice.sellerName?.trim() ?? null,
@@ -7152,6 +7279,7 @@ export async function updatePublicQuoteDraftItems(
     specification?: string | null;
     category?: string | null;
     unitCode?: string;
+    imageUrl?: string | null;
   }>,
 ): Promise<PublicQuoteDraft> {
   return mapPublicQuoteDraft(await request<ApiPublicQuoteDraft>(
@@ -7168,6 +7296,7 @@ export async function updatePublicQuoteDraftItems(
           ...(item.specification !== undefined ? { specification: item.specification } : {}),
           ...(item.category !== undefined ? { category: item.category } : {}),
           ...(item.unitCode !== undefined ? { unit_code: item.unitCode } : {}),
+          ...(item.imageUrl !== undefined ? { image_url: item.imageUrl } : {}),
         })),
       }),
     },
@@ -7216,9 +7345,12 @@ export async function downloadPublicQuoteDraftDocument(
   draftId: string,
   documentNumber: string,
   type: "pdf" | "xlsx",
-  documentType: "quotation" | "proforma_invoice" | "packing_list" = "quotation",
+  documentType: "quotation" | "proforma_invoice" | "packing_list" | "purchase_order" = "quotation",
 ): Promise<void> {
-  const safeDocumentNumber = documentNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || (documentType === "proforma_invoice" ? "proforma-invoice" : "quotation");
+  const fallback = documentType === "proforma_invoice"
+    ? "proforma-invoice"
+    : documentType === "purchase_order" ? "purchase-order" : "quotation";
+  const safeDocumentNumber = documentNumber.replace(/[^a-zA-Z0-9._-]+/g, "-") || fallback;
   await downloadCoreFile(
     `/public-quote-drafts/${encodeURIComponent(draftId)}/${type}?document_type=${documentType}`,
     `${safeDocumentNumber}.${type}`,

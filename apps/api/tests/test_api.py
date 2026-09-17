@@ -16084,6 +16084,33 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
     with Image.open(BytesIO(gallery_download.content)) as downloaded_image:
         assert downloaded_image.size == (200, 200)
 
+    current_main_id = UUID(uploaded_payload["id"])
+    with SessionLocal() as session:
+        current_main = session.get(ProductImageRow, current_main_id)
+        assert current_main is not None
+        current_main_key = current_main.object_key
+
+    deleted_main = client.delete(
+        f"/api/v1/products/{product_id}/images/{current_main_id}"
+    )
+    assert deleted_main.status_code == 204, deleted_main.text
+    assert not get_object_storage().exists(current_main_key)
+    after_main_delete = client.get(f"/api/v1/products/{product_id}")
+    assert after_main_delete.status_code == 200, after_main_delete.text
+    remaining_images = after_main_delete.json()["images"]
+    assert len(remaining_images) == 1
+    assert UUID(remaining_images[0]["id"]) == gallery_image_id
+    assert remaining_images[0]["image_role"] == "MAIN"
+
+    deleted_last = client.delete(
+        f"/api/v1/products/{product_id}/images/{gallery_image_id}"
+    )
+    assert deleted_last.status_code == 204, deleted_last.text
+    assert not get_object_storage().exists(replacement_gallery_key)
+    after_last_delete = client.get(f"/api/v1/products/{product_id}")
+    assert after_last_delete.status_code == 200, after_last_delete.text
+    assert after_last_delete.json()["images"] == []
+
 
 def test_sku_catalog_export_round_trip_updates_existing_rows(
     request: pytest.FixtureRequest,
@@ -22601,15 +22628,24 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             "freight": "12.50",
             "remarks": "Bank charges are borne by the buyer.",
         }
+        custom_field = {
+            "id": str(uuid4()),
+            "label": "HS Code",
+            "values": {
+                merchant_detail.json()["items"][0]["id"]: "9503.00",
+            },
+        }
         saved_proforma = client.patch(
             f"/api/v1/public-quote-drafts/{quote_id}/settings",
             json={
                 "locale": "zh-CN",
                 "style": "indigo",
+                "custom_fields": [custom_field],
                 "proforma_invoice": proforma_settings,
             },
         )
         assert saved_proforma.status_code == 200, saved_proforma.text
+        assert saved_proforma.json()["custom_fields"] == [custom_field]
         assert saved_proforma.json()["proforma_invoice"] == proforma_settings
         assert saved_proforma.json()["content_hash"] != original_content_hash
 
@@ -22646,6 +22682,7 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             assert saved_packing.json()["packing_list"][field] == packing_settings[field]
         assert saved_packing.json()["proforma_invoice"] == proforma_settings
         reloaded_packing = client.get(f"/api/v1/public-quote-drafts/{quote_id}").json()
+        assert reloaded_packing["custom_fields"] == [custom_field]
         assert reloaded_packing["packing_list"] == saved_packing.json()["packing_list"]
         assert reloaded_packing["items"][0]["quantity"] == merchant_detail.json()["items"][0]["quantity"]
         assert reloaded_packing["items"][0]["unit_price_snapshot"] == merchant_detail.json()["items"][0]["unit_price_snapshot"]
@@ -22661,6 +22698,19 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
                 json={"locale": "zh-CN", "style": "indigo", "packing_list": {**packing_settings, "items": [invalid_row]}},
             )
             assert rejected_packing.status_code in (400, 409, 422), rejected_packing.text
+        rejected_custom_field = client.patch(
+            f"/api/v1/public-quote-drafts/{quote_id}/settings",
+            json={
+                "locale": "zh-CN",
+                "style": "indigo",
+                "custom_fields": [{
+                    "id": str(uuid4()),
+                    "label": "Foreign row",
+                    "values": {str(uuid4()): "must be rejected"},
+                }],
+            },
+        )
+        assert rejected_custom_field.status_code in (400, 409, 422), rejected_custom_field.text
         for extension in ("pdf", "xlsx"):
             packing_export = client.get(
                 f"/api/v1/public-quote-drafts/{quote_id}/{extension}",
@@ -22677,6 +22727,8 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
                 assert packing_book.active["D6"].value == "0012345678905"
                 assert packing_book.active["I6"].value == 2
                 assert packing_book.active["L6"].value == 25
+                assert packing_book.active["M5"].value == "HS Code"
+                assert packing_book.active["M6"].value == "9503.00"
                 packing_book.close()
 
         merchant_proforma_pdf = client.get(
@@ -22698,6 +22750,8 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
         assert "PI-INTEGRATION-0001" in proforma_values
         assert "FOB Shanghai" in proforma_values
         assert "Example International Bank" in proforma_values
+        assert "HS Code" in proforma_values
+        assert "9503.00" in proforma_values
         assert float(original_price * 2 + Decimal("12.50")) in proforma_values
         proforma_workbook.close()
 
@@ -22731,6 +22785,13 @@ def test_public_quote_draft_snapshot_hashed_expiring_downloads_and_formula_safet
             BytesIO(merchant_xlsx.content),
             data_only=False,
         )
+        merchant_values = [
+            cell.value
+            for row in merchant_workbook.active.iter_rows()
+            for cell in row
+        ]
+        assert "HS Code" in merchant_values
+        assert "9503.00" in merchant_values
         assert len(merchant_workbook.active._images) == 1
         merchant_workbook.close()
     finally:
@@ -22893,6 +22954,25 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         assert created.status_code == 201, created.text
         draft = created.json()
         assert draft["quote_template_id"] == template_id
+        custom_field = {
+            "id": str(uuid4()),
+            "label": "Custom export field",
+            "values": {
+                draft["items"][0]["id"]: "first custom value",
+                draft["items"][1]["id"]: "second custom value",
+            },
+        }
+        saved_settings = client.patch(
+            f"/api/v1/public-quote-drafts/{draft['id']}/settings",
+            json={
+                "locale": draft["locale"],
+                "style": draft["document_style"],
+                "template_id": template_id,
+                "custom_fields": [custom_field],
+            },
+        )
+        assert saved_settings.status_code == 200, saved_settings.text
+        assert saved_settings.json()["custom_fields"] == [custom_field]
         downloaded = client.get(
             draft["xlsx_url"],
             headers={"X-Quote-Download-Token": draft["download_token"]},
@@ -22911,6 +22991,9 @@ def test_custom_quote_excel_template_upload_mapping_and_rendering() -> None:
         assert Decimal(str(rendered_sheet["G10"].value)) == Decimal(str(draft["total"]))
         assert rendered_sheet["H8"].value is None
         assert rendered_sheet["H9"].value is None
+        assert rendered_sheet["I7"].value == "Custom export field"
+        assert rendered_sheet["I8"].value == "first custom value"
+        assert rendered_sheet["I9"].value == "second custom value"
         assert rendered_sheet["A7"].fill.fgColor.rgb.endswith("2D1B69")
         assert rendered_sheet["A8"].fill.fgColor.rgb.endswith("F4EFFA")
         assert rendered_sheet["A9"].fill.fgColor.rgb.endswith("F4EFFA")
@@ -22965,10 +23048,21 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     item_id = created.json()["items"][0]["id"]
     edited = client.patch(
         f"/api/v1/public-quote-drafts/{quote_id}/items",
-        json={"items": [{"item_id": item_id, "unit_price": "60"}]},
+        json={
+            "items": [
+                {
+                    "item_id": item_id,
+                    "unit_price": "60",
+                    "image_url": "https://resources.example.test/products/replacement.webp",
+                }
+            ]
+        },
     )
     assert edited.status_code == 200, edited.text
     assert Decimal(str(edited.json()["total"])) == Decimal("60")
+    assert edited.json()["items"][0]["image_url_snapshot"] == (
+        "https://resources.example.test/products/replacement.webp"
+    )
 
     confirmed = client.patch(
         f"/api/v1/public-quote-drafts/{quote_id}/status",
@@ -23077,6 +23171,85 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     )
     assert expired_rows.status_code == 200, expired_rows.text
     assert quote_id not in {row["id"] for row in expired_rows.json()}
+
+
+def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_sheets() -> None:
+    listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
+    assert listing.status_code == 200, listing.text
+    sku = listing.json()["items"][0]
+    created = client.post(
+        "/api/store/demo/quotes",
+        json={
+            "customer_name": "Purchase order workbench",
+            "privacy_acknowledged": True,
+            "items": [{"sku_id": sku["id"], "quantity": 1}],
+        },
+    )
+    assert created.status_code == 201, created.text
+    quote_id = created.json()["id"]
+    with SessionLocal() as session:
+        subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+        assert subscription is not None
+        original_tier = subscription.subscription_tier
+        subscription.subscription_tier = "ELITE"
+        session.commit()
+    try:
+        loaded = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/purchase-order"
+        )
+        assert loaded.status_code == 200, loaded.text
+        purchase_order = loaded.json()
+        assert purchase_order["purchase_order_number"].startswith("PO-")
+        assert len(purchase_order["items"]) == 1
+        purchase_order["purchase_order_number"] = "PO-INTEGRATION-0001"
+        purchase_order["custom_fields"] = [{
+            "id": str(uuid4()),
+            "label": "采购批次",
+            "values": {
+                purchase_order["items"][0]["item_id"]: "BATCH-2026-01",
+            },
+        }]
+        purchase_order["items"][0].update(
+            {
+                "supplier_id": None,
+                "supplier_name": "测试/采购供应商",
+                "supplier_sku": "FACTORY-SKU-001",
+                "unit_price": "6.25",
+                "currency": "CNY",
+                "notes": "优先安排生产",
+            }
+        )
+        saved = client.patch(
+            f"/api/v1/public-quote-drafts/{quote_id}/purchase-order",
+            json=purchase_order,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["items"][0]["supplier_name"] == "测试/采购供应商"
+        assert Decimal(saved.json()["items"][0]["unit_price"]) == Decimal("6.25")
+        assert saved.json()["custom_fields"] == purchase_order["custom_fields"]
+
+        exported = client.get(
+            f"/api/v1/public-quote-drafts/{quote_id}/xlsx",
+            params={"document_type": "purchase_order"},
+        )
+        assert exported.status_code == 200, exported.text
+        assert "PO-INTEGRATION-0001.xlsx" in exported.headers["content-disposition"]
+        workbook = load_workbook(BytesIO(exported.content), data_only=False)
+        assert workbook.sheetnames == ["测试-采购供应商"]
+        sheet = workbook.active
+        assert sheet["A1"].value == "采购单 / PURCHASE ORDER"
+        assert sheet["D8"].value == "FACTORY-SKU-001"
+        assert sheet["I8"].value == 6.25
+        assert sheet["K8"].value == '=IF(OR(G8="",I8=""),"",G8*I8)'
+        assert sheet["M7"].value == "采购批次"
+        assert sheet["M8"].value == "BATCH-2026-01"
+        workbook.close()
+    finally:
+        with SessionLocal() as session:
+            subscription = session.get(TenantSubscriptionRow, DEFAULT_TENANT_ID)
+            assert subscription is not None
+            subscription.subscription_tier = original_tier
+            session.commit()
 
 
 def test_public_quote_drafts_are_tenant_scoped_for_public_and_authenticated_reads() -> None:
@@ -24647,6 +24820,12 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
             )
             assert child_workbench.status_code == 200, child_workbench.text
             assert child_workbench.json()["read_only"] is False
+            denied_purchase_order = child_client.get(
+                f"/api/v1/public-quote-drafts/{quote_id}/purchase-order",
+                headers=headers,
+            )
+            assert denied_purchase_order.status_code == 403, denied_purchase_order.text
+            assert denied_purchase_order.json()["detail"]["code"] == "PURCHASE_ORDER_OWNER_ONLY"
             line = child_workbench.json()["items"][0]
             repriced_quote = child_client.patch(
                 f"/api/v1/public-quote-drafts/{quote_id}/items/{line['id']}/price",

@@ -12,7 +12,7 @@ const { availableQuoteLocales } = await import(`data:text/javascript;base64,${Bu
 
 assert.equal(quoteDocumentTab(new URLSearchParams()), "quotation");
 assert.equal(quoteDocumentTab(new URLSearchParams("document=unknown")), "quotation");
-for (const tab of ["quotation", "proforma", "sales-contract", "commercial-invoice", "packing-list", "customs-declaration"]) {
+for (const tab of ["quotation", "proforma", "sales-contract", "commercial-invoice", "packing-list", "purchase-order", "customs-declaration"]) {
   assert.equal(quoteDocumentTab(new URLSearchParams(`document=${tab}`)), tab);
 }
 const current = new URLSearchParams("document=commercial-invoice&source=quotes");
@@ -33,4 +33,8 @@ assert.ok(workbench.includes('className="quote-item-detail-image-trigger"'), "Qu
 assert.ok(workbench.includes('className="quote-item-image-preview-dialog"'), "Quote item images must open in a dedicated lightbox");
 assert.ok(workbench.includes('aria-label={t("关闭图片预览")}'), "The image lightbox must have an accessible close action");
 assert.ok(workbench.includes("changeDocumentLocale"), "Quote language changes must persist immediately so localized item data refreshes");
+assert.ok(workbench.includes('value="purchase-order"'), "Elite staff workbenches must expose the purchase-order tab");
+assert.ok(workbench.includes("canUsePurchaseOrder"), "Purchase orders must remain hidden from customer subaccounts");
+assert.ok(workbench.includes('const canViewSupplierData = accountScope === "STAFF"'), "Supplier UI must fail closed unless the account is explicitly staff-owned");
+assert.ok(workbench.includes('{canViewSupplierData ? <div className="quote-supplier-section">'), "Supplier details must use the strict staff-only guard");
 console.log("Document tabs: PI/CI separation, direct entry, reload state and invalid fallback passed");

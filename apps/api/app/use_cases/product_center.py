@@ -618,7 +618,9 @@ def _card(
         if any(image.approval_status == "APPROVED" for image in images)
         else "SOURCE" if images else "NONE"
     )
-    can_read_owner_data = account_scope != "CUSTOMER_SUBACCOUNT"
+    # Supplier, purchasing and audit data is owner-internal. Unknown/future
+    # scopes must not inherit it accidentally.
+    can_read_owner_data = account_scope == "STAFF"
     offers = _offers(
         session,
         tenant_id=tenant_id,
@@ -1333,7 +1335,9 @@ def get_product(
     attributes = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
     images = repository.list_images(session, tenant_id=tenant_id, product_id=product.id)
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
-    can_read_owner_data = account_scope != "CUSTOMER_SUBACCOUNT"
+    # Fail closed: only an explicitly authenticated staff workspace receives
+    # supplier sources, costs and internal audit data.
+    can_read_owner_data = account_scope == "STAFF"
     audit = (
         repository.list_audit_events(
             session, tenant_id=tenant_id, product_id=product.id
@@ -2260,6 +2264,107 @@ def replace_product_image(
         content=content,
         allow_any_role=True,
     )
+
+
+def delete_product_image(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    user_id: UUID,
+    membership_id: UUID,
+    permissions: frozenset[str],
+    product_id: UUID,
+    image_id: UUID,
+) -> None:
+    """Soft-delete one product image and keep a usable main image when possible."""
+
+    _require(permissions, "product.edit")
+    _lock_catalog_write(session, tenant_id=tenant_id)
+    product = repository.get_product_row(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    if product is None:
+        raise ApplicationError(
+            "PRODUCT_NOT_FOUND",
+            "Product was not found.",
+            kind="not_found",
+        )
+    images = repository.list_images(
+        session,
+        tenant_id=tenant_id,
+        product_id=product_id,
+    )
+    image = next((candidate for candidate in images if candidate.id == image_id), None)
+    if image is None:
+        raise ApplicationError(
+            "PRODUCT_IMAGE_NOT_FOUND",
+            "商品图片不存在或已经被删除。",
+            kind="not_found",
+        )
+    _release_rollback_ownership(
+        session,
+        tenant_id=tenant_id,
+        product_ids=[product.id],
+    )
+
+    remaining = [candidate for candidate in images if candidate.id != image.id]
+    promoted = None
+    if image.image_role == "MAIN" and remaining:
+        promoted = remaining[0]
+        promoted.image_role = "MAIN"
+        promoted.sort_order = 0
+
+    now = utcnow()
+    mark_deleted(image, at=now)
+    product.current_version += 1
+    product.updated_by = user_id
+    product.updated_at = now
+    session.add(
+        ProductAuditEventRow(
+            tenant_id=tenant_id,
+            product_id=product.id,
+            entity_type="PRODUCT",
+            entity_id=str(image.id),
+            action="product.image.deleted",
+            before={
+                "image_id": str(image.id),
+                "image_role": image.image_role,
+                "object_key": image.object_key,
+            },
+            after={
+                "remaining_image_count": len(remaining),
+                "promoted_main_image_id": str(promoted.id) if promoted is not None else None,
+            },
+            actor_membership_id=membership_id,
+            occurred_at=now,
+        )
+    )
+    _commit(
+        session,
+        conflict_code="PRODUCT_IMAGE_CONFLICT",
+        conflict_message="Product image could not be deleted.",
+    )
+
+    object_key = str(image.object_key or "").strip()
+    storage_provider = str(image.storage_provider or "").upper()
+    managed_providers = {
+        "S3",
+        "R2",
+        "LOCAL",
+        "LOCAL-S3-COMPATIBLE",
+        "LOCAL_S3_COMPATIBLE",
+    }
+    if (
+        object_key
+        and storage_provider in managed_providers
+        and object_key.startswith(f"tenants/{tenant_id}/")
+    ):
+        try:
+            get_object_storage().delete(object_key)
+        except Exception:
+            logger.warning("could not remove deleted product image object: %s", object_key)
 
 
 _PRODUCT_IMAGE_DOWNLOAD_EXTENSIONS = {

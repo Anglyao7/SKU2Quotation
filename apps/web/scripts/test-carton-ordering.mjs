@@ -62,4 +62,14 @@ for (const path of ["../src/pages/ProductDetailPage.tsx", "../src/pages/SkuDetai
 const productPage = await fs.readFile(new URL("../src/pages/ProductDetailPage.tsx", import.meta.url), "utf8");
 assert.match(productPage, /\{selectedPackingQuantity \? \(\s*<div className="product-selection-identity">/, "Hide the entire packing label when quantity is absent");
 assert.ok(!productPage.includes('selectedPackingQuantity || t("未设置")'));
-console.log("Carton ordering: add/remove, subtotal, empty field, decimal precision, old carts, SKU refresh and account isolation passed");
+const checkout = await fs.readFile(new URL("../src/components/CartDrawer.tsx", import.meta.url), "utf8");
+assert.ok(checkout.includes('t("去下单")'), "The floating cart preview must lead to checkout");
+assert.ok(checkout.includes('className="cart-checkout-dialog"'), "Checkout uses a centered dialog instead of a side drawer");
+assert.ok(!checkout.includes('className="cart-drawer"'));
+assert.ok(
+  checkout.indexOf('className="quote-customer-section"') < checkout.indexOf('className="checkout-products-section"'),
+  "Customer details must appear before the selected product list",
+);
+const storefrontStyles = await fs.readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+assert.match(storefrontStyles, /\.cart-lines\s*\{[^}]*height:\s*clamp\([^;]+;[^}]*overflow-y:\s*auto/s, "The checkout product list stays in a fixed scroll region");
+console.log("Carton ordering and checkout dialog layout passed");

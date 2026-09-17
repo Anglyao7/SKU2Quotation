@@ -1,4 +1,4 @@
-const documentTabs = ["quotation", "proforma", "sales-contract", "commercial-invoice", "packing-list", "customs-declaration"] as const;
+const documentTabs = ["quotation", "proforma", "sales-contract", "commercial-invoice", "packing-list", "purchase-order", "customs-declaration"] as const;
 export type QuoteDocumentTab = typeof documentTabs[number];
 
 export function quoteDocumentTab(search: URLSearchParams): QuoteDocumentTab {

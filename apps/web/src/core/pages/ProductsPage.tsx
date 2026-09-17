@@ -12,6 +12,7 @@ import {
   createManualProduct,
   createProductTemplateImport,
   createSkus,
+  deleteProductImage,
   deleteAllProducts,
   detectFile,
   downloadProductImage,
@@ -310,14 +311,23 @@ function visibleSkuOptions(optionValues: ProductSku["optionValues"]) {
 }
 
 interface EditableSkuOptionRow {
+  id: string;
   key: string;
   value: string;
   isVariant: boolean;
 }
 
+let editableSkuOptionRowSequence = 0;
+
+function nextEditableSkuOptionRowId() {
+  editableSkuOptionRowSequence += 1;
+  return `sku-option-${editableSkuOptionRowSequence}`;
+}
+
 function editableSkuOptionRows(sku: ProductSku): EditableSkuOptionRow[] {
   const variantKeys = new Set(sku.variantOptionKeys ?? []);
   const rows = visibleSkuOptions(sku.optionValues).map(([key, value]) => ({
+    id: nextEditableSkuOptionRowId(),
     key,
     value: String(value),
     isVariant: variantKeys.has(key),
@@ -327,7 +337,7 @@ function editableSkuOptionRows(sku: ProductSku): EditableSkuOptionRow[] {
   // which made the front-end selector impossible to repair from the console.
   for (const key of sku.variantOptionKeys ?? []) {
     if (!rows.some((row) => row.key === key)) {
-      rows.push({ key, value: "", isVariant: true });
+      rows.push({ id: nextEditableSkuOptionRowId(), key, value: "", isVariant: true });
     }
   }
   return rows;
@@ -2762,6 +2772,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const imageUploadActionRef = useRef<"replace" | "add">("replace");
   const imageDragDepthRef = useRef(0);
   const [imageUploading, setImageUploading] = useState(false);
+  const [imageDeleting, setImageDeleting] = useState(false);
   const [imageDownloading, setImageDownloading] = useState(false);
   const [imageDragging, setImageDragging] = useState(false);
   const [imageError, setImageError] = useState("");
@@ -2797,7 +2808,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   }, [product.id, selectedSkuId]);
 
   const uploadImage = async (file?: File, action = imageUploadActionRef.current) => {
-    if (!file || imageUploading || !canEdit) return;
+    if (!file || imageUploading || imageDeleting || !canEdit) return;
     setImageError("");
     const supportedExtension = /\.(png|jpe?g|webp)$/i.test(file.name);
     if ((file.type && !file.type.startsWith("image/")) || (!file.type && !supportedExtension)) {
@@ -2852,17 +2863,38 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
     }
   };
 
+  const deleteImage = async () => {
+    if (!selectedImage || imageDeleting || imageUploading || !canEdit) return;
+    if (!window.confirm(t("确认删除这张商品图片？"))) return;
+    setImageDeleting(true);
+    setImageError("");
+    try {
+      await deleteProductImage(product.id, selectedImage.id);
+      const remaining = product.images.filter((image) => image.id !== selectedImage.id);
+      setSelectedImageId(
+        remaining.find((image) => image.imageRole === "MAIN")?.id
+        ?? remaining[0]?.id
+        ?? "",
+      );
+      await onChanged();
+    } catch (reason) {
+      setImageError(reason instanceof Error ? reason.message : t("商品图片删除失败"));
+    } finally {
+      setImageDeleting(false);
+    }
+  };
+
   const dragContainsFiles = (event: DragEvent<HTMLElement>) => (
     Array.from(event.dataTransfer.types).includes("Files")
   );
   const beginImageDrag = (event: DragEvent<HTMLElement>) => {
-    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    if (!canEdit || imageUploading || imageDeleting || !dragContainsFiles(event)) return;
     event.preventDefault();
     imageDragDepthRef.current += 1;
     setImageDragging(true);
   };
   const continueImageDrag = (event: DragEvent<HTMLElement>) => {
-    if (!canEdit || imageUploading || !dragContainsFiles(event)) return;
+    if (!canEdit || imageUploading || imageDeleting || !dragContainsFiles(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setImageDragging(true);
@@ -2878,7 +2910,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
     event.preventDefault();
     imageDragDepthRef.current = 0;
     setImageDragging(false);
-    if (imageUploading || !dragContainsFiles(event)) return;
+    if (imageUploading || imageDeleting || !dragContainsFiles(event)) return;
     void uploadImage(event.dataTransfer.files[0], "replace");
   };
   const chooseImageUpload = (action: "replace" | "add") => {
@@ -2981,7 +3013,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                 </span>
                 <span className="core-product-image-actions">
                   {selectedImageUrl ? (
-                    <Button size="2" variant="ghost" color="gray" disabled={imageDownloading || imageUploading} loading={imageDownloading} onClick={() => void downloadImage()}>
+                    <Button size="2" variant="ghost" color="gray" disabled={imageDownloading || imageUploading || imageDeleting} loading={imageDownloading} onClick={() => void downloadImage()}>
                       <DownloadSimple />{t("下载图片")}
                     </Button>
                   ) : null}
@@ -2990,7 +3022,7 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                       size="2"
                       variant="soft"
                       color="purple"
-                      disabled={!selectedImageUrl || imageUploading || imageDownloading}
+                      disabled={!selectedImageUrl || imageUploading || imageDeleting || imageDownloading}
                       onClick={() => onEnhanceProduct(product.id)}
                     >
                       <Sparkle />{t("图片变清晰")}
@@ -2999,13 +3031,18 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
                   {canEdit ? (
                     <>
                       {selectedImageUrl ? (
-                        <Button size="2" variant="soft" disabled={imageUploading} loading={imageUploading && imageUploadActionRef.current === "replace"} onClick={() => chooseImageUpload("replace")}>
+                        <Button size="2" variant="soft" disabled={imageUploading || imageDeleting} loading={imageUploading && imageUploadActionRef.current === "replace"} onClick={() => chooseImageUpload("replace")}>
                           <FileArrowUp />{t("替换图片")}
                         </Button>
                       ) : null}
-                      <Button size="2" disabled={imageUploading || product.images.length >= 50} loading={imageUploading && imageUploadActionRef.current === "add"} onClick={() => chooseImageUpload("add")}>
+                      <Button size="2" disabled={imageUploading || imageDeleting || product.images.length >= 50} loading={imageUploading && imageUploadActionRef.current === "add"} onClick={() => chooseImageUpload("add")}>
                         <Plus />{t(selectedImageUrl ? "新增图片" : "上传图片")}
                       </Button>
+                      {selectedImage ? (
+                        <Button size="2" variant="soft" color="red" disabled={imageUploading || imageDeleting} loading={imageDeleting} onClick={() => void deleteImage()}>
+                          <Trash />{t("删除")}
+                        </Button>
+                      ) : null}
                     </>
                   ) : null}
                 </span>
@@ -3465,10 +3502,10 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
           </> : null}
         </div>
         {canEditSku ? <div className="core-sku-option-editor">
-          <div className="core-sku-option-editor-heading"><Text size="2" weight="bold">{t("商品规格")}</Text><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { key: "", value: "", isVariant: true }])}><Plus />{t("添加规格")}</Button></div>
+          <div className="core-sku-option-editor-heading"><Text size="2" weight="bold">{t("商品规格")}</Text><Button size="1" variant="soft" onClick={() => setOptionRows((current) => [...current, { id: nextEditableSkuOptionRowId(), key: "", value: "", isVariant: true }])}><Plus />{t("添加规格")}</Button></div>
           {optionRows.length ? <div className="core-sku-option-editor-list">
             <div className="core-sku-option-editor-labels"><span>{t("前台展示")}</span><span>{t("规格名称")}</span><span>{t("规格值")}</span><span /></div>
-            {optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={`${row.key}-${index}`}>
+            {optionRows.map((row, index) => <div className="core-sku-option-editor-row" key={row.id}>
               <label className="core-sku-option-editor-variant">
                 <Checkbox checked={row.isVariant} onCheckedChange={(checked) => setOptionRows((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, isVariant: checked === true } : item))} />
                 <span>{t("前台展示")}</span>

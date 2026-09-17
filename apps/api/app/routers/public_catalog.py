@@ -39,6 +39,7 @@ from ..public_catalog_schemas import (
     PublicQuoteDraftSettingsUpdate,
     PublicQuoteDraftStatusUpdate,
     PublicQuoteDraftSummary,
+    PurchaseOrderSettings,
     PublicSkuPage,
     PublicSkuResponse,
     PublicStoreResponse,
@@ -55,6 +56,7 @@ from ..services.public_quote_documents import (
     render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
 )
+from ..services.purchase_order_documents import render_purchase_order_xlsx
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import (
     cleanup_expired_raw_events,
@@ -895,6 +897,56 @@ def update_tenant_public_quote_draft_settings(
         raise application_http_error(exc) from exc
 
 
+@router.get(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/purchase-order",
+    response_model=PurchaseOrderSettings,
+)
+def get_tenant_public_quote_draft_purchase_order(
+    quote_draft_id: UUID,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PurchaseOrderSettings:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.get_tenant_purchase_order(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
+@router.patch(
+    "/api/v1/public-quote-drafts/{quote_draft_id}/purchase-order",
+    response_model=PurchaseOrderSettings,
+)
+def update_tenant_public_quote_draft_purchase_order(
+    quote_draft_id: UUID,
+    payload: PurchaseOrderSettings,
+    response: Response,
+    session: Session = Depends(get_authenticated_session),
+) -> PurchaseOrderSettings:
+    response.headers.update(NO_STORE_HEADERS)
+    context = current_context(session)
+    try:
+        return use_cases.update_tenant_purchase_order(
+            session,
+            tenant_id=context.tenant_id,
+            permissions=context.permissions,
+            quote_draft_id=quote_draft_id,
+            request=payload,
+            account_scope=context.account_scope,
+            membership_id=context.membership_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+
+
 @router.post(
     "/api/v1/public-quote-drafts/{quote_draft_id}/currency-conversion",
     response_model=PublicQuoteDraftResponse,
@@ -1248,7 +1300,12 @@ def download_tenant_quote_draft_pdf(
 def download_tenant_quote_draft_xlsx(
     quote_draft_id: UUID,
     request: Request,
-    document_type: Literal["quotation", "proforma_invoice", "packing_list"] = Query("quotation"),
+    document_type: Literal[
+        "quotation",
+        "proforma_invoice",
+        "packing_list",
+        "purchase_order",
+    ] = Query("quotation"),
     session: Session = Depends(get_authenticated_session),
 ) -> Response:
     context = current_context(session)
@@ -1262,6 +1319,26 @@ def download_tenant_quote_draft_xlsx(
         token=request.headers.get("authorization"),
     )
     try:
+        if document_type == "purchase_order":
+            purchase_order = use_cases.get_tenant_purchase_order(
+                session,
+                tenant_id=context.tenant_id,
+                permissions=context.permissions,
+                quote_draft_id=quote_draft_id,
+                account_scope=context.account_scope,
+                membership_id=context.membership_id,
+            )
+            return Response(
+                content=render_purchase_order_xlsx(
+                    purchase_order,
+                    image_loader=_quote_image_loader(session),
+                ),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers=_document_headers(
+                    quote_number=purchase_order.purchase_order_number,
+                    extension="xlsx",
+                ),
+            )
         document = use_cases.get_tenant_quote_document(
             session,
             tenant_id=context.tenant_id,

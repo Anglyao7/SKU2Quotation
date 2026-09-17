@@ -4,7 +4,6 @@ import {
   Button,
   Dialog,
   IconButton,
-  Separator,
   Text,
   TextArea,
   TextField,
@@ -342,7 +341,7 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
               <Button size="3" variant="soft">{t("继续选品")}</Button>
             </Dialog.Close>
             <Button size="3" onClick={() => { setPreviewOpen(false); setOpen(true); }}>
-              {t("查看清单")}<ArrowRight size={18} />
+              {t("去下单")}<ArrowRight size={18} />
             </Button>
           </div>
         </div>
@@ -356,20 +355,16 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
           {itemCount > 0 && <span className="header-count">{itemCount}</span>}
         </Button>
       </Dialog.Trigger>
-      <Dialog.Content className="cart-drawer" aria-describedby="cart-description">
-        <div className="drawer-header">
-          <div>
-            <Text size="1" color="gray">{t(lines.length > 0 ? "报价清单" : "选品报价")}</Text>
-            <Dialog.Title>{t(lines.length > 0 ? "生成报价单" : "报价清单")}</Dialog.Title>
-            <Dialog.Description id="cart-description">
-              {t(lines.length > 0 ? "确认商品数量并填写客户信息。" : "添加商品后，即可生成报价单。")}
-            </Dialog.Description>
-          </div>
+      <Dialog.Content className="cart-checkout-dialog" aria-describedby="cart-checkout-description">
+        <div className="checkout-dialog-header">
+          <Dialog.Title className="checkout-dialog-title">{t(lines.length > 0 ? "去下单" : "报价清单")}</Dialog.Title>
+          <Dialog.Description id="cart-checkout-description">
+            {t(lines.length > 0 ? "确认商品数量并填写客户信息。" : "添加商品后，即可生成报价单。")}
+          </Dialog.Description>
           <Dialog.Close>
             <IconButton variant="ghost" color="gray" aria-label={t("关闭报价清单")}><X size={19} /></IconButton>
           </Dialog.Close>
         </div>
-        <Separator size="4" />
 
         {quote ? (
           <div className="quote-success">
@@ -397,77 +392,16 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
             <Button variant="ghost" color="gray" onClick={() => setOpen(false)}>{t("继续选品")}</Button>
           </div>
         ) : lines.length === 0 ? (
-          <div className="drawer-empty">
-            <span className="drawer-empty-icon"><ShoppingCartSimple size={34} weight="duotone" /></span>
-            <Text size="4" weight="medium" className="drawer-empty-title">{t("报价清单还是空的")}</Text>
-            <Text size="2" color="gray" className="drawer-empty-copy">{t("从商品列表中选择需要报价的 SKU，再回来确认数量并生成报价单。")}</Text>
+          <div className="checkout-empty">
+            <span className="checkout-empty-icon"><ShoppingCartSimple size={34} weight="duotone" /></span>
+            <Text size="4" weight="medium" className="checkout-empty-title">{t("报价清单还是空的")}</Text>
+            <Text size="2" color="gray" className="checkout-empty-copy">{t("从商品列表中选择需要报价的 SKU，再回来确认数量并生成报价单。")}</Text>
             <Dialog.Close><Button size="3" variant="soft">{t("继续浏览商品")}</Button></Dialog.Close>
           </div>
         ) : (
           <form className="quote-form" onSubmit={handleSubmit}>
             <div className="quote-form-scroll">
-              <div className="cart-section-heading">
-                <div>
-                  <Text size="2" weight="medium">{t("已选商品")}</Text>
-                  <Text size="1" color="gray">{t("{skus} 个 SKU，共 {items} 件", { skus: lines.length, items: itemCount })}</Text>
-                </div>
-                <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear}>{t("清空")}</Button>
-              </div>
-              <div className="cart-lines">
-                {lines.map(({ sku, quantity, note }) => (
-                  <div className="cart-line" key={sku.id}>
-                    <CartLineImage sku={sku} />
-                    <div className="cart-line-copy">
-                      <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
-                      <Text size="1" color="gray" className="mono-text">{sku.sku_code}</Text>
-                      {showPrices ? <Text size="1" color="gray">{money(sku.price, sku.currency)}</Text> : null}
-                      {skuCartonSize(sku) ? <Text size="1" color="gray">{t("装箱数")} × {skuCartonSize(sku)} · {t("数量")} × {quantity} · {t("箱数")} × {cartCartons(sku, quantity)}</Text> : null}
-                      {showPrices ? <Text size="2" weight="medium">{t("小计")} {money((Number(sku.price) || 0) * quantity, sku.currency)}</Text> : null}
-                    </div>
-                    <div className="quantity-control">
-                      <Tooltip content={t("减少数量")}>
-                        <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, -1))} aria-label={t("减少数量")}>
-                          {quantity <= (skuCartonSize(sku) || 1) ? <Trash size={14} /> : <Minus size={14} />}
-                        </IconButton>
-                      </Tooltip>
-                      <Text size="2" weight="medium">{quantity}</Text>
-                      <Tooltip content={t("增加数量")}>
-                        <IconButton type="button" size="1" variant="soft" color="gray" disabled={changeCartQuantity(sku, quantity, 1) === quantity} onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, 1))} aria-label={t("增加数量")}>
-                          <Plus size={14} />
-                        </IconButton>
-                      </Tooltip>
-                    </div>
-                    <label className="cart-line-note">
-                      <Text as="span" size="1" color="gray">{t("商品备注（选填）")}</Text>
-                      <TextArea
-                        value={note || ""}
-                        onChange={(event) => onNote(sku.id, event.target.value)}
-                        maxLength={1000}
-                        rows={2}
-                        resize="vertical"
-                        placeholder={t("例如颜色偏好、印刷要求或包装说明")}
-                        aria-label={t("{name} 的商品备注", { name: sku.name })}
-                      />
-                    </label>
-                  </div>
-                ))}
-              </div>
-
-              {showPrices ? <div className="quote-total-row">
-                <Text color="gray" size="2">{t("商品参考合计")}</Text>
-                <div>
-                  <Text color="gray" size="1" as="div">{t("按已选数量计算")}</Text>
-                  <Text weight="bold" size="4">{money(knownTotal, currency)}</Text>
-                </div>
-              </div> : null}
-
               <div className="quote-customer-section">
-                <div className="cart-section-heading">
-                  <div>
-                    <Text size="2" weight="medium">{t("客户信息")}</Text>
-                    <Text size="1" color="gray">{t("用于生成本次报价单")}</Text>
-                  </div>
-                </div>
                 <div className="form-grid">
                   <label className="field-group">
                     <Text as="span" size="2" weight="medium">{t("客户姓名 *")}</Text>
@@ -487,10 +421,67 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                   </label>
                   <label className="field-group field-span-2">
                     <Text as="span" size="2" weight="medium">{t("报价备注")}</Text>
-                    <TextArea name="notes" placeholder={t("交期、包装或其他说明")} resize="vertical" />
+                    <TextArea name="notes" placeholder={t("交期、包装或其他说明")} rows={1} resize="none" />
                   </label>
                 </div>
               </div>
+
+              <section className="checkout-products-section">
+                <div className="cart-section-heading">
+                  <div>
+                    <Text size="2" weight="medium">{t("已选商品")}</Text>
+                    <Text size="1" color="gray">{t("{skus} 个 SKU，共 {items} 件", { skus: lines.length, items: itemCount })}</Text>
+                  </div>
+                  <Button type="button" size="1" variant="ghost" color="gray" onClick={onClear}>{t("清空")}</Button>
+                </div>
+                <div className="cart-lines">
+                  {lines.map(({ sku, quantity, note }) => (
+                    <div className="cart-line" key={sku.id}>
+                      <CartLineImage sku={sku} />
+                      <div className="cart-line-copy">
+                        <Text size="2" weight="medium" className="truncate-text">{sku.name}</Text>
+                        <div className="cart-line-meta">
+                          <Text size="1" color="gray" className="mono-text">{sku.sku_code}</Text>
+                          {showPrices ? <Text size="1" color="gray">{money(sku.price, sku.currency)}</Text> : null}
+                          {skuCartonSize(sku) ? <Text size="1" color="gray">{t("装箱数")} × {skuCartonSize(sku)} · {t("箱数")} × {cartCartons(sku, quantity)}</Text> : null}
+                        </div>
+                        {showPrices ? <Text className="cart-line-subtotal" size="1" weight="medium">{t("小计")} {money((Number(sku.price) || 0) * quantity, sku.currency)}</Text> : null}
+                      </div>
+                      <div className="quantity-control">
+                        <Tooltip content={t("减少数量")}>
+                          <IconButton type="button" size="1" variant="soft" color="gray" onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, -1))} aria-label={t("减少数量")}>
+                            {quantity <= (skuCartonSize(sku) || 1) ? <Trash size={14} /> : <Minus size={14} />}
+                          </IconButton>
+                        </Tooltip>
+                        <Text size="2" weight="medium">{quantity}</Text>
+                        <Tooltip content={t("增加数量")}>
+                          <IconButton type="button" size="1" variant="soft" color="gray" disabled={changeCartQuantity(sku, quantity, 1) === quantity} onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, 1))} aria-label={t("增加数量")}>
+                            <Plus size={14} />
+                          </IconButton>
+                        </Tooltip>
+                      </div>
+                      <label className="cart-line-note">
+                        <Text as="span" size="1" color="gray">{t("商品备注（选填）")}</Text>
+                        <TextArea
+                          value={note || ""}
+                          onChange={(event) => onNote(sku.id, event.target.value)}
+                          maxLength={1000}
+                          rows={1}
+                          resize="none"
+                          placeholder={t("商品备注（选填）")}
+                          aria-label={t("{name} 的商品备注", { name: sku.name })}
+                        />
+                      </label>
+                    </div>
+                  ))}
+                </div>
+
+                {showPrices ? <div className="quote-total-row">
+                  <Text color="gray" size="2">{t("商品参考合计")}</Text>
+                  <Text weight="bold" size="4">{money(knownTotal, currency)}</Text>
+                </div> : null}
+              </section>
+
               <label className="privacy-consent">
                 <input type="checkbox" name="privacy_acknowledged" required />
                 <span>
@@ -514,10 +505,6 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
             </div>
             <div className="quote-form-actions">
               {error && <ToastNotice kind="error" message={error} />}
-              <div className="quote-action-summary">
-                <span>{t("{skus} 个 SKU · {items} 件", { skus: lines.length, items: itemCount })}</span>
-                {showPrices ? <strong>{money(knownTotal, currency)}</strong> : null}
-              </div>
               <Button className="quote-submit" type="submit" size="3" loading={submitting || refreshing} disabled={!lines.length || Boolean(legacySkuIds)}>
                 {refreshing ? t("商品加载中") : t("提交并生成报价单")}<ArrowRight size={18} />
               </Button>

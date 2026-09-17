@@ -142,6 +142,7 @@ export const portugueseStorefrontMessages: Record<string, string> = {
   "查看报价清单，已选 {skus} 个 SKU，共 {items} 件": "Ver orçamento: {skus} SKUs e {items} unidades",
   "已选 {skus} 个 SKU · 共 {items} 件": "{skus} SKUs · {items} unidades",
   "查看清单": "Ver lista",
+  "去下单": "Finalizar pedido",
   "选品报价": "Orçamento de produtos",
   "生成报价单": "Criar orçamento",
   "确认商品数量并填写客户信息。": "Confirme as quantidades e preencha os dados do cliente.",

@@ -1,5 +1,5 @@
 import type { StorefrontLocale } from "../types";
-import type { PackingListSettings, ProformaInvoiceSettings, PublicQuoteDraft, PublicQuoteDraftItem } from "./types";
+import type { PackingListSettings, ProformaInvoiceSettings, PublicQuoteDraft, PublicQuoteDraftItem, QuoteCustomField } from "./types";
 import { packingCalculation, packingNumber, packingParties, packingText } from "./packingList";
 import { invoiceLabel, invoiceParties } from "./proformaInvoice";
 import { proformaText, quoteFieldLabel, quoteText, quoteUnit } from "./quoteLocalization";
@@ -42,7 +42,7 @@ export function excelCellText(cell: ExcelCell): string {
 
 // Keep row order, merged cells and number formats aligned with the XLSX exporters.
 // Build from the editor state, not the last saved download, so previews stay live.
-export function buildProformaExcelSheet(draft: PublicQuoteDraft, invoice: ProformaInvoiceSettings, items: PublicQuoteDraftItem[], locale: StorefrontLocale, sellerName: string): DocumentExcelSheet {
+export function buildProformaExcelSheet(draft: PublicQuoteDraft, invoice: ProformaInvoiceSettings, items: PublicQuoteDraftItem[], locale: StorefrontLocale, sellerName: string, customFields: QuoteCustomField[] = []): DocumentExcelSheet {
   const p = (key: string) => proformaText(locale, key);
   const q = (key: string) => quoteText(locale, key);
   const parties = invoiceParties(invoice, draft, sellerName);
@@ -57,13 +57,14 @@ export function buildProformaExcelSheet(draft: PublicQuoteDraft, invoice: Profor
   meta(`${p("seller")} · ${q("contact")}`, parties.seller.contact, `${p("buyer")} · ${q("phone")}`, parties.buyer.phone);
   if (invoice.sellerWebsite || invoice.sellerTaxNumber) meta(invoiceLabel(locale, 0), invoice.sellerWebsite || "", invoiceLabel(locale, 1), invoice.sellerTaxNumber || "");
   rows.push({ kind: "blank", cells: empty(9) });
-  rows.push({ kind: "header", height: 38, cells: (["serial_number", "product_image", "sku_code", "product_name", "specification", "quantity", "unit_code", "unit_price", "line_total"] as const).map((key) => cell(quoteFieldLabel(locale, key))) });
+  const visibleCustomFields = customFields.filter((field) => field.label.trim());
+  rows.push({ kind: "header", height: 38, cells: [...(["serial_number", "product_image", "sku_code", "product_name", "specification", "quantity", "unit_code", "unit_price", "line_total"] as const).map((key) => cell(quoteFieldLabel(locale, key))), ...visibleCustomFields.map((field) => cell(field.label))] });
   for (const item of items) rows.push({ kind: "data", height: 88, cells: [
     cell(item.position), cell(null, { imageUrl: item.imageUrl, imageAlt: item.name }), cell(item.skuCode), cell(item.name), cell(item.specification || ""),
-    numeric(item.quantity, "grouped"), cell(quoteUnit(locale, item.unitCode)), numeric(item.unitPrice, "money"), numeric(item.lineTotal, "money"),
+    numeric(item.quantity, "grouped"), cell(quoteUnit(locale, item.unitCode)), numeric(item.unitPrice, "money"), numeric(item.lineTotal, "money"), ...visibleCustomFields.map((field) => cell(field.values[item.id] ?? "")),
   ] });
   const subtotal = Number(items.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2));
-  for (const [label, value] of [["subtotal", subtotal], ["freight", invoice.freight], ["grand_total", subtotal + invoice.freight]] as const) rows.push({ kind: label === "grand_total" ? "grand-total" : "total", cells: [...empty(7), cell(p(label)), numeric(value, "money", draft.currency)] });
+  for (const [label, value] of [["subtotal", subtotal], ["freight", invoice.freight], ["grand_total", subtotal + invoice.freight]] as const) rows.push({ kind: label === "grand_total" ? "grand-total" : "total", cells: [...empty(7), cell(p(label)), numeric(value, "money", draft.currency), ...empty(visibleCustomFields.length)] });
   const section = (title: string, entries: [string, string | undefined][]) => {
     const populated = entries.filter(([, value]) => value);
     if (!populated.length) return;
@@ -76,10 +77,10 @@ export function buildProformaExcelSheet(draft: PublicQuoteDraft, invoice: Profor
   const extras = draft.extraInformation?.filter((entry) => entry.title.trim() && entry.content.trim()) ?? [];
   if (extras.length) rows.push({ kind: "blank", cells: empty(9) });
   for (const entry of extras) rows.push({ kind: "note", cells: [cell(entry.title.trim(), { label: true }), cell(entry.content.trim(), { span: 8 })] });
-  return { name: p("sheet_name").slice(0, 31), columns: [8, 14, 18, 34, 30, 12, 12, 15, 17], rows, rtl: locale === "ar" || locale === "fa" };
+  return { name: p("sheet_name").slice(0, 31), columns: [8, 14, 18, 34, 30, 12, 12, 15, 17, ...visibleCustomFields.map(() => 22)], rows, rtl: locale === "ar" || locale === "fa" };
 }
 
-export function buildPackingExcelSheet(draft: PublicQuoteDraft, settings: PackingListSettings, locale: StorefrontLocale, sellerName: string): DocumentExcelSheet {
+export function buildPackingExcelSheet(draft: PublicQuoteDraft, settings: PackingListSettings, locale: StorefrontLocale, sellerName: string, customFields: QuoteCustomField[] = []): DocumentExcelSheet {
   const title = packingText(locale, 0);
   const parties = packingParties(settings, draft, sellerName);
   const rows: ExcelRow[] = [{ kind: "title", cells: [cell(title, { span: 12 })], height: 43 }, { kind: "meta", cells: [cell(`${settings.packingListNumber} · ${settings.issueDate}`, { span: 12 })] }];
@@ -89,7 +90,8 @@ export function buildPackingExcelSheet(draft: PublicQuoteDraft, settings: Packin
     rows.push({ kind: "meta", cells: [cell(`${proformaText(locale, side)}: ${content}`, { span: 12 })] });
   }
   const headers = [quoteFieldLabel(locale, "product_image"), packingText(locale, 4), packingText(locale, 1), packingText(locale, 2), quoteFieldLabel(locale, "packing_quantity"), `${quoteFieldLabel(locale, "carton_dimensions")} (cm)`, quoteFieldLabel(locale, "carton_volume"), quoteFieldLabel(locale, "gross_weight"), packingText(locale, 3), packingText(locale, 5), quoteFieldLabel(locale, "total_volume"), quoteFieldLabel(locale, "total_gross_weight")];
-  rows.push({ kind: "header", cells: headers.map((value) => cell(value)), height: 48 });
+  const visibleCustomFields = customFields.filter((field) => field.label.trim());
+  rows.push({ kind: "header", cells: [...headers.map((value) => cell(value)), ...visibleCustomFields.map((field) => cell(field.label))], height: 48 });
   const packingItems = new Map(settings.items.map((item) => [item.itemId, item]));
   const calculations: ReturnType<typeof packingCalculation>[] = [];
   for (const order of draft.items) {
@@ -98,10 +100,10 @@ export function buildPackingExcelSheet(draft: PublicQuoteDraft, settings: Packin
     const calc = packingCalculation(item, order);
     calculations.push(calc);
     const dimensions = [item.cartonLength, item.cartonWidth, item.cartonHeight].map((value) => packingNumber(value));
-    rows.push({ kind: "data", height: 88, cells: [cell(null, { imageUrl: order.imageUrl, imageAlt: item.name || order.name }), cell(item.name || order.name), cell(item.articleNumber ?? order.skuCode), cell(item.barcode.trim()), numeric(calc.packing), cell(dimensions.every((value) => value !== null) ? dimensions.join(" × ") : ""), ...[calc.volume, calc.gross, calc.cartons, calc.quantity, calc.totalVolume, calc.totalGrossWeight].map((value) => numeric(value))] });
+    rows.push({ kind: "data", height: 88, cells: [cell(null, { imageUrl: order.imageUrl, imageAlt: item.name || order.name }), cell(item.name || order.name), cell(item.articleNumber ?? order.skuCode), cell(item.barcode.trim()), numeric(calc.packing), cell(dimensions.every((value) => value !== null) ? dimensions.join(" × ") : ""), ...[calc.volume, calc.gross, calc.cartons, calc.quantity, calc.totalVolume, calc.totalGrossWeight].map((value) => numeric(value)), ...visibleCustomFields.map((field) => cell(field.values[item.itemId] ?? ""))] });
   }
   const totals = (["cartons", "quantity", "totalVolume", "totalGrossWeight"] as const).map((key) => calculations.some((calc) => calc[key] === null) ? null : calculations.reduce((sum, calc) => sum + (calc[key] ?? 0), 0));
-  rows.push({ kind: "grand-total", cells: [cell(quoteText(locale, "total")), ...empty(7), ...totals.map((value) => numeric(value))] });
+  rows.push({ kind: "grand-total", cells: [cell(quoteText(locale, "total")), ...empty(7), ...totals.map((value) => numeric(value)), ...empty(visibleCustomFields.length)] });
   if (settings.remarks) rows.push({ kind: "note", cells: [cell(`${quoteText(locale, "notes")}: ${settings.remarks}`, { span: 12 })] });
-  return { name: title.slice(0, 31), columns: [14, 32, 22, 20, 16, 26, 17, 17, 13, 16, 19, 20], rows, rtl: locale === "ar" || locale === "fa" };
+  return { name: title.slice(0, 31), columns: [14, 32, 22, 20, 16, 26, 17, 17, 13, 16, 19, 20, ...visibleCustomFields.map(() => 22)], rows, rtl: locale === "ar" || locale === "fa" };
 }

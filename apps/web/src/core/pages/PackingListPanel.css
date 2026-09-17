@@ -78,6 +78,7 @@
 .packing-paper-table .packing-paper-barcode { white-space: nowrap; font-size: 10px; }
 .packing-paper-table tfoot td { color: #fff; background: #345c4c; font-weight: 600; }
 .packing-paper-table tfoot th { text-align: end; padding-inline-end: 14px; }
+.quote-document-custom-table { margin-top: 16px; }
 .packing-paper-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid #cedbd3; margin-top: 18px; }
 .packing-paper-summary > div { padding: 14px; border-inline-end: 1px solid #cedbd3; }
 .packing-paper-summary > div:last-child { border: 0; }

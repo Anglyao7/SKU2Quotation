@@ -1986,6 +1986,47 @@ export interface PackingListSettings {
   items: PackingListItem[];
 }
 
+export interface QuotePurchaseOrderSupplierOption {
+  supplierId: string;
+  supplierName: string;
+  supplierCode: string;
+  supplierSku?: string;
+  unitPrice?: number;
+  currency?: string;
+  moq?: number;
+  moqUnit?: string;
+  leadTimeDays?: number;
+  contactName?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+}
+
+export interface QuotePurchaseOrderItem {
+  itemId: string;
+  position: number;
+  supplierId?: string;
+  supplierName: string;
+  skuCode: string;
+  supplierSku?: string;
+  name: string;
+  specification: string;
+  imageUrl?: string;
+  quantity: number;
+  unitCode: string;
+  unitPrice?: number;
+  currency: string;
+  notes: string;
+  supplierOptions: QuotePurchaseOrderSupplierOption[];
+}
+
+export interface QuotePurchaseOrderSettings {
+  purchaseOrderNumber: string;
+  issueDate: string;
+  items: QuotePurchaseOrderItem[];
+  customFields: QuoteCustomField[];
+}
+
 export interface PublicQuoteDraft {
   id: string;
   tenantId: string;
@@ -2013,6 +2054,7 @@ export interface PublicQuoteDraft {
   disclaimer: string;
   disclaimerVersion: string;
   extraInformation: QuoteExtraInformation[];
+  customFields: QuoteCustomField[];
   proformaInvoice: ProformaInvoiceSettings;
   packingList?: PackingListSettings;
   items: PublicQuoteDraftItem[];
@@ -2021,6 +2063,12 @@ export interface PublicQuoteDraft {
 export interface QuoteExtraInformation {
   title: string;
   content: string;
+}
+
+export interface QuoteCustomField {
+  id: string;
+  label: string;
+  values: Record<string, string>;
 }
 
 export interface PublicQuoteDraftSummary {

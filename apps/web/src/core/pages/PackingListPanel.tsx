@@ -2,7 +2,7 @@ import { Badge, Button, Heading, Text, TextField } from "@radix-ui/themes";
 import { ArrowCounterClockwise, ArrowsOutSimple, Buildings, CaretDown, FilePdf, FileXls, FloppyDisk, ImageSquare, Minus, Package, Plus, SlidersHorizontal } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { StorefrontLocale } from "../../types";
-import type { PackingListItem, PackingListSettings, PublicQuoteDraft } from "../types";
+import type { PackingListItem, PackingListSettings, PublicQuoteDraft, QuoteCustomField } from "../types";
 import { useLocale } from "../LocaleContext";
 import { packingCalculation, packingErrors, packingFormat, packingParties, packingStudioText, packingText } from "../packingList";
 import { proformaText, quoteFieldLabel, quoteText } from "../quoteLocalization";
@@ -17,9 +17,11 @@ type Props = {
   onSave: () => void; dirty: boolean; languageControl: ReactNode;
   onExport: (format: "pdf" | "xlsx") => void; exporting?: string | null;
   previewMode: DocumentPreviewMode; onPreviewModeChange: (mode: DocumentPreviewMode) => void;
+  customFields: QuoteCustomField[]; onCustomFieldChange: (fieldId: string, itemId: string, value: string) => void;
+  customFieldManager: ReactNode;
 };
 
-export function PackingListPanel({ draft, value, onChange, locale, sellerName, readOnly, saving, onSave, dirty, languageControl, onExport, exporting, previewMode, onPreviewModeChange }: Props) {
+export function PackingListPanel({ draft, value, onChange, locale, sellerName, readOnly, saving, onSave, dirty, languageControl, onExport, exporting, previewMode, onPreviewModeChange, customFields, onCustomFieldChange, customFieldManager }: Props) {
   const { t } = useLocale();
   const disabled = readOnly || saving || Boolean(exporting);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -32,7 +34,7 @@ export function PackingListPanel({ draft, value, onChange, locale, sellerName, r
     observer.observe(container);
     return () => observer.disconnect();
   }, []);
-  const excelSheet = useMemo(() => buildPackingExcelSheet(draft, value, locale, sellerName), [draft, value, locale, sellerName]);
+  const excelSheet = useMemo(() => buildPackingExcelSheet(draft, value, locale, sellerName, customFields), [customFields, draft, value, locale, sellerName]);
   const previewSheetWidth = previewMode === "excel" ? excelSheetWidth(excelSheet) : 1120;
   const scale = zoom === "fit" ? Math.min(1, Math.max(0.15, (previewWidth - 32) / previewSheetWidth)) : zoom;
   const rows = useMemo(() => draft.items.flatMap((order) => {
@@ -91,6 +93,7 @@ export function PackingListPanel({ draft, value, onChange, locale, sellerName, r
           </div>
         </section>
         {partyEditor("seller")}{partyEditor("buyer")}
+        <section className="packing-editor-section">{customFieldManager}</section>
         <section className="packing-editor-section packing-product-section" aria-label={packingText(locale, 11)}>
           <h3><Package size={18} />{packingText(locale, 11)}<Badge color="gray">{rows.length}</Badge></h3>
           {missing > 0 ? <Text as="p" size="2" color="amber">{packingText(locale, 9)} · {missing}</Text> : null}
@@ -104,6 +107,7 @@ export function PackingListPanel({ draft, value, onChange, locale, sellerName, r
               {[item.cartonLength, item.cartonWidth, item.cartonHeight].every(Boolean) ? <div className="packing-field"><span>{headers[6]}</span><output>{packingFormat(calc.volume)}</output></div> : itemInput(item, "cartonVolume", headers[6])}
               <div className="packing-cartons">{itemInput(item, "cartonCount", headers[8], calc.automaticCartons === null ? "" : String(calc.automaticCartons))}{item.cartonCount ? <button type="button" disabled={disabled} title={packingText(locale, 12)} aria-label={packingText(locale, 12)} onClick={() => edit(item.itemId, { cartonCount: "" })}><ArrowCounterClockwise /></button> : null}</div>
               {calc.partial || item.lastCartonGrossWeight ? itemInput(item, "lastCartonGrossWeight", packingText(locale, 7)) : null}
+              {customFields.map((field) => <label className="packing-field" key={field.id}><span>{field.label || t("未命名字段")}</span><input value={field.values[item.itemId] ?? ""} maxLength={2000} disabled={disabled} onChange={(event) => onCustomFieldChange(field.id, item.itemId, event.target.value)} /></label>)}
               <div className="packing-item-totals packing-field--wide">{[{ label: headers[9], number: calc.quantity }, { label: headers[10], number: calc.totalVolume }, { label: headers[11], number: calc.totalGrossWeight }].map(({ label, number }) => <span key={label}><small>{label}</small><strong>{packingFormat(number)}</strong></span>)}</div>
               {calc.partial && !item.lastCartonGrossWeight ? <Text size="1" color="gray" className="packing-field--wide">{packingText(locale, 17)}</Text> : null}
             </div>
@@ -128,15 +132,15 @@ export function PackingListPanel({ draft, value, onChange, locale, sellerName, r
                 <dl>{[[quoteText(locale, "contact"), parties[side].contact], [quoteText(locale, "phone"), parties[side].phone], [quoteText(locale, "email"), parties[side].email], [proformaText(locale, `${side}_address`), parties[side].address]].map(([label, content]) => <div key={label}><dt>{label}</dt><dd>{content || "—"}</dd></div>)}</dl>
               </section>)}</div>
               <table className="packing-paper-table">
-                <colgroup>{[6, 17, 9, 10, 7, 11, 7, 7, 5, 7, 7, 7].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
-                <thead><tr>{headers.map((label) => <th key={label} scope="col">{label}</th>)}</tr></thead>
+                <colgroup>{[6, 17, 9, 10, 7, 11, 7, 7, 5, 7, 7, 7, ...customFields.map(() => 10)].map((width, index, all) => <col key={index} style={{ width: `${(width / all.reduce((sum, entry) => sum + entry, 0)) * 100}%` }} />)}</colgroup>
+                <thead><tr>{headers.map((label) => <th key={label} scope="col">{label}</th>)}{customFields.map((field) => <th key={field.id} scope="col">{field.label || t("未命名字段")}</th>)}</tr></thead>
                 <tbody>{rows.map(({ item, order, calc }) => <tr key={item.itemId}>
                   <td>{order.imageUrl ? <img src={order.imageUrl} alt={item.name || order.name} loading="lazy" /> : "—"}</td>
                   <td>{item.name || order.name}</td><td>{item.articleNumber ?? order.skuCode}</td><td className="packing-paper-barcode">{item.barcode || "—"}</td>
                   <td>{packingFormat(calc.packing)}</td><td>{[item.cartonLength, item.cartonWidth, item.cartonHeight].every(Boolean) ? `${item.cartonLength} × ${item.cartonWidth} × ${item.cartonHeight}` : "—"}</td>
-                  {[calc.volume, calc.gross, calc.cartons, calc.quantity, calc.totalVolume, calc.totalGrossWeight].map((number, index) => <td key={index}>{packingFormat(number)}</td>)}
+                  {[calc.volume, calc.gross, calc.cartons, calc.quantity, calc.totalVolume, calc.totalGrossWeight].map((number, index) => <td key={index}>{packingFormat(number)}</td>)}{customFields.map((field) => <td key={field.id}>{field.values[item.itemId] || "—"}</td>)}
                 </tr>)}</tbody>
-                <tfoot><tr><th colSpan={8}>{quoteText(locale, "total")}</th>{metrics.map((metric) => <td key={metric.label}>{packingFormat(metric.value)}</td>)}</tr></tfoot>
+                <tfoot><tr><th colSpan={8}>{quoteText(locale, "total")}</th>{metrics.map((metric) => <td key={metric.label}>{packingFormat(metric.value)}</td>)}{customFields.map((field) => <td key={field.id} />)}</tr></tfoot>
               </table>
               <div className="packing-paper-summary">{metrics.map((metric) => <div key={metric.label}><span>{metric.label}</span><strong>{packingFormat(metric.value)}</strong></div>)}</div>
               {value.remarks.trim() ? <section className="packing-paper-notes"><h3>{quoteText(locale, "notes")}</h3><p>{value.remarks}</p></section> : null}

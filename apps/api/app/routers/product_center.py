@@ -405,6 +405,31 @@ async def replace_product_image(
         await image.close()
 
 
+@router.delete(
+    "/products/{product_id}/images/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_product_image(
+    product_id: UUID,
+    image_id: UUID,
+    session: Session = Depends(get_authenticated_session),
+) -> Response:
+    context = _context(session)
+    try:
+        use_cases.delete_product_image(
+            session,
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            membership_id=context.membership_id,
+            permissions=context.permissions,
+            product_id=product_id,
+            image_id=image_id,
+        )
+    except ApplicationError as exc:
+        raise application_http_error(exc) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/products/{product_id}/images/main/download")
 def download_product_main_image(
     product_id: UUID,

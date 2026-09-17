@@ -20,6 +20,14 @@ assert.match(
   "Clicking an editable SKU should open its editor directly",
 );
 assert.ok(page.includes("checked={row.isVariant}"), "Every specification can be marked as a storefront choice");
+assert.ok(
+  page.includes('className="core-sku-option-editor-row" key={row.id}'),
+  "Specification rows need a stable identity so editing their labels does not remount the input",
+);
+assert.ok(
+  !page.includes('key={`${row.key}-${index}`}'),
+  "Specification row keys must not depend on the text currently being edited",
+);
 assert.ok(page.includes('t("前台展示")'));
 assert.ok(page.includes('t("起订数")} · {t("装箱数")'));
 assert.ok(page.includes('t("更多信息")'));

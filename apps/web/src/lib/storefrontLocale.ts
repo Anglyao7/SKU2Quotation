@@ -254,6 +254,7 @@ const english: Record<string, string> = {
   "查看报价清单，已选 {skus} 个 SKU，共 {items} 件": "View quote list: {skus} SKUs, {items} items",
   "已选 {skus} 个 SKU · 共 {items} 件": "{skus} SKUs · {items} items",
   "查看清单": "View list",
+  "去下单": "Checkout",
   "选品报价": "Product quotation",
   "生成报价单": "Create quotation",
   "确认商品数量并填写客户信息。": "Confirm quantities and enter customer details.",

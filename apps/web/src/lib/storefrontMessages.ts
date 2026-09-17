@@ -157,6 +157,7 @@ const localizedStorefrontMessagesBase: Record<
   "查看报价清单，已选 {skus} 个 SKU，共 {items} 件": { es: "Ver cotización: {skus} SKU y {items} unidades", tr: "Teklif listesini görüntüle: {skus} SKU, {items} adet", ar: "عرض قائمة السعر: {skus} وحدة SKU و{items} قطعة", ja: "見積リストを見る：SKU {skus}件、合計{items}点", ko: "견적 목록 보기: SKU {skus}개, 총 {items}개" },
   "已选 {skus} 个 SKU · 共 {items} 件": { es: "{skus} SKU · {items} unidades", tr: "{skus} SKU · {items} adet", ar: "{skus} وحدة SKU · {items} قطعة", ja: "SKU {skus}件・合計{items}点", ko: "SKU {skus}개 · 총 {items}개" },
   "查看清单": { es: "Ver lista", tr: "Listeyi görüntüle", ar: "عرض القائمة", ja: "リストを見る", ko: "목록 보기" },
+  "去下单": { es: "Realizar pedido", tr: "Sipariş ver", ar: "إتمام الطلب", ja: "注文へ", ko: "주문하기", ru: "Оформить заказ" },
   "选品报价": { es: "Cotización de productos", tr: "Ürün teklifi", ar: "عرض أسعار المنتجات", ja: "商品見積", ko: "상품 견적" },
   "生成报价单": { es: "Crear cotización", tr: "Teklif oluştur", ar: "إنشاء عرض سعر", ja: "見積書を作成", ko: "견적서 생성" },
   "确认商品数量并填写客户信息。": { es: "Confirma las cantidades e introduce los datos del cliente.", tr: "Ürün miktarlarını onaylayın ve müşteri bilgilerini girin.", ar: "أكد كميات المنتجات وأدخل بيانات العميل.", ja: "商品数量を確認し、お客様情報を入力してください。", ko: "상품 수량을 확인하고 고객 정보를 입력하세요." },

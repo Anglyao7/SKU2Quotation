@@ -2,7 +2,7 @@ import { Badge, Button, Heading, Text } from "@radix-ui/themes";
 import { ArrowsOutSimple, Bank, Buildings, FilePdf, FileText, FileXls, FloppyDisk, Minus, Plus, SlidersHorizontal, Truck } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type { StorefrontLocale } from "../../types";
-import type { ProformaInvoiceSettings, PublicQuoteDraft, PublicQuoteDraftItem } from "../types";
+import type { ProformaInvoiceSettings, PublicQuoteDraft, PublicQuoteDraftItem, QuoteCustomField } from "../types";
 import { useLocale } from "../LocaleContext";
 import { proformaText, quoteText, quoteUnit } from "../quoteLocalization";
 import { invoiceLabel, invoiceParties } from "../proformaInvoice";
@@ -15,13 +15,13 @@ import "./ProformaInvoicePanel.css";
 
 type Props = {
   draft: PublicQuoteDraft; invoice: ProformaInvoiceSettings; onChange: (patch: Partial<ProformaInvoiceSettings>) => void;
-  items: PublicQuoteDraftItem[]; itemEditor: ReactNode; locale: StorefrontLocale; sellerName: string; accent: string;
+  items: PublicQuoteDraftItem[]; customFields: QuoteCustomField[]; itemEditor: ReactNode; locale: StorefrontLocale; sellerName: string; accent: string;
   settingsControls: ReactNode; readOnly: boolean; saving: boolean; exporting: string | null; dirty: boolean;
   onSave: () => void; onExport: (format: "pdf" | "xlsx") => void;
   previewMode: DocumentPreviewMode; onPreviewModeChange: (mode: DocumentPreviewMode) => void;
 };
 function money(value: number, currency: string) { return `${currency} ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
-export function ProformaInvoicePanel({ draft, invoice, onChange, items, itemEditor, locale, sellerName, accent, settingsControls, readOnly, saving, exporting, dirty, onSave, onExport, previewMode, onPreviewModeChange }: Props) {
+export function ProformaInvoicePanel({ draft, invoice, onChange, items, customFields, itemEditor, locale, sellerName, accent, settingsControls, readOnly, saving, exporting, dirty, onSave, onExport, previewMode, onPreviewModeChange }: Props) {
   const { t } = useLocale();
   const disabled = readOnly || saving || Boolean(exporting);
   const [freightText, setFreightText] = useState(String(invoice.freight));
@@ -37,7 +37,7 @@ export function ProformaInvoicePanel({ draft, invoice, onChange, items, itemEdit
     observer.observe(previewRef.current);
     return () => observer.disconnect();
   }, []);
-  const excelSheet = buildProformaExcelSheet(draft, invoice, items, locale, sellerName);
+  const excelSheet = buildProformaExcelSheet(draft, invoice, items, locale, sellerName, customFields);
   const previewSheetWidth = previewMode === "excel" ? excelSheetWidth(excelSheet) : 794;
   const scale = zoom === "fit" ? Math.min(1, Math.max(.15, (width - 32) / previewSheetWidth)) : zoom;
   const parties = invoiceParties(invoice, draft, sellerName);
@@ -84,6 +84,7 @@ export function ProformaInvoicePanel({ draft, invoice, onChange, items, itemEdit
         <div className="packing-paper-body"><div className="packing-paper-title"><div><small>{proformaText(locale, "title")}</small><h2>PI</h2></div><div><strong>{invoice.invoiceNumber || "—"}</strong><span>{quoteText(locale, "date")} · {invoice.issueDate || "—"}</span></div></div>
           <div className="packing-paper-parties">{(["seller", "buyer"] as const).map((side) => <section key={side}><h3>{proformaText(locale, side)}</h3><strong>{parties[side].name || "—"}</strong><dl>{[[quoteText(locale, "contact"), parties[side].contact], [quoteText(locale, "phone"), parties[side].phone], [quoteText(locale, "email"), parties[side].email], [proformaText(locale, `${side}_address`), parties[side].address], ...(side === "seller" ? [[invoiceLabel(locale, 0), invoice.sellerWebsite], [invoiceLabel(locale, 1), invoice.sellerTaxNumber]].filter((row) => row[1]) : [])].map(([label, content]) => <div key={label}><dt>{label}</dt><dd>{content || "—"}</dd></div>)}</dl></section>)}</div>
           <table className="packing-paper-table invoice-paper-table"><colgroup>{[5, 44, 16, 17, 18].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup><thead><tr>{["#", quoteText(locale, "product_name"), `${quoteText(locale, "quantity")} / ${quoteText(locale, "unit")}`, quoteText(locale, "unit_price"), quoteText(locale, "line_total")].map((label) => <th key={label}>{label}</th>)}</tr></thead><tbody>{items.map((item, index) => <tr key={item.id}><td>{index + 1}</td><td><div className="invoice-product-cell">{item.imageUrl ? <img src={item.imageUrl} alt={item.name} /> : null}<div><strong>{item.name}</strong><small>{item.skuCode}</small>{item.description ? <small>{item.description}</small> : null}</div></div></td><td>{item.quantity} / {quoteUnit(locale, item.unitCode)}</td><td>{money(item.unitPrice, draft.currency)}</td><td>{money(item.lineTotal, draft.currency)}</td></tr>)}</tbody></table>
+          {customFields.some((field) => field.label.trim()) ? <table className="packing-paper-table quote-document-custom-table"><thead><tr><th>{quoteText(locale, "product_name")}</th>{customFields.filter((field) => field.label.trim()).map((field) => <th key={field.id}>{field.label}</th>)}</tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.name}</td>{customFields.filter((field) => field.label.trim()).map((field) => <td key={field.id}>{field.values[item.id] || "—"}</td>)}</tr>)}</tbody></table> : null}
           <div className="invoice-totals">{totals.map(([label, amount], index) => <div className={index === 2 ? "is-grand-total" : ""} key={label}><span>{label}</span><strong>{money(amount, draft.currency)}</strong></div>)}</div>
           <section className="invoice-trade-grid">{tradeKeys.filter(([key], index) => index < 3 || invoice[key]).map(([key, label]) => <div key={key}><span>{proformaText(locale, label)}</span><strong>{invoice[key] || "—"}</strong></div>)}</section>
           {bankConfigured ? <section className="packing-paper-notes"><h3>{proformaText(locale, "bank_details")}</h3><dl className="invoice-bank">{bankKeys.filter(([key]) => invoice[key] || key === "beneficiaryName").map(([key, label]) => <div key={key}><dt>{proformaText(locale, label)}</dt><dd>{invoice[key] || parties.seller.name || "—"}</dd></div>)}</dl></section> : null}

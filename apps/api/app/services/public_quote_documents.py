@@ -107,6 +107,18 @@ def _proforma_freight(document: PublicQuoteDocument) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("0")
 
+
+def _quote_custom_fields(document: PublicQuoteDocument) -> list[object]:
+    return [
+        field for field in (getattr(document.quote, "custom_fields", None) or [])
+        if str(getattr(field, "label", "")).strip()
+    ]
+
+
+def _quote_custom_value(field: object, item: object) -> str:
+    values = getattr(field, "values", None) or {}
+    return str(values.get(getattr(item, "id", None), "") or "").strip()
+
 _LOGISTICS_OPTION_ALIASES: dict[str, tuple[str, ...]] = {
     "packing_quantity": (
         "装箱数量",
@@ -700,6 +712,7 @@ def _render_custom_quote_xlsx(
         columns = sorted(spec.columns, key=lambda column: column.index)
         if not columns:
             raise ValueError("configured quote template has no product columns")
+        custom_fields = _quote_custom_fields(document)
 
         workbook = Workbook()
         sheet = workbook.active
@@ -709,7 +722,8 @@ def _render_custom_quote_xlsx(
         )[:31]
         sheet.sheet_view.showGridLines = False
         sheet.sheet_view.rightToLeft = quote_is_rtl(document.quote.locale)
-        product_column_count = len(columns)
+        template_column_count = len(columns)
+        product_column_count = template_column_count + len(custom_fields)
         sheet_column_count = max(4, product_column_count)
         product_header_row = _compose_system_quote_header(
             sheet,
@@ -746,6 +760,18 @@ def _render_custom_quote_xlsx(
             target_header.alignment = Alignment(
                 horizontal=target_header.alignment.horizontal or "center",
                 vertical=target_header.alignment.vertical or "center",
+                wrap_text=True,
+            )
+        for offset, field in enumerate(custom_fields, start=1):
+            target_index = template_column_count + offset
+            sheet.column_dimensions[get_column_letter(target_index)].width = 22
+            target_header = sheet.cell(product_header_row, target_index)
+            target_header.value = str(field.label)
+            target_header.fill = PatternFill("solid", fgColor="172033")
+            target_header.font = Font(color="FFFFFF", bold=True)
+            target_header.alignment = Alignment(
+                horizontal="center",
+                vertical="center",
                 wrap_text=True,
             )
         source_header_dimension = source_sheet.row_dimensions[spec.header_row]
@@ -803,6 +829,18 @@ def _render_custom_quote_xlsx(
                     vertical=target_cell.alignment.vertical or "center",
                     wrap_text=True,
                 )
+            for custom_offset, field in enumerate(custom_fields, start=1):
+                target_cell = sheet.cell(
+                    row_number,
+                    template_column_count + custom_offset,
+                )
+                target_cell.value = (
+                    _quote_custom_value(field, item) if item is not None else None
+                )
+                target_cell.alignment = Alignment(
+                    vertical="center",
+                    wrap_text=True,
+                )
             _copy_single_row_merges(
                 source_sheet,
                 sheet,
@@ -832,7 +870,7 @@ def _render_custom_quote_xlsx(
             cell.fill = PatternFill("solid", fgColor="EEF2F7")
             cell.font = Font(bold=True)
             cell.alignment = Alignment(vertical="center", wrap_text=True)
-        total_value_column = field_columns.get("line_total", product_column_count)
+        total_value_column = field_columns.get("line_total", template_column_count)
         label_column = max(1, total_value_column - 1)
         sheet.cell(total_row, label_column).value = quote_text(
             document.quote.locale,
@@ -1261,7 +1299,9 @@ def render_public_quote_draft_pdf(
     else:
         story.extend([meta_table, Spacer(1, 7 * mm)])
 
+    custom_fields = _quote_custom_fields(document)
     table_fields = ["serial_number", "product_name", "quantity", "unit_price", "line_total"] if is_proforma else _public_quote_table_fields(document)
+    table_fields = [*table_fields, *[f"custom:{field.id}" for field in custom_fields]]
     table_body_style = ParagraphStyle(
         "DraftTableBody",
         parent=body_style,
@@ -1279,10 +1319,13 @@ def render_public_quote_draft_pdf(
         leading=9,
         alignment=TA_CENTER,
     )
-    table_headers = ([quote_field_label(locale, field) for field in table_fields] if is_proforma else _public_quote_table_headers(document, table_fields, locale))
+    custom_labels = {f"custom:{field.id}": str(field.label) for field in custom_fields}
+    base_field_count = len(table_fields) - len(custom_fields)
+    table_headers = ([quote_field_label(locale, field) for field in table_fields[:base_field_count]] if is_proforma else _public_quote_table_headers(document, table_fields[:base_field_count], locale))
+    table_headers.extend(custom_labels[field] for field in table_fields[base_field_count:])
     if is_proforma:
         table_headers[2] = f"{quote_text(locale, 'quantity')} / {quote_text(locale, 'unit')}"
-    table_widths = [width * mm for width in (9, 79, 28, 30, 32)] if is_proforma else _quote_table_widths(table_fields)
+    table_widths = _quote_table_widths(table_fields) if custom_fields else ([width * mm for width in (9, 79, 28, 30, 32)] if is_proforma else _quote_table_widths(table_fields))
     rows: list[list[object]] = [[
         Paragraph(_pdf_localized_text(header, locale), table_header_style)
         for header in table_headers
@@ -1311,6 +1354,9 @@ def render_public_quote_draft_pdf(
                         max_height=18 * mm,
                     )
                 )
+            elif field.startswith("custom:"):
+                custom_field = next((entry for entry in custom_fields if f"custom:{entry.id}" == field), None)
+                row.append(Paragraph(_pdf_localized_text(_quote_custom_value(custom_field, item) if custom_field else "", locale), table_body_style))
             else:
                 row.append(
                     Paragraph(
@@ -1519,7 +1565,9 @@ def _render_public_proforma_invoice_xlsx(
     dark_fill = PatternFill("solid", fgColor=palette[0])
     light_fill = PatternFill("solid", fgColor=palette[1])
     white_font = Font(color="FFFFFF", bold=True)
-    last_column = "I"
+    custom_fields = _quote_custom_fields(document)
+    column_count = 9 + len(custom_fields)
+    last_column = get_column_letter(column_count)
 
     sheet.merge_cells(f"A1:{last_column}1")
     sheet["A1"] = proforma_text(locale, "title")
@@ -1543,10 +1591,11 @@ def _render_public_proforma_invoice_xlsx(
             "",
             "",
             "",
+            *([""] * len(custom_fields)),
         ])
         row_number = sheet.max_row
         sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=4)
-        sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=9)
+        sheet.merge_cells(start_row=row_number, start_column=6, end_row=row_number, end_column=column_count)
         sheet.cell(row_number, 1).font = Font(bold=True, color=palette[0])
         sheet.cell(row_number, 5).font = Font(bold=True, color=palette[0])
         for cell in sheet[row_number]:
@@ -1608,6 +1657,7 @@ def _render_public_proforma_invoice_xlsx(
         quote_field_label(locale, "unit_code"),
         quote_field_label(locale, "unit_price"),
         quote_field_label(locale, "line_total"),
+        *[str(field.label) for field in custom_fields],
     ]
     sheet.append(headers)
     header_row = sheet.max_row
@@ -1628,6 +1678,7 @@ def _render_public_proforma_invoice_xlsx(
             _xlsx_text(localize_quote_unit(locale, item.unit_code_snapshot)),
             float(item.unit_price_snapshot),
             float(item.line_total),
+            *[_quote_custom_value(field, item) for field in custom_fields],
         ])
         row_number = sheet.max_row
         _place_quote_image(
@@ -1650,7 +1701,7 @@ def _render_public_proforma_invoice_xlsx(
         (proforma_text(locale, "grand_total"), Decimal(quote.total) + freight),
     ]
     for label, amount in total_rows:
-        sheet.append(["", "", "", "", "", "", "", label, float(amount)])
+        sheet.append(["", "", "", "", "", "", "", label, float(amount), *([""] * len(custom_fields))])
         row_number = sheet.max_row
         sheet.cell(row_number, 8).font = Font(bold=True)
         sheet.cell(row_number, 9).font = Font(bold=True)
@@ -1666,13 +1717,13 @@ def _render_public_proforma_invoice_xlsx(
         sheet.append([])
         sheet.append([title])
         title_row = sheet.max_row
-        sheet.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=9)
+        sheet.merge_cells(start_row=title_row, start_column=1, end_row=title_row, end_column=column_count)
         sheet.cell(title_row, 1).fill = dark_fill
         sheet.cell(title_row, 1).font = white_font
         for label, value in populated:
             sheet.append([label, _xlsx_value(value)])
             row_number = sheet.max_row
-            sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=9)
+            sheet.merge_cells(start_row=row_number, start_column=2, end_row=row_number, end_column=column_count)
             sheet.cell(row_number, 1).font = Font(bold=True, color=palette[0])
             sheet.cell(row_number, 2).alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -1697,7 +1748,7 @@ def _render_public_proforma_invoice_xlsx(
     ])
     _append_quote_extra_information(sheet, quote)
 
-    widths = (8, 14, 18, 34, 30, 12, 12, 15, 17)
+    widths = (8, 14, 18, 34, 30, 12, 12, 15, 17, *([22] * len(custom_fields)))
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
@@ -1743,7 +1794,8 @@ def render_public_quote_draft_xlsx(
     light_fill = PatternFill("solid", fgColor="EEF2F7")
     white_font = Font(color="FFFFFF", bold=True)
 
-    column_count = len(DEFAULT_QUOTE_HEADERS)
+    custom_fields = _quote_custom_fields(document)
+    column_count = len(DEFAULT_QUOTE_HEADERS) + len(custom_fields)
     last_column = get_column_letter(column_count)
     sheet.merge_cells(f"A1:{last_column}1")
     sheet["A1"] = quote_text(locale, "document_title")
@@ -1826,7 +1878,7 @@ def render_public_quote_draft_xlsx(
         sheet.merge_cells(start_row=row_number, start_column=10, end_row=row_number, end_column=column_count)
     sheet.cell(row=3, column=10).number_format = "yyyy-mm-dd"
     sheet.append([])
-    sheet.append(list(quote_headers(locale)))
+    sheet.append([*list(quote_headers(locale)), *[str(field.label) for field in custom_fields]])
     header_row = sheet.max_row
     for cell in sheet[header_row]:
         cell.fill = dark_fill
@@ -1862,6 +1914,7 @@ def render_public_quote_draft_xlsx(
                 _xlsx_text(quote_text(locale, "separator").join(item.tags_snapshot or [])),
                 logistics["minimum_order_quantity"],
                 logistics["carton_count"],
+                *[_quote_custom_value(field, item) for field in custom_fields],
             ]
         )
         row_number = sheet.max_row
@@ -1901,6 +1954,7 @@ def render_public_quote_draft_xlsx(
             "",
             "",
             "",
+            *([""] * len(custom_fields)),
         ]
     )
     total_row = sheet.max_row
@@ -1919,7 +1973,7 @@ def render_public_quote_draft_xlsx(
 
     _append_quote_extra_information(sheet, quote)
 
-    for index, width in enumerate(DEFAULT_QUOTE_WIDTHS, start=1):
+    for index, width in enumerate((*DEFAULT_QUOTE_WIDTHS, *([22] * len(custom_fields))), start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
     sheet.auto_filter.ref = f"A{header_row}:{last_column}{max(header_row, total_row - 1)}"
