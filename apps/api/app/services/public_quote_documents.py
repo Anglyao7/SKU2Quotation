@@ -17,7 +17,7 @@ import httpx
 import reportlab
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as OpenpyxlImage
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from PIL import Image as PillowImage
 from reportlab.lib import colors
@@ -423,6 +423,58 @@ def _configure_default_quote_printing(
     sheet.print_area = f"A1:{get_column_letter(max(sheet.max_column, 1))}{last_row}"
 
 
+def _apply_xlsx_grid_borders(
+    sheet: object,
+    *,
+    min_row: int = 1,
+    max_row: int | None = None,
+    min_column: int = 1,
+    max_column: int | None = None,
+    color: str = "CBD5E1",
+) -> None:
+    """Give generated document spreadsheets a visible, print-friendly grid.
+
+    The document workbench deliberately hides Excel's default gridlines.  That
+    makes the on-screen preview cleaner, but it also meant downloaded XLSX
+    files looked unformatted when opened or printed.  Apply a light border to
+    every populated row, including blank cells inside that row, while keeping
+    completely empty spacer rows unruined.
+
+    Existing custom-template borders are preserved side by side; a missing
+    side receives the shared light grid color so merchant templates retain
+    their own stronger table styling where they already have it.
+    """
+
+    last_row = max_row if max_row is not None else int(getattr(sheet, "max_row", 0) or 0)
+    last_column = max_column if max_column is not None else int(getattr(sheet, "max_column", 0) or 0)
+    if last_row < min_row or last_column < min_column:
+        return
+
+    grid_side = Side(style="thin", color=color)
+    for row_number in range(min_row, last_row + 1):
+        row_cells = [
+            sheet.cell(row_number, column_number)
+            for column_number in range(min_column, last_column + 1)
+        ]
+        if not any(cell.value not in (None, "") for cell in row_cells):
+            continue
+        for cell in row_cells:
+            existing = cell.border
+            cell.border = Border(
+                left=existing.left if existing.left.style else grid_side,
+                right=existing.right if existing.right.style else grid_side,
+                top=existing.top if existing.top.style else grid_side,
+                bottom=existing.bottom if existing.bottom.style else grid_side,
+                diagonal=existing.diagonal,
+                diagonal_direction=existing.diagonal_direction,
+                diagonalUp=existing.diagonalUp,
+                diagonalDown=existing.diagonalDown,
+                outline=existing.outline,
+                vertical=existing.vertical,
+                horizontal=existing.horizontal,
+            )
+
+
 def _template_item_value(field: str, document: PublicQuoteDocument, item) -> object:
     quote = document.quote
     locale = quote_locale(quote.locale)
@@ -818,6 +870,7 @@ def _render_custom_quote_xlsx(
         sheet.auto_filter.ref = (
             f"A{product_header_row}:{product_last_column}{data_start_row + item_count - 1}"
         )
+        _apply_xlsx_grid_borders(sheet)
         _configure_default_quote_printing(
             sheet,
             header_row=product_header_row,
@@ -1648,6 +1701,7 @@ def _render_public_proforma_invoice_xlsx(
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
+    _apply_xlsx_grid_borders(sheet)
     _configure_default_quote_printing(sheet, header_row=header_row, last_row=sheet.max_row)
 
     buffer = BytesIO()
@@ -1874,6 +1928,7 @@ def render_public_quote_draft_xlsx(
         row[6].number_format = "#,##0.######"
         for column_index in (8, 9, 10, 11, 12, 13, 18):
             row[column_index].number_format = "#,##0.00####"
+    _apply_xlsx_grid_borders(sheet)
     _configure_default_quote_printing(
         sheet,
         header_row=header_row,
@@ -1931,6 +1986,7 @@ def render_default_quote_template_xlsx() -> bytes:
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = f"A{header_row + 1}"
     sheet.auto_filter.ref = f"A{header_row}:{last_column}{header_row + 1}"
+    _apply_xlsx_grid_borders(sheet)
     _configure_default_quote_printing(
         sheet,
         header_row=header_row,

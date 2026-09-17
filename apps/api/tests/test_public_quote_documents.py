@@ -192,6 +192,35 @@ def test_packing_list_xlsx_has_exact_columns_images_text_codes_and_totals():
     assert "USD" not in str(list(sheet.values)) and "2.50" not in str(list(sheet.values))
 
 
+@pytest.mark.parametrize("document_type", ["quotation", "packing_list", "proforma_invoice"])
+def test_document_workbench_xlsx_exports_have_visible_borders(document_type):
+    document = _document()
+    document.quote.locale = "en-US"
+    if document_type == "packing_list":
+        document.quote.packing_list = packing_settings(document.quote, document.quote.items)
+
+    workbook = load_workbook(
+        BytesIO(render_public_quote_draft_xlsx(document, document_type=document_type)),
+        data_only=False,
+    )
+    sheet = workbook.active
+    populated_cells = [
+        cell
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value not in (None, "")
+    ]
+    assert populated_cells
+    assert all(
+        cell.border.left.style == "thin"
+        and cell.border.right.style == "thin"
+        and cell.border.top.style == "thin"
+        and cell.border.bottom.style == "thin"
+        for cell in populated_cells
+    )
+    workbook.close()
+
+
 def test_packing_list_pdf_is_landscape_and_contains_no_prices():
     document = _document()
     document.quote.locale = "en-US"

@@ -12,7 +12,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .packing_lists import packing_rows, packing_settings
-from .public_quote_documents import _pdf_localized_text, _place_quote_image, _quote_pdf_image, _register_quote_pdf_font, _xlsx_text
+from .public_quote_documents import _apply_xlsx_grid_borders, _pdf_localized_text, _place_quote_image, _quote_pdf_image, _register_quote_pdf_font, _xlsx_text
 from .quote_localization import proforma_text, quote_field_label, quote_is_rtl, quote_text
 
 LABELS = {
@@ -159,6 +159,7 @@ def render_packing_list_xlsx(document, *, image_loader=None):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "E6"
     sheet.auto_filter.ref = f"A5:L{5 + len(rows)}"
+    _apply_xlsx_grid_borders(sheet)
     sheet.print_title_rows = "1:5"
     sheet.print_options.horizontalCentered = True
     sheet.page_setup.orientation = "landscape"
