@@ -65,6 +65,8 @@ assert.ok(!productPage.includes('selectedPackingQuantity || t("未设置")'));
 const checkout = await fs.readFile(new URL("../src/components/CartDrawer.tsx", import.meta.url), "utf8");
 assert.ok(checkout.includes('t("去下单")'), "The floating cart preview must lead to checkout");
 assert.ok(checkout.includes('className="cart-checkout-dialog"'), "Checkout uses a centered dialog instead of a side drawer");
+assert.ok(checkout.includes('className="cart-preview-quantity"'), "The floating cart preview must allow quantity changes");
+assert.match(checkout, /cart-preview-quantity[\s\S]*changeCartQuantity\(sku, quantity, -1\)[\s\S]*changeCartQuantity\(sku, quantity, 1\)/, "The floating cart preview must support removing and adding the selected SKU with carton-aware quantity rules");
 assert.ok(!checkout.includes('className="cart-drawer"'));
 assert.ok(
   checkout.indexOf('className="quote-customer-section"') < checkout.indexOf('className="checkout-products-section"'),

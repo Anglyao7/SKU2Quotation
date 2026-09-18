@@ -2448,6 +2448,12 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .cart-preview-price { display: grid; justify-items: end; gap: 2px; white-space: nowrap; }
 .cart-preview-price .rt-Text:first-child { color: rgba(255, 255, 255, .64); }
 .cart-preview-price .rt-Text:last-child { color: #fff; }
+.cart-preview-side { min-width: 86px; display: grid; justify-items: end; gap: 7px; }
+.cart-preview-quantity { min-height: 28px; display: grid; grid-template-columns: 26px minmax(26px, auto) 26px; place-items: center; gap: 2px; padding: 1px 3px; border: 1px solid rgba(255, 255, 255, .14); border-radius: 9px; background: rgba(255, 255, 255, .10); }
+.cart-preview-quantity .rt-IconButton { width: 26px; height: 26px; color: #fff; }
+.cart-preview-quantity .rt-IconButton:hover { background: rgba(255, 255, 255, .14); }
+.cart-preview-quantity .rt-IconButton:disabled { color: rgba(255, 255, 255, .34); }
+.cart-preview-quantity > .rt-Text { min-width: 26px; color: #fff; text-align: center; font-variant-numeric: tabular-nums; }
 .cart-preview-footer { display: grid; gap: 15px; padding-top: 17px; border-top: 1px solid rgba(255, 255, 255, .16); }
 .cart-preview-total { min-width: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .cart-preview-total span { overflow: hidden; color: rgba(255, 255, 255, .72); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -3437,6 +3443,9 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .cart-preview-line { grid-template-columns: 46px minmax(0, 1fr) auto; gap: 10px; padding: 10px; }
   .cart-preview-image, .cart-preview-image img, .cart-preview-image .cart-line-image-placeholder { width: 46px; height: 46px; }
   .cart-preview-price .rt-Text:first-child { display: none; }
+  .cart-preview-side { min-width: 80px; gap: 5px; }
+  .cart-preview-quantity { grid-template-columns: 24px minmax(24px, auto) 24px; }
+  .cart-preview-quantity .rt-IconButton { width: 24px; height: 24px; }
   .cart-preview-actions { grid-template-columns: 1fr 1.25fr; }
   .floating-cart-icon { width: 44px; height: 44px; border-radius: 11px; }
   .quote-form .rt-TextFieldRoot { min-height: 34px; }

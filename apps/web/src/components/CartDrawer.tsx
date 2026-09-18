@@ -179,6 +179,10 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
   const quoteApproved = quote?.status === "CONFIRMED" || quote?.status === "COMPLETED";
 
   useEffect(() => {
+    if (previewOpen && itemCount === 0) setPreviewOpen(false);
+  }, [itemCount, previewOpen]);
+
+  useEffect(() => {
     if (!quote || quote.status !== "PENDING_CONFIRMATION") return;
     let disposed = false;
     const refresh = async () => {
@@ -321,12 +325,40 @@ export function CartDrawer({ slug, accountId, accountKey, storeName, contactEmai
                     : `${t("数量")} × ${quantity}`}
                 </Text>
               </div>
-              {showPrices ? (
-                <div className="cart-preview-price">
-                  <Text size="1">{money(sku.price, sku.currency)}</Text>
-                  <Text size="2" weight="bold">{money((Number(sku.price) || 0) * quantity, sku.currency)}</Text>
+              <div className="cart-preview-side">
+                {showPrices ? (
+                  <div className="cart-preview-price">
+                    <Text size="1">{money(sku.price, sku.currency)}</Text>
+                    <Text size="2" weight="bold">{money((Number(sku.price) || 0) * quantity, sku.currency)}</Text>
+                  </div>
+                ) : null}
+                <div className="cart-preview-quantity" aria-label={t("数量")}>
+                  <Tooltip content={t("减少数量")}>
+                    <IconButton
+                      type="button"
+                      size="1"
+                      variant="ghost"
+                      onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, -1))}
+                      aria-label={t("减少数量")}
+                    >
+                      {quantity <= (skuCartonSize(sku) || 1) ? <Trash size={14} /> : <Minus size={14} />}
+                    </IconButton>
+                  </Tooltip>
+                  <Text size="2" weight="medium">{quantity}</Text>
+                  <Tooltip content={t("增加数量")}>
+                    <IconButton
+                      type="button"
+                      size="1"
+                      variant="ghost"
+                      disabled={changeCartQuantity(sku, quantity, 1) === quantity}
+                      onClick={() => onQuantity(sku.id, changeCartQuantity(sku, quantity, 1))}
+                      aria-label={t("增加数量")}
+                    >
+                      <Plus size={14} />
+                    </IconButton>
+                  </Tooltip>
                 </div>
-              ) : null}
+              </div>
             </div>
           ))}
         </div>
