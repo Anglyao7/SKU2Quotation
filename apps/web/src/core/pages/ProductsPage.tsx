@@ -70,6 +70,14 @@ const SKU_PACKING_QUANTITY_KEYS = new Set([
   "packing_quantity",
   "units_per_carton",
 ]);
+const SKU_NOTE_KEYS = new Set([
+  "备注",
+  "備註",
+  "note",
+  "notes",
+  "remark",
+  "remarks",
+]);
 type BulkSkuAction = "pin" | "unpin" | "activate" | "deactivate" | "category";
 type ProductStatus = "DRAFT" | "IN_REVIEW" | "ACTIVE" | "ARCHIVED";
 type ImportQueueStatus = "checking" | "ready" | "uploading" | "processing" | "published" | "failed";
@@ -300,10 +308,25 @@ function withSkuPackingQuantity(
   return next;
 }
 
+function getSkuNote(optionValues: ProductSku["optionValues"]) {
+  for (const [key, value] of Object.entries(optionValues)) {
+    if (
+      SKU_NOTE_KEYS.has(key)
+      && value !== undefined
+      && value !== null
+      && String(value).trim()
+    ) {
+      return String(value).trim();
+    }
+  }
+  return "";
+}
+
 function visibleSkuOptions(optionValues: ProductSku["optionValues"]) {
   return Object.entries(optionValues).filter(([key, value]) => (
     key !== SKU_TEMPLATE_MARKER_KEY
     && !SKU_PACKING_QUANTITY_KEYS.has(key)
+    && !SKU_NOTE_KEYS.has(key)
     && value !== ""
     && value !== undefined
     && value !== null
@@ -3228,6 +3251,7 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
           const editing = editingSkuId === sku.id;
           const expanded = expandedSkuIds.has(sku.id);
           const options = visibleSkuOptions(displaySku.optionValues);
+          const skuNote = getSkuNote(displaySku.optionValues);
           const skuLabel = displaySku.name || options.map(([, value]) => String(value)).join(" · ") || t("基础款");
           const packingQuantity = getSkuPackingQuantity(sku.optionValues);
           return (
@@ -3306,6 +3330,7 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
                       </div>
                     ) : <strong>{t("暂无规格")}</strong>}
                   </div>
+                  {skuNote ? <div className="core-sku-expanded-field is-wide"><span>{t("备注")}</span><strong className="core-sku-note-value">{skuNote}</strong></div> : null}
                   <div className="core-sku-expanded-field"><span>{t("SKU 名称")}</span><strong>{displaySku.name || displayProduct.name}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("条码")}</span><strong className="core-tabular">{sku.barcode || t("未设置")}</strong></div>
                   <div className="core-sku-expanded-field"><span>{t("起订数")}</span><strong className="core-tabular">{sku.defaultMoq === undefined ? t("未设置") : `${sku.defaultMoq} ${sku.moqUnit ?? ""}`.trim()}</strong></div>
@@ -3345,6 +3370,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const { hasPermission, profile } = useCoreAuth();
   const { t } = useLocale();
   const canEditSku = hasPermission("product.edit");
+  const isCustomerSubaccount = profile?.context.accountScope === "CUSTOMER_SUBACCOUNT";
   const canPublishOffer = hasPermission("catalog.publish");
   const defaultCurrency = profile?.context.defaultCurrency ?? "CNY";
   const [skuCode, setSkuCode] = useState(sku.skuCode);
@@ -3354,6 +3380,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
   const [defaultMoq, setDefaultMoq] = useState(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
   const [moqUnit, setMoqUnit] = useState(sku.moqUnit ?? "piece");
   const [packingQuantity, setPackingQuantity] = useState(getSkuPackingQuantity(sku.optionValues));
+  const [note, setNote] = useState(getSkuNote(sku.optionValues));
   const [weight, setWeight] = useState(sku.weight === undefined ? "" : String(sku.weight));
   const [weightUnit, setWeightUnit] = useState(sku.weightUnit ?? "kg");
   const [skuStatus, setSkuStatus] = useState<ProductSku["status"]>(sku.status);
@@ -3373,6 +3400,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
     setDefaultMoq(sku.defaultMoq === undefined ? "" : String(sku.defaultMoq));
     setMoqUnit(sku.moqUnit ?? "piece");
     setPackingQuantity(getSkuPackingQuantity(sku.optionValues));
+    setNote(getSkuNote(sku.optionValues));
     setWeight(sku.weight === undefined ? "" : String(sku.weight));
     setWeightUnit(sku.weightUnit ?? "kg");
     setSkuStatus(sku.status);
@@ -3420,6 +3448,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
       if (canEditSku) {
         const nextOptionValues = { ...sku.optionValues };
         for (const [key] of visibleSkuOptions(sku.optionValues)) delete nextOptionValues[key];
+        for (const key of SKU_NOTE_KEYS) delete nextOptionValues[key];
         delete nextOptionValues[SKU_TEMPLATE_MARKER_KEY];
         const nextVariantOptionKeys: string[] = [];
         for (const row of optionRows) {
@@ -3428,6 +3457,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
           nextOptionValues[key] = row.value;
           if (row.isVariant && !nextVariantOptionKeys.includes(key)) nextVariantOptionKeys.push(key);
         }
+        if (!isCustomerSubaccount && note.trim()) nextOptionValues["备注"] = note.trim();
         await updateSku(sku.id, {
           expectedVersion: sku.version,
           skuCode: skuCode.trim(),
@@ -3536,6 +3566,7 @@ function SkuQuickEditor({ sku, offer, managedTags, onChanged, onRefresh, onCance
         <div className="core-sku-quick-fields">
           {sku.sourceSkuCode !== undefined ? <label><Text size="1" color="gray">{t("来源 SKU")}</Text><TextField.Root value={sourceSkuCode} onChange={(event) => setSourceSkuCode(event.target.value)} /></label> : null}
           <label><Text size="1" color="gray">{t("条码")}</Text><TextField.Root value={barcode} onChange={(event) => setBarcode(event.target.value)} /></label>
+          {!isCustomerSubaccount ? <label className="is-wide"><Text size="1" color="gray">{t("备注")}</Text><TextArea value={note} rows={3} onChange={(event) => setNote(event.target.value)} /></label> : null}
         </div>
       </details> : null}
       {error ? <div className="core-form-error" role="alert">{error}</div> : null}

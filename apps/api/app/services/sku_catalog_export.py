@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -214,18 +215,38 @@ def _export_sku_identifier(
     )
 
 
+_HEADER_FILL = PatternFill(fill_type="solid", fgColor="2D1B69")
+_HEADER_FONT = Font(name="Microsoft YaHei", size=10, bold=True, color="FFFFFF")
+_HEADER_ALIGNMENT = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_BODY_ALIGNMENT = Alignment(vertical="center")
+_BODY_WRAP_ALIGNMENT = Alignment(vertical="center", wrap_text=True)
+
+
+def _styled_cell(
+    sheet: object,
+    value: Any = "",
+    *,
+    header: bool = False,
+    wrap: bool = False,
+    number_format: str | None = None,
+) -> WriteOnlyCell:
+    cell = WriteOnlyCell(sheet, value=value)
+    if header:
+        cell.fill = _HEADER_FILL
+        cell.font = _HEADER_FONT
+        cell.alignment = _HEADER_ALIGNMENT
+    else:
+        cell.alignment = _BODY_WRAP_ALIGNMENT if wrap else _BODY_ALIGNMENT
+    if number_format:
+        cell.number_format = number_format
+    return cell
+
+
 def _style_sheet(sheet: object, *, headers: Sequence[str], widths: Sequence[int]) -> None:
-    header_fill = PatternFill(fill_type="solid", fgColor="2D1B69")
-    header_font = Font(name="Microsoft YaHei", size=10, bold=True, color="FFFFFF")
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
-    for cell in sheet[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
     sheet.row_dimensions[1].height = 30
     sheet.freeze_panes = "A2"
-    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
     sheet.sheet_view.showGridLines = False
     sheet.sheet_view.zoomScale = 90
 
@@ -238,6 +259,7 @@ def build_sku_catalog_workbook(
     supplier_names: Mapping[str, str],
     public_price_overrides: Mapping[UUID, float] | None = None,
     include_source_sku_codes: bool = True,
+    include_notes: bool = True,
 ) -> bytes:
     """Build a Product + SKU workbook with editable variant columns.
 
@@ -246,13 +268,12 @@ def build_sku_catalog_workbook(
     exports small and preserves the R2 address when the workbook is edited.
     """
 
-    workbook = Workbook()
-    product_sheet = workbook.active
-    product_sheet.title = PRODUCT_MASTER_TEMPLATE_SHEET
+    # Write-only worksheets avoid building a full in-memory cell graph and
+    # avoid a second pass over every cell for alignment/number formats. This
+    # is the difference between a few seconds and minutes for large catalogues.
+    workbook = Workbook(write_only=True)
+    product_sheet = workbook.create_sheet(PRODUCT_MASTER_TEMPLATE_SHEET)
     sku_sheet = workbook.create_sheet(SKU_DETAIL_TEMPLATE_SHEET)
-    product_sheet.append(list(PRODUCT_HEADERS))
-    sku_sheet.append(list(SKU_HEADERS))
-
     _style_sheet(
         product_sheet,
         headers=PRODUCT_HEADERS,
@@ -291,38 +312,54 @@ def build_sku_catalog_workbook(
     product_sheet.sheet_properties.tabColor = "D4AF37"
     sku_sheet.sheet_properties.tabColor = "42A58B"
 
+    product_sheet.append(
+        [_styled_cell(product_sheet, header, header=True) for header in PRODUCT_HEADERS]
+    )
+    sku_sheet.append(
+        [_styled_cell(sku_sheet, header, header=True) for header in SKU_HEADERS]
+    )
+
     product_rows: dict[UUID, list[SkuListRow]] = {}
     for row in rows:
         product_rows.setdefault(row.product.id, []).append(row)
 
     image_offset = PRODUCT_HEADERS.index("商品图片1") + 1
-    for row_number, product_rows_for_product in enumerate(product_rows.values(), start=2):
+    for product_row_number, product_rows_for_product in enumerate(product_rows.values(), start=2):
         row = product_rows_for_product[0]
         product = row.product
         images = list(images_by_product.get(product.id, ()))[:MAX_PRODUCT_IMAGE_COLUMN_COUNT]
         urls = [image_urls.get(image.id, "") for image in images]
-        product_sheet.append(
-            [
-                product.product_code or "",
-                product.name or "",
-                _category_name(row),
-                _first_option_text(product_rows_for_product, "商品型号"),
-                _product_price(
-                    product_rows_for_product,
-                    public_price_overrides=public_price_overrides,
-                ),
-                product.description or "",
-                _first_option_text(product_rows_for_product, "备注"),
-                _product_tags(product_rows_for_product),
-                *urls,
-                *("" for _ in range(MAX_PRODUCT_IMAGE_COLUMN_COUNT - len(urls))),
-            ]
-        )
+        product_values = [
+            product.product_code or "",
+            product.name or "",
+            _category_name(row),
+            _first_option_text(product_rows_for_product, "商品型号"),
+            _product_price(
+                product_rows_for_product,
+                public_price_overrides=public_price_overrides,
+            ),
+            product.description or "",
+            _first_option_text(product_rows_for_product, "备注") if include_notes else "",
+            _product_tags(product_rows_for_product),
+            *urls,
+            *("" for _ in range(MAX_PRODUCT_IMAGE_COLUMN_COUNT - len(urls))),
+        ]
+        product_cells = [
+            _styled_cell(
+                product_sheet,
+                value,
+                wrap=index in {1, 2, 3, 5, 6, 7},
+                number_format="@" if index == 0 else "0.00" if index == 4 else None,
+            )
+            for index, value in enumerate(product_values)
+        ]
         for offset, url in enumerate(urls, start=image_offset):
-            cell = product_sheet.cell(row=row_number, column=offset)
+            cell = product_cells[offset - 1]
             if url.startswith(("https://", "http://")):
                 cell.hyperlink = url
                 cell.style = "Hyperlink"
+        product_sheet.row_dimensions[product_row_number].height = 36
+        product_sheet.append(product_cells)
 
     source_counts = Counter(
         _text(row.sku.source_sku_code)
@@ -330,7 +367,13 @@ def build_sku_catalog_workbook(
         if _text(row.sku.source_sku_code)
         and not _variant_options(row.sku.option_values)
     )
-    for row in rows:
+    number_formats = {
+        "SKU价格": "0.00",
+        "毛重": "0.######",
+        "起定数": "0.######",
+        "装箱数": "0.######",
+    }
+    for sku_row_number, row in enumerate(rows, start=2):
         sku = row.sku
         offer = row.public_offer
         options = _variant_options(sku.option_values)
@@ -363,45 +406,21 @@ def build_sku_catalog_workbook(
                 _number(_units_per_carton(sku.option_values)),
             ]
         )
-        sku_sheet.append(sku_values)
-
-    if product_sheet.max_row >= 2:
-        product_sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_HEADERS))}{product_sheet.max_row}"
-        for row in product_sheet.iter_rows(min_row=2, max_col=len(PRODUCT_HEADERS)):
-            for cell in row:
-                cell.alignment = Alignment(
-                    vertical="center",
-                    wrap_text=cell.column in {2, 3, 4, 6, 7, 8},
+        sku_sheet.row_dimensions[sku_row_number].height = 30
+        sku_sheet.append(
+            [
+                _styled_cell(
+                    sku_sheet,
+                    value,
+                    wrap=1 <= index <= 21,
+                    number_format=number_formats.get(header),
                 )
-            row[0].number_format = "@"
-            row[4].number_format = "0.00"
-            product_sheet.row_dimensions[row[0].row].height = 36
+                for index, (header, value) in enumerate(zip(SKU_HEADERS, sku_values))
+            ]
+        )
 
-    if sku_sheet.max_row >= 2:
-        sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_HEADERS))}{sku_sheet.max_row}"
-        number_formats = {
-            "SKU价格": "0.00",
-            "毛重": "0.######",
-            "起定数": "0.######",
-            "装箱数": "0.######",
-        }
-        for header, number_format in number_formats.items():
-            column = SKU_HEADERS.index(header) + 1
-            for cells in sku_sheet.iter_cols(
-                min_col=column,
-                max_col=column,
-                min_row=2,
-                max_row=sku_sheet.max_row,
-            ):
-                for cell in cells:
-                    cell.number_format = number_format
-        for row in sku_sheet.iter_rows(min_row=2, max_col=len(SKU_HEADERS)):
-            for cell in row:
-                cell.alignment = Alignment(
-                    vertical="center",
-                    wrap_text=2 <= cell.column <= 22,
-                )
-            sku_sheet.row_dimensions[row[0].row].height = 30
+    product_sheet.auto_filter.ref = f"A1:{get_column_letter(len(PRODUCT_HEADERS))}{len(product_rows) + 1}"
+    sku_sheet.auto_filter.ref = f"A1:{get_column_letter(len(SKU_HEADERS))}{len(rows) + 1}"
 
     workbook.calculation.fullCalcOnLoad = True
     output = BytesIO()

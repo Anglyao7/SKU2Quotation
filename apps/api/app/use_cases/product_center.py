@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from PIL import Image, ImageOps, UnidentifiedImageError
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -96,7 +96,10 @@ from ..services.subaccount_pricing import (
     subaccount_price_rules,
     subaccount_sku_price_rules,
 )
-from ..services.public_catalog_privacy import public_sku_option_values
+from ..services.public_catalog_privacy import (
+    is_private_sku_option_key,
+    public_sku_option_values,
+)
 from ..services.catalog_write_guard import (
     lock_catalog_write as _lock_catalog_write,
     release_rollback_ownership as _release_rollback_ownership,
@@ -367,14 +370,15 @@ def _scoped_sku_response(row: SkuRow, *, account_scope: str = "STAFF") -> SkuRes
 
     if account_scope != "CUSTOMER_SUBACCOUNT":
         return _sku_response(row)
+    public_values = public_sku_option_values(row.option_values or {})
     return SkuResponse(
         id=row.id,
         product_id=row.product_id,
         sku_code=row.sku_code,
         source_sku_code=None,
         name=row.name,
-        option_values=public_sku_option_values(row.option_values or {}),
-        variant_option_keys=_variant_option_keys(row.option_values),
+        option_values=public_values,
+        variant_option_keys=_variant_option_keys(public_values),
         barcode=None,
         default_moq=row.default_moq,
         moq_unit=row.moq_unit,
@@ -1195,6 +1199,16 @@ def export_sku_catalog(
     membership_id: UUID | None = None,
 ) -> bytes:
     _require(permissions, "product.view")
+    # A catalogue export is a deliberate, large read.  PostgreSQL's parallel
+    # gather workers allocate from /dev/shm; on the compact production
+    # container that can make an otherwise valid export fail with
+    # "could not resize shared memory segment".  Disabling parallel gather for
+    # this request keeps the read deterministic and avoids exhausting the
+    # shared-memory limit.  The write-only workbook builder below is already
+    # fast enough without parallel query workers.
+    bind = session.bind
+    if bind is not None and getattr(bind.dialect, "name", "") == "postgresql":
+        session.execute(text("SET LOCAL max_parallel_workers_per_gather = 0"))
     child_scope = account_scope == "CUSTOMER_SUBACCOUNT"
     hidden_product_ids = (
         subaccount_price_rules(
@@ -1297,6 +1311,7 @@ def export_sku_catalog(
         supplier_names=supplier_names,
         public_price_overrides=public_price_overrides if child_scope else None,
         include_source_sku_codes=not child_scope,
+        include_notes=not child_scope,
     )
 
 
@@ -2915,19 +2930,34 @@ def update_sku(
     option_values_supplied = "option_values" in changes
     variant_option_keys_supplied = "variant_option_keys" in changes
     variant_option_keys = changes.pop("variant_option_keys", None)
+    if account_scope == "CUSTOMER_SUBACCOUNT" and variant_option_keys is not None:
+        variant_option_keys = [
+            key for key in variant_option_keys if not is_private_sku_option_key(key)
+        ]
     for field, value in changes.items():
         if field == "option_values" and value is not None:
             # Template ownership is server-managed metadata. Users may edit
             # visible variant values, but cannot remove or forge the marker
             # that makes later authoritative snapshots safe.
-            editable_values = dict(value)
+            editable_values = (
+                {
+                    str(key): option_value
+                    for key, option_value in value.items()
+                    if not is_private_sku_option_key(key)
+                }
+                if account_scope == "CUSTOMER_SUBACCOUNT"
+                else dict(value)
+            )
             editable_values.pop(SKU_TEMPLATE_SOURCE_OPTION_KEY, None)
             source_marker = row.option_values.get(SKU_TEMPLATE_SOURCE_OPTION_KEY)
             if source_marker is not None:
                 editable_values[SKU_TEMPLATE_SOURCE_OPTION_KEY] = source_marker
-                if "备注" in row.option_values:
+                if (
+                    account_scope != "CUSTOMER_SUBACCOUNT"
+                    and "备注" in row.option_values
+                ):
                     editable_values["备注"] = row.option_values["备注"]
-                else:
+                elif account_scope != "CUSTOMER_SUBACCOUNT":
                     editable_values.pop("备注", None)
             value = editable_values
         setattr(row, field, value)

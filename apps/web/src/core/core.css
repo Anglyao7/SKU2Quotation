@@ -1121,6 +1121,7 @@
 .core-sku-expanded-field.is-wide { grid-column: 1 / -1; }
 .core-sku-expanded-field > span { color: var(--core-muted); font-size: 10px; }
 .core-sku-expanded-field > strong { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.core-sku-expanded-field > strong.core-sku-note-value { overflow: auto; overflow-wrap: anywhere; text-overflow: clip; white-space: pre-wrap; max-height: 180px; }
 .core-sku-option-list { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .core-sku-quick-editor { padding: 16px; display: grid; gap: 14px; border-top: 1px solid var(--core-line); background: color-mix(in srgb, var(--core-soft) 52%, var(--core-surface)); }
 .core-sku-editor-section { padding: 14px; display: grid; gap: 12px; border: 1px solid var(--core-line); border-radius: 10px; background: var(--core-surface); }
