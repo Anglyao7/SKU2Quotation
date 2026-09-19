@@ -2400,6 +2400,7 @@ export function QuoteWorkbenchPage() {
                     <Text size="1" color="gray">{t("当前 SKU")}</Text>
                     <strong className="mono-text">{selectedLiveSku.skuCode}</strong>
                     {selectedLiveSku.name ? <Text size="1">{selectedLiveSku.name}</Text> : null}
+                    {canViewSupplierData && selectedLiveSku.note ? <div className="quote-live-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedLiveSku.note}</Text></div> : null}
                     {Object.keys(selectedLiveSku.optionValues).length ? <Text size="1" color="gray">{Object.entries(selectedLiveSku.optionValues).map(([key, value]) => `${key}: ${String(value)}`).join(quoteSeparator(locale))}</Text> : null}
                   </div>
                 ) : null}

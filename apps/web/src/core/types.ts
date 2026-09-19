@@ -562,6 +562,7 @@ export interface ProductSku {
   skuCode: string;
   sourceSkuCode?: string;
   name?: string;
+  note?: string;
   optionValues: Record<string, string | number | boolean>;
   variantOptionKeys?: string[];
   barcode?: string;

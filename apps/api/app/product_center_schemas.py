@@ -81,6 +81,10 @@ class SkuResponse(BaseModel):
     sku_code: str
     source_sku_code: str | None = None
     name: str | None
+    # Internal catalogue notes are returned only to the owner workspace. The
+    # customer-subaccount projection explicitly sets this to None so the
+    # value cannot leak through the workbench detail drawer.
+    note: str | None = None
     option_values: dict[str, Any]
     # Explicit variant dimensions drive the option selectors shown in the
     # storefront (for example Color/Size).  Keep this separate from the

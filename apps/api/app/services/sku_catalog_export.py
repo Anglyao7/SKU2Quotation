@@ -5,11 +5,13 @@ from collections.abc import Mapping, Sequence
 from io import BytesIO
 from typing import Any
 from uuid import UUID
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.writer.excel import ExcelWriter
 
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY
 from ..product_supplier_models import ProductImageRow
@@ -342,7 +344,6 @@ def build_sku_catalog_workbook(
             _first_option_text(product_rows_for_product, "备注") if include_notes else "",
             _product_tags(product_rows_for_product),
             *urls,
-            *("" for _ in range(MAX_PRODUCT_IMAGE_COLUMN_COUNT - len(urls))),
         ]
         product_cells = [
             _styled_cell(
@@ -424,6 +425,17 @@ def build_sku_catalog_workbook(
 
     workbook.calculation.fullCalcOnLoad = True
     output = BytesIO()
-    workbook.save(output)
+    # openpyxl's convenience save_workbook uses zlib's default compression
+    # level, which spends most of the export CPU compressing repetitive
+    # catalogue text. Level 1 keeps the XLSX contract intact while cutting
+    # CPU time substantially; the resulting file is still ZIP-compressed.
+    with ZipFile(
+        output,
+        "w",
+        compression=ZIP_DEFLATED,
+        allowZip64=True,
+        compresslevel=1,
+    ) as archive:
+        ExcelWriter(workbook, archive).save()
     workbook.close()
     return output.getvalue()

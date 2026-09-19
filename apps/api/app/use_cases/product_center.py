@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -87,7 +88,10 @@ from ..services.external_image_migration import (
     download_image,
 )
 from ..adapters.object_storage import get_object_storage
-from ..services.sku_catalog_export import build_sku_catalog_workbook
+from ..services.sku_catalog_export import (
+    MAX_PRODUCT_IMAGE_COLUMN_COUNT,
+    build_sku_catalog_workbook,
+)
 from ..services.sku_quotas import ensure_sku_capacity
 from ..services.sku_codes import issue_sku_codes
 from ..services.subaccount_pricing import (
@@ -126,6 +130,22 @@ SKU_PACKING_QUANTITY_KEYS = (
     "packing_quantity",
     "units_per_carton",
 )
+
+SKU_NOTE_KEYS = frozenset({"备注", "備註", "note", "notes", "remark", "remarks"})
+
+
+def _sku_note(option_values: dict[str, Any] | None) -> str | None:
+    """Read the owner-only source note without exposing arbitrary metadata."""
+
+    for raw_key, value in (option_values or {}).items():
+        if str(raw_key).strip().casefold() not in SKU_NOTE_KEYS:
+            continue
+        if value in (None, "") or isinstance(value, (dict, list, tuple, set)):
+            continue
+        note = str(value).strip()
+        if note:
+            return note
+    return None
 
 
 def _packing_quantity(option_values: dict[str, Any] | None) -> str | None:
@@ -346,6 +366,7 @@ def _sku_response(row: SkuRow) -> SkuResponse:
         sku_code=row.sku_code,
         source_sku_code=row.source_sku_code,
         name=row.name,
+        note=_sku_note(row.option_values),
         option_values=row.option_values,
         variant_option_keys=_variant_option_keys(row.option_values),
         barcode=row.barcode,
@@ -377,6 +398,7 @@ def _scoped_sku_response(row: SkuRow, *, account_scope: str = "STAFF") -> SkuRes
         sku_code=row.sku_code,
         source_sku_code=None,
         name=row.name,
+        note=None,
         option_values=public_values,
         variant_option_keys=_variant_option_keys(public_values),
         barcode=None,
@@ -523,6 +545,7 @@ def _child_offer_prices(
     product: Any,
     skus: list[SkuRow],
     pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
+    offers: list[PublicCatalogOfferRow] | None = None,
     now: datetime | None = None,
 ) -> dict[UUID, tuple[Decimal, str]]:
     """Return effective selling prices keyed by public-offer id.
@@ -552,11 +575,16 @@ def _child_offer_prices(
     )
     sku_by_id = {sku.id: sku for sku in skus}
     result: dict[UUID, tuple[Decimal, str]] = {}
-    for offer in repository.list_public_offers_for_product(
-        session,
-        tenant_id=tenant_id,
-        product_id=product.id,
-    ):
+    effective_offers = (
+        offers
+        if offers is not None
+        else repository.list_public_offers_for_product(
+            session,
+            tenant_id=tenant_id,
+            product_id=product.id,
+        )
+    )
+    for offer in effective_offers:
         sku = sku_by_id.get(offer.sku_id)
         if sku is None or sku.status != "ACTIVE" or not _public_offer_is_live(offer, now=now):
             continue
@@ -1198,6 +1226,7 @@ def export_sku_catalog(
     account_scope: str = "STAFF",
     membership_id: UUID | None = None,
 ) -> bytes:
+    export_started = perf_counter()
     _require(permissions, "product.view")
     # A catalogue export is a deliberate, large read.  PostgreSQL's parallel
     # gather workers allocate from /dev/shm; on the compact production
@@ -1231,13 +1260,18 @@ def export_sku_catalog(
         page_size=MAX_SKU_EXPORT_ROWS + 1,
         sku_ids=set(request.sku_ids) if request.sku_ids else None,
         hidden_product_ids=hidden_product_ids,
+        # The export query already fetches MAX_SKU_EXPORT_ROWS + 1 rows. A
+        # second COUNT(*) over the same large join only delays the download;
+        # the fetched sentinel row is enough to enforce the export limit.
+        count_total=False,
     )
     if total > MAX_SKU_EXPORT_ROWS:
         raise ApplicationError(
             "SKU_EXPORT_TOO_LARGE",
-            f"当前结果包含 {total} 个 SKU，请先按分类或状态筛选后再导出。",
+            f"当前结果超过 {MAX_SKU_EXPORT_ROWS} 个 SKU，请先按分类或状态筛选后再导出。",
             kind="too_large",
         )
+    rows_loaded_at = perf_counter()
 
     product_ids = {row.product.id for row in rows}
     pricing_context = _child_pricing_context(
@@ -1254,6 +1288,11 @@ def export_sku_catalog(
         for row in rows:
             skus_by_product.setdefault(row.product.id, []).append(row.sku)
             product_by_id[row.product.id] = row.product
+        offers_by_product = repository.list_public_offers_for_products(
+            session,
+            tenant_id=tenant_id,
+            product_ids=product_ids,
+        )
         for product_id, product_skus in skus_by_product.items():
             effective_by_offer = _child_offer_prices(
                 session,
@@ -1262,6 +1301,7 @@ def export_sku_catalog(
                 product=product_by_id[product_id],
                 skus=product_skus,
                 pricing_context=pricing_context,
+                offers=offers_by_product.get(product_id, []),
             )
             offer_by_sku = {
                 row.public_offer.sku_id: row.public_offer
@@ -1279,8 +1319,10 @@ def export_sku_catalog(
             session,
             tenant_id=tenant_id,
             product_ids=set(ordered_product_ids[start : start + 1000]),
+            max_per_product=MAX_PRODUCT_IMAGE_COLUMN_COUNT,
         ):
             images_by_product.setdefault(image.product_id, []).append(image)
+    images_loaded_at = perf_counter()
 
     # Child accounts operate the same catalog workflow as the owner, but
     # supplier identity is an owner-only field.  Keep it out of exports as
@@ -1304,7 +1346,7 @@ def export_sku_catalog(
         for images in images_by_product.values()
         for image in images
     }
-    return build_sku_catalog_workbook(
+    workbook = build_sku_catalog_workbook(
         rows=rows,
         images_by_product=images_by_product,
         image_urls=image_urls,
@@ -1313,6 +1355,20 @@ def export_sku_catalog(
         include_source_sku_codes=not child_scope,
         include_notes=not child_scope,
     )
+    workbook_built_at = perf_counter()
+    logger.info(
+        "sku catalog export completed tenant=%s rows=%d products=%d bytes=%d "
+        "query_ms=%.1f images_ms=%.1f workbook_ms=%.1f total_ms=%.1f",
+        tenant_id,
+        len(rows),
+        len(product_ids),
+        len(workbook),
+        (rows_loaded_at - export_started) * 1000,
+        (images_loaded_at - rows_loaded_at) * 1000,
+        (workbook_built_at - images_loaded_at) * 1000,
+        (workbook_built_at - export_started) * 1000,
+    )
+    return workbook
 
 
 def get_product(

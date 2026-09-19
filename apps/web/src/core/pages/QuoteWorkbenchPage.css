@@ -1218,6 +1218,22 @@
   overflow-wrap: anywhere;
 }
 
+.quote-live-sku-note {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--gray-a5);
+}
+
+.quote-live-sku-note p {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .quote-sync-confirm-actions {
   display: flex;
   justify-content: flex-end;

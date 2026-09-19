@@ -575,6 +575,7 @@ def list_sku_page_rows(
     page_size: int,
     sku_ids: set[UUID] | None = None,
     known_total: int | None = None,
+    count_total: bool = True,
     hidden_product_ids: set[UUID] | None = None,
 ) -> tuple[list[SkuListRow], int]:
     conditions = [
@@ -634,10 +635,9 @@ def list_sku_page_rows(
         ProductRow.tenant_id == SkuRow.tenant_id,
         ProductRow.id == SkuRow.product_id,
     )
-    total = (
-        int(known_total)
-        if known_total is not None
-        else int(
+    total: int | None = int(known_total) if known_total is not None else None
+    if total is None and count_total:
+        total = int(
             session.scalar(
                 select(func.count())
                 .select_from(SkuRow)
@@ -646,7 +646,6 @@ def list_sku_page_rows(
             )
             or 0
         )
-    )
 
     statement = (
         select(
@@ -716,6 +715,10 @@ def list_sku_page_rows(
     rows = session.execute(
         statement.limit(page_size).offset((page - 1) * page_size)
     ).all()
+    if total is None:
+        # Export callers fetch one sentinel row beyond their limit. Returning
+        # the fetched size preserves that contract without another full scan.
+        total = len(rows)
     return (
         [
             SkuListRow(
@@ -803,26 +806,46 @@ def list_images_for_products(
     *,
     tenant_id: UUID,
     product_ids: set[UUID],
+    max_per_product: int | None = None,
 ) -> list[ProductImageRow]:
     if not product_ids:
         return []
-    return list(
-        session.scalars(
-            select(ProductImageRow)
-            .where(
-                ProductImageRow.tenant_id == tenant_id,
-                ProductImageRow.product_id.in_(product_ids),
-                ProductImageRow.deleted_at.is_(None),
-            )
-            .order_by(
-                ProductImageRow.product_id,
-                case((ProductImageRow.approval_status == "APPROVED", 0), else_=1),
-                case((ProductImageRow.image_role == "MAIN", 0), else_=1),
-                ProductImageRow.sort_order,
-                ProductImageRow.id,
-            )
-        ).all()
+    conditions = (
+        ProductImageRow.tenant_id == tenant_id,
+        ProductImageRow.product_id.in_(product_ids),
+        ProductImageRow.deleted_at.is_(None),
     )
+    image_order = (
+        case((ProductImageRow.approval_status == "APPROVED", 0), else_=1),
+        case((ProductImageRow.image_role == "MAIN", 0), else_=1),
+        ProductImageRow.sort_order,
+        ProductImageRow.id,
+    )
+    if max_per_product is None:
+        statement = select(ProductImageRow).where(*conditions).order_by(
+            ProductImageRow.product_id, *image_order
+        )
+    else:
+        ranked = (
+            select(
+                ProductImageRow.id.label("image_id"),
+                func.row_number()
+                .over(
+                    partition_by=ProductImageRow.product_id,
+                    order_by=image_order,
+                )
+                .label("image_rank"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        statement = (
+            select(ProductImageRow)
+            .join(ranked, ProductImageRow.id == ranked.c.image_id)
+            .where(ranked.c.image_rank <= max(1, int(max_per_product)))
+            .order_by(ProductImageRow.product_id, *image_order)
+        )
+    return list(session.scalars(statement).all())
 
 
 def get_sku(session: Session, *, tenant_id: UUID, sku_id: UUID) -> SkuRow | None:
@@ -859,6 +882,36 @@ def list_public_offers_for_product(
             .order_by(SkuRow.sku_code, PublicCatalogOfferRow.id)
         ).all()
     )
+
+
+def list_public_offers_for_products(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: set[UUID],
+) -> dict[UUID, list[PublicCatalogOfferRow]]:
+    """Load child-account offers for an export in one query."""
+
+    if not product_ids:
+        return {}
+    rows = session.execute(
+        select(PublicCatalogOfferRow, SkuRow.product_id)
+        .join(
+            SkuRow,
+            (SkuRow.tenant_id == PublicCatalogOfferRow.tenant_id)
+            & (SkuRow.id == PublicCatalogOfferRow.sku_id),
+        )
+        .where(
+            PublicCatalogOfferRow.tenant_id == tenant_id,
+            SkuRow.tenant_id == tenant_id,
+            SkuRow.product_id.in_(product_ids),
+        )
+        .order_by(SkuRow.product_id, SkuRow.sku_code, PublicCatalogOfferRow.id)
+    ).all()
+    offers_by_product: dict[UUID, list[PublicCatalogOfferRow]] = {}
+    for offer, product_id in rows:
+        offers_by_product.setdefault(product_id, []).append(offer)
+    return offers_by_product
 
 
 def sku_code_exists(session: Session, *, tenant_id: UUID, sku_code: str) -> bool:

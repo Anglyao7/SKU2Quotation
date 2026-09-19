@@ -1972,6 +1972,7 @@ interface ApiSku {
   sku_code: string;
   source_sku_code?: string | null;
   name?: string | null;
+  note?: string | null;
   option_values: Record<string, string | number | boolean>;
   variant_option_keys?: string[];
   barcode?: string | null;
@@ -2177,6 +2178,7 @@ function mapSku(row: ApiSku): ProductSku {
     skuCode: row.sku_code,
     sourceSkuCode: defined(row.source_sku_code),
     name: defined(row.name),
+    note: defined(row.note),
     optionValues: row.option_values,
     variantOptionKeys: row.variant_option_keys ?? [],
     barcode: defined(row.barcode),
