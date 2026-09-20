@@ -4,6 +4,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, SecretStr
 
 from .translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
+from .services.search_query_translation import (
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS,
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS,
+)
 
 
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
@@ -43,6 +48,21 @@ class TranslationSettingsResponse(BaseModel):
     batch_api_key_configured: bool = False
     batch_api_key_hint: str | None = None
     updated_at: datetime | None = None
+    search_translation_source: Literal["database", "environment", "disabled"] = "disabled"
+    search_translation_enabled: bool = False
+    search_translation_endpoint: str = DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT
+    search_translation_timeout_seconds: int = Field(
+        default=int(DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS), ge=1, le=120
+    )
+    search_translation_cache_ttl_seconds: int = Field(
+        default=DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS,
+        ge=60,
+        le=2_592_000,
+    )
+    search_translation_api_key_configured: bool = False
+    search_translation_api_key_hint: str | None = None
+    search_translation_app_id_configured: bool = False
+    search_translation_app_id_hint: str | None = None
 
 
 class TranslationProviderParameters(BaseModel):
@@ -79,6 +99,23 @@ class TranslationProviderParameters(BaseModel):
     )
     batch_api_key: SecretStr | None = Field(default=None, max_length=4096)
     reasoning_effort: ReasoningEffort = "low"
+    search_translation_enabled: bool = False
+    search_translation_endpoint: str = Field(
+        default=DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+        max_length=1000,
+    )
+    search_translation_timeout_seconds: int = Field(
+        default=int(DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS),
+        ge=1,
+        le=120,
+    )
+    search_translation_cache_ttl_seconds: int = Field(
+        default=DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS,
+        ge=60,
+        le=2_592_000,
+    )
+    search_translation_api_key: SecretStr | None = Field(default=None, max_length=4096)
+    search_translation_app_id: SecretStr | None = Field(default=None, max_length=4096)
 
 
 class TranslationSettingsUpdateRequest(TranslationProviderParameters):

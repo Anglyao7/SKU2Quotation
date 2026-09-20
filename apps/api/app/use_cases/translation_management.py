@@ -88,6 +88,20 @@ def update_settings(
                 if request.batch_api_key is not None
                 else None
             ),
+            search_translation_enabled=request.search_translation_enabled,
+            search_translation_endpoint=request.search_translation_endpoint,
+            search_translation_timeout_seconds=request.search_translation_timeout_seconds,
+            search_translation_cache_ttl_seconds=request.search_translation_cache_ttl_seconds,
+            search_translation_api_key=(
+                request.search_translation_api_key.get_secret_value()
+                if request.search_translation_api_key is not None
+                else None
+            ),
+            search_translation_app_id=(
+                request.search_translation_app_id.get_secret_value()
+                if request.search_translation_app_id is not None
+                else None
+            ),
             enabled=request.enabled,
             updated_by_user_id=context.user_id,
         )

@@ -3,7 +3,9 @@
 This adapter is intentionally separate from catalog language-pack translation.
 It is only used to normalize a visitor's short search phrase before catalog
 retrieval.  The API key remains server-side and failures are fail-open: the
-caller can continue searching with the original phrase.
+caller can continue searching with the original phrase. Runtime settings are
+managed by the configuration center, while the environment adapter remains as
+a compatibility fallback for existing deployments.
 """
 
 from __future__ import annotations
@@ -344,4 +346,23 @@ def configured_baidu_search_query_translator(
         endpoint,
         timeout_seconds,
         cache_ttl_seconds,
+    )
+
+
+def cached_baidu_search_query_translator(
+    *,
+    api_key: str,
+    app_id: str,
+    endpoint: str = DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+    timeout_seconds: float = DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS,
+    cache_ttl_seconds: int = DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS,
+) -> BaiduSearchQueryTranslator:
+    """Reuse one HTTP client per managed configuration instead of per request."""
+
+    return _cached_baidu_search_query_translator(
+        api_key.strip(),
+        app_id.strip(),
+        endpoint.strip().rstrip("/"),
+        float(timeout_seconds),
+        int(cache_ttl_seconds),
     )

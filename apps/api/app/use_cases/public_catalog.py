@@ -114,9 +114,6 @@ from ..services.translation import (
     configured_catalog_translator,
 )
 from ..services.translation_memory import translate_values_with_memory
-from ..services.search_query_translation import (
-    configured_baidu_search_query_translator,
-)
 from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
@@ -127,6 +124,7 @@ from ..services.platform_usage import increment_image_search
 from ..services.quote_localization import quote_text
 from ..services.translation_configuration import (
     resolved_catalog_translator,
+    resolved_baidu_search_query_translator,
     translation_provider_is_configured,
 )
 from ..services.world_market import (
@@ -625,6 +623,7 @@ def _positive_int_environment(name: str, default: int, *, maximum: int) -> int:
 def _source_language_search_query(
     query: str,
     *,
+    session: Session,
     source_locale: str,
     search_locale: str | None,
 ) -> str:
@@ -653,7 +652,7 @@ def _source_language_search_query(
     ):
         return normalized
     try:
-        translator = configured_baidu_search_query_translator()
+        translator = resolved_baidu_search_query_translator(session)
         translated = translator.translate(
             normalized,
             source_locale=search_locale,
@@ -2566,6 +2565,7 @@ def list_public_products(
         normalized_search_locale = None
     query = _source_language_search_query(
         query,
+        session=session,
         source_locale=source_locale,
         search_locale=normalized_search_locale,
     )

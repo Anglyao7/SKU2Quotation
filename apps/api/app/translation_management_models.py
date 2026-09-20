@@ -133,6 +133,35 @@ class TranslationProviderSettingsRow(AuditTimestampMixin, Base):
         String(4),
         nullable=True,
     )
+    # Short storefront search normalization is managed separately from the
+    # catalog translation provider. Credentials are encrypted with the same
+    # platform key, and the plain values are never returned by the API.
+    search_translation_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    search_translation_endpoint: Mapped[str] = mapped_column(
+        String(1000),
+        default="https://fanyi-api.baidu.com/ait/api/aiTextTranslate",
+        nullable=False,
+    )
+    search_translation_timeout_seconds: Mapped[int] = mapped_column(
+        Integer, default=8, nullable=False
+    )
+    search_translation_cache_ttl_seconds: Mapped[int] = mapped_column(
+        Integer, default=86_400, nullable=False
+    )
+    search_translation_api_key_ciphertext: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    search_translation_api_key_last_four: Mapped[str | None] = mapped_column(
+        String(4), nullable=True
+    )
+    search_translation_app_id_ciphertext: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    search_translation_app_id_last_four: Mapped[str | None] = mapped_column(
+        String(4), nullable=True
+    )
     reasoning_effort: Mapped[str] = mapped_column(
         String(20), default="low", nullable=False
     )

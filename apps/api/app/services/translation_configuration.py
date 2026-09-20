@@ -4,7 +4,7 @@ import base64
 import hashlib
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
@@ -37,6 +37,14 @@ from .qwen_batch_translation import (
     DEFAULT_QWEN_BATCH_MODEL,
     QwenBatchConfiguration,
     qwen_batch_api_base_url,
+)
+from .search_query_translation import (
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS,
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+    DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS,
+    BaiduSearchQueryTranslator,
+    cached_baidu_search_query_translator,
+    configured_baidu_search_query_translator,
 )
 
 
@@ -86,6 +94,19 @@ class TranslationConfigurationSnapshot:
     batch_api_key_configured: bool
     batch_api_key_hint: str | None
     updated_at: datetime | None
+    search_translation_source: str = "disabled"
+    search_translation_enabled: bool = False
+    search_translation_endpoint: str = DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT
+    search_translation_timeout_seconds: int = int(
+        DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS
+    )
+    search_translation_cache_ttl_seconds: int = (
+        DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS
+    )
+    search_translation_api_key_configured: bool = False
+    search_translation_api_key_hint: str | None = None
+    search_translation_app_id_configured: bool = False
+    search_translation_app_id_hint: str | None = None
 
 
 def _managed_environment() -> bool:
@@ -378,6 +399,95 @@ def _environment_access_key_id(provider: str) -> str:
     return os.getenv("ALIYUN_TRANSLATION_ACCESS_KEY_ID", "").strip()
 
 
+def _environment_search_translation_snapshot() -> dict[str, object]:
+    """Resolve the legacy environment fallback for search-query translation."""
+
+    api_key = os.getenv("BAIDU_SEARCH_TRANSLATION_API_KEY", "").strip()
+    app_id = os.getenv("BAIDU_SEARCH_TRANSLATION_APP_ID", "").strip()
+    endpoint = (
+        os.getenv(
+            "BAIDU_SEARCH_TRANSLATION_ENDPOINT",
+            DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+        ).strip()
+        or DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT
+    )
+    try:
+        timeout_seconds = int(
+            float(
+                os.getenv(
+                    "BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS",
+                    str(int(DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS)),
+                )
+            )
+        )
+    except ValueError:
+        timeout_seconds = int(DEFAULT_BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS)
+    timeout_seconds = max(1, min(timeout_seconds, 120))
+    try:
+        cache_ttl_seconds = int(
+            os.getenv(
+                "BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS",
+                str(DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS),
+            )
+        )
+    except ValueError:
+        cache_ttl_seconds = DEFAULT_BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS
+    cache_ttl_seconds = max(60, min(cache_ttl_seconds, 2_592_000))
+    configured = bool(api_key and app_id)
+    has_environment_settings = any(
+        os.getenv(name, "").strip()
+        for name in (
+            "BAIDU_SEARCH_TRANSLATION_API_KEY",
+            "BAIDU_SEARCH_TRANSLATION_APP_ID",
+            "BAIDU_SEARCH_TRANSLATION_ENDPOINT",
+            "BAIDU_SEARCH_TRANSLATION_TIMEOUT_SECONDS",
+            "BAIDU_SEARCH_TRANSLATION_CACHE_TTL_SECONDS",
+        )
+    )
+    return {
+        "search_translation_source": (
+            "environment" if has_environment_settings else "disabled"
+        ),
+        "search_translation_enabled": configured,
+        "search_translation_endpoint": endpoint,
+        "search_translation_timeout_seconds": timeout_seconds,
+        "search_translation_cache_ttl_seconds": cache_ttl_seconds,
+        "search_translation_api_key_configured": bool(api_key),
+        "search_translation_api_key_hint": f"••••{api_key[-4:]}" if api_key else None,
+        "search_translation_app_id_configured": bool(app_id),
+        "search_translation_app_id_hint": f"••••{app_id[-4:]}" if app_id else None,
+    }
+
+
+def _database_search_translation_snapshot(
+    settings: TranslationProviderSettingsRow,
+) -> dict[str, object] | None:
+    if not (
+        settings.search_translation_api_key_ciphertext
+        and settings.search_translation_app_id_ciphertext
+    ):
+        return None
+    return {
+        "search_translation_source": "database",
+        "search_translation_enabled": bool(settings.search_translation_enabled),
+        "search_translation_endpoint": settings.search_translation_endpoint,
+        "search_translation_timeout_seconds": settings.search_translation_timeout_seconds,
+        "search_translation_cache_ttl_seconds": settings.search_translation_cache_ttl_seconds,
+        "search_translation_api_key_configured": True,
+        "search_translation_api_key_hint": (
+            f"••••{settings.search_translation_api_key_last_four}"
+            if settings.search_translation_api_key_last_four
+            else None
+        ),
+        "search_translation_app_id_configured": True,
+        "search_translation_app_id_hint": (
+            f"••••{settings.search_translation_app_id_last_four}"
+            if settings.search_translation_app_id_last_four
+            else None
+        ),
+    }
+
+
 def _environment_snapshot() -> TranslationConfigurationSnapshot:
     catalog_batch_size, catalog_batch_characters = (
         _environment_catalog_translation_batch_limits()
@@ -561,8 +671,11 @@ def translation_configuration_snapshot(
 ) -> TranslationConfigurationSnapshot:
     settings = get_managed_translation_settings(session)
     if settings is None:
-        return _environment_snapshot()
-    return TranslationConfigurationSnapshot(
+        return replace(
+            _environment_snapshot(),
+            **_environment_search_translation_snapshot(),
+        )
+    snapshot = TranslationConfigurationSnapshot(
         source="database",
         provider=settings.provider,
         enabled=settings.is_active,
@@ -601,6 +714,42 @@ def translation_configuration_snapshot(
         ),
         updated_at=settings.updated_at,
     )
+    return replace(
+        snapshot,
+        **(
+            _database_search_translation_snapshot(settings)
+            or _environment_search_translation_snapshot()
+        ),
+    )
+
+
+def resolved_baidu_search_query_translator(
+    session: Session,
+) -> BaiduSearchQueryTranslator:
+    """Resolve the config-center search translator, with env compatibility fallback."""
+
+    settings = get_managed_translation_settings(session)
+    if settings is not None:
+        database_values = _database_search_translation_snapshot(settings)
+        if database_values is not None:
+            if not settings.search_translation_enabled:
+                raise TranslationProviderError(
+                    "百度搜索词翻译服务已停用",
+                    category="CONFIGURATION",
+                    retryable=False,
+                )
+            return cached_baidu_search_query_translator(
+                api_key=decrypt_translation_api_key(
+                    settings.search_translation_api_key_ciphertext  # type: ignore[arg-type]
+                ),
+                app_id=decrypt_translation_api_key(
+                    settings.search_translation_app_id_ciphertext  # type: ignore[arg-type]
+                ),
+                endpoint=settings.search_translation_endpoint,
+                timeout_seconds=float(settings.search_translation_timeout_seconds),
+                cache_ttl_seconds=settings.search_translation_cache_ttl_seconds,
+            )
+    return configured_baidu_search_query_translator()
 
 
 def resolved_catalog_translation_batch_limits(
@@ -793,6 +942,23 @@ def _resolved_access_key_id(
     return _environment_access_key_id(provider)
 
 
+def _resolved_search_credential(
+    session: Session,
+    *,
+    ciphertext_attribute: str,
+    environment_name: str,
+    value: str | None,
+) -> str:
+    normalized_value = (value or "").strip()
+    if normalized_value:
+        return normalized_value
+    settings = get_managed_translation_settings(session)
+    ciphertext = getattr(settings, ciphertext_attribute, None)
+    if ciphertext:
+        return decrypt_translation_api_key(ciphertext)
+    return os.getenv(environment_name, "").strip()
+
+
 def candidate_translation_provider(
     session: Session,
     *,
@@ -865,6 +1031,12 @@ def save_managed_translation_settings(
     batch_base_url: str,
     batch_model_name: str,
     batch_api_key: str | None,
+    search_translation_enabled: bool,
+    search_translation_endpoint: str,
+    search_translation_timeout_seconds: int,
+    search_translation_cache_ttl_seconds: int,
+    search_translation_api_key: str | None,
+    search_translation_app_id: str | None,
     enabled: bool,
     updated_by_user_id: UUID,
 ) -> TranslationProviderSettingsRow:
@@ -887,6 +1059,22 @@ def save_managed_translation_settings(
     normalized_execution_mode = normalized_catalog_translation_execution_mode(
         catalog_execution_mode
     )
+    normalized_search_endpoint = (
+        search_translation_endpoint.strip().rstrip("/")
+        or DEFAULT_BAIDU_SEARCH_TRANSLATION_ENDPOINT
+    )
+    if not normalized_search_endpoint.startswith("https://"):
+        raise TranslationProviderError(
+            "百度搜索词翻译 Endpoint 必须是 HTTPS 地址"
+        )
+    if not 1 <= search_translation_timeout_seconds <= 120:
+        raise TranslationProviderError(
+            "百度搜索词翻译超时时间必须在 1–120 秒之间"
+        )
+    if not 60 <= search_translation_cache_ttl_seconds <= 2_592_000:
+        raise TranslationProviderError(
+            "百度搜索词翻译缓存时间必须在 60–2592000 秒之间"
+        )
     settings = get_managed_translation_settings(session)
     provider_changed = bool(
         settings is not None and settings.provider != normalized_provider
@@ -963,6 +1151,48 @@ def save_managed_translation_settings(
             max_tokens=max_tokens,
             reasoning_effort=normalized_reasoning,
         )
+
+    resolved_search_api_key = _resolved_search_credential(
+        session,
+        ciphertext_attribute="search_translation_api_key_ciphertext",
+        environment_name="BAIDU_SEARCH_TRANSLATION_API_KEY",
+        value=search_translation_api_key,
+    )
+    resolved_search_app_id = _resolved_search_credential(
+        session,
+        ciphertext_attribute="search_translation_app_id_ciphertext",
+        environment_name="BAIDU_SEARCH_TRANSLATION_APP_ID",
+        value=search_translation_app_id,
+    )
+    if search_translation_enabled and not (
+        resolved_search_api_key and resolved_search_app_id
+    ):
+        raise TranslationProviderError(
+            "启用前台搜索词翻译前，需要配置百度 API Key 和 AppID"
+        )
+    if resolved_search_api_key and resolved_search_app_id:
+        # Validate the same endpoint and bounds that runtime resolution uses,
+        # without making a network request while saving config.
+        BaiduSearchQueryTranslator(
+            api_key=resolved_search_api_key,
+            app_id=resolved_search_app_id,
+            endpoint=normalized_search_endpoint,
+            timeout_seconds=float(search_translation_timeout_seconds),
+            cache_ttl_seconds=search_translation_cache_ttl_seconds,
+        )
+    should_store_search_credentials = bool(
+        resolved_search_api_key
+        and resolved_search_app_id
+        and (
+            bool((search_translation_api_key or "").strip())
+            or bool((search_translation_app_id or "").strip())
+            or settings is None
+            or not (
+                settings.search_translation_api_key_ciphertext
+                and settings.search_translation_app_id_ciphertext
+            )
+        )
+    )
 
     normalized_batch_base_url = (
         batch_base_url.strip().rstrip("/")
@@ -1056,6 +1286,30 @@ def save_managed_translation_settings(
             batch_api_key_last_four=(
                 resolved_batch_key[-4:] if should_store_batch_key else None
             ),
+            search_translation_enabled=bool(search_translation_enabled),
+            search_translation_endpoint=normalized_search_endpoint,
+            search_translation_timeout_seconds=search_translation_timeout_seconds,
+            search_translation_cache_ttl_seconds=search_translation_cache_ttl_seconds,
+            search_translation_api_key_ciphertext=(
+                encrypt_translation_api_key(resolved_search_api_key)
+                if should_store_search_credentials
+                else None
+            ),
+            search_translation_api_key_last_four=(
+                resolved_search_api_key[-4:]
+                if should_store_search_credentials
+                else None
+            ),
+            search_translation_app_id_ciphertext=(
+                encrypt_translation_api_key(resolved_search_app_id)
+                if should_store_search_credentials
+                else None
+            ),
+            search_translation_app_id_last_four=(
+                resolved_search_app_id[-4:]
+                if should_store_search_credentials
+                else None
+            ),
             reasoning_effort=normalized_reasoning,
             api_key_ciphertext=(
                 encrypt_translation_api_key(resolved_key)
@@ -1102,6 +1356,10 @@ def save_managed_translation_settings(
         settings.catalog_execution_mode = normalized_execution_mode
         settings.batch_base_url = normalized_batch_base_url
         settings.batch_model_name = normalized_batch_model
+        settings.search_translation_enabled = bool(search_translation_enabled)
+        settings.search_translation_endpoint = normalized_search_endpoint
+        settings.search_translation_timeout_seconds = search_translation_timeout_seconds
+        settings.search_translation_cache_ttl_seconds = search_translation_cache_ttl_seconds
         settings.reasoning_effort = normalized_reasoning
         settings.is_active = enabled
         settings.version += 1
@@ -1129,5 +1387,14 @@ def save_managed_translation_settings(
                 resolved_batch_key
             )
             settings.batch_api_key_last_four = resolved_batch_key[-4:]
+        if should_store_search_credentials:
+            settings.search_translation_api_key_ciphertext = (
+                encrypt_translation_api_key(resolved_search_api_key)
+            )
+            settings.search_translation_api_key_last_four = resolved_search_api_key[-4:]
+            settings.search_translation_app_id_ciphertext = (
+                encrypt_translation_api_key(resolved_search_app_id)
+            )
+            settings.search_translation_app_id_last_four = resolved_search_app_id[-4:]
     session.flush()
     return settings

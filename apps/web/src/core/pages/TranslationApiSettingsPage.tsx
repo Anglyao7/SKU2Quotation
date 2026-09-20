@@ -49,6 +49,8 @@ const ALIYUN_EDITION = "translate_standard";
 const DEEPLX_MODEL = "DeepLX";
 const QWEN_BATCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15";
+const BAIDU_SEARCH_TRANSLATION_ENDPOINT =
+  "https://fanyi-api.baidu.com/ait/api/aiTextTranslate";
 const MAX_TRANSLATION_TIMEOUT_SECONDS = 600;
 
 
@@ -82,6 +84,16 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [catalogConcurrency, setCatalogConcurrency] = useState("3");
   const [reasoningEffort, setReasoningEffort] =
     useState<TranslationReasoningEffort>("low");
+  const [searchTranslationEnabled, setSearchTranslationEnabled] = useState(false);
+  const [searchTranslationEndpoint, setSearchTranslationEndpoint] = useState(
+    BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+  );
+  const [searchTranslationApiKey, setSearchTranslationApiKey] = useState("");
+  const [searchTranslationAppId, setSearchTranslationAppId] = useState("");
+  const [searchTranslationTimeoutSeconds, setSearchTranslationTimeoutSeconds] =
+    useState("8");
+  const [searchTranslationCacheTtlSeconds, setSearchTranslationCacheTtlSeconds] =
+    useState("86400");
 
   const applySettings = useCallback((next: TranslationApiSettings) => {
     setSettings(next);
@@ -104,6 +116,18 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setBatchBaseUrl(next.batchBaseUrl || QWEN_BATCH_BASE_URL);
     setBatchModelName(next.batchModelName || QWEN_BATCH_MODEL);
     setBatchApiKey("");
+    setSearchTranslationEnabled(next.searchTranslationEnabled);
+    setSearchTranslationEndpoint(
+      next.searchTranslationEndpoint || BAIDU_SEARCH_TRANSLATION_ENDPOINT,
+    );
+    setSearchTranslationTimeoutSeconds(
+      String(next.searchTranslationTimeoutSeconds || 8),
+    );
+    setSearchTranslationCacheTtlSeconds(
+      String(next.searchTranslationCacheTtlSeconds || 86400),
+    );
+    setSearchTranslationApiKey("");
+    setSearchTranslationAppId("");
   }, []);
 
   const loadSettings = useCallback(async () => {
@@ -150,6 +174,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     batchModelName: batchModelName.trim(),
     batchApiKey: batchApiKey.trim() || undefined,
     reasoningEffort,
+    searchTranslationEnabled,
+    searchTranslationEndpoint: searchTranslationEndpoint.trim(),
+    searchTranslationTimeoutSeconds: Number(searchTranslationTimeoutSeconds),
+    searchTranslationCacheTtlSeconds: Number(searchTranslationCacheTtlSeconds),
+    searchTranslationApiKey: searchTranslationApiKey.trim() || undefined,
+    searchTranslationAppId: searchTranslationAppId.trim() || undefined,
   }), [
     accessKeyId,
     apiKey,
@@ -168,6 +198,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     requestsPerMinute,
     reasoningEffort,
     regionId,
+    searchTranslationApiKey,
+    searchTranslationAppId,
+    searchTranslationCacheTtlSeconds,
+    searchTranslationEnabled,
+    searchTranslationEndpoint,
+    searchTranslationTimeoutSeconds,
     timeoutSeconds,
   ]);
 
@@ -193,6 +229,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     input.batchApiKey
       || settings?.batchApiKeyConfigured,
   );
+  const hasSearchApiSecret = Boolean(
+    input.searchTranslationApiKey || settings?.searchTranslationApiKeyConfigured,
+  );
+  const hasSearchAppId = Boolean(
+    input.searchTranslationAppId || settings?.searchTranslationAppIdConfigured,
+  );
   const validRpm = Number.isInteger(input.requestsPerMinute)
     && input.requestsPerMinute >= 1
     && input.requestsPerMinute <= 10_000;
@@ -208,6 +250,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const validConcurrency = Number.isInteger(input.catalogConcurrency)
     && input.catalogConcurrency >= 1
     && input.catalogConcurrency <= 10;
+  const validSearchTimeout = Number.isInteger(input.searchTranslationTimeoutSeconds)
+    && input.searchTranslationTimeoutSeconds >= 1
+    && input.searchTranslationTimeoutSeconds <= 120;
+  const validSearchCacheTtl = Number.isInteger(input.searchTranslationCacheTtlSeconds)
+    && input.searchTranslationCacheTtlSeconds >= 60
+    && input.searchTranslationCacheTtlSeconds <= 2_592_000;
 
   const formValid = Boolean(
     (isDeepLX ? hasDeepLXEndpoint : input.baseUrl)
@@ -231,7 +279,14 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
         input.batchBaseUrl
         && input.batchModelName
         && hasBatchApiSecret
-      )),
+      ))
+    && (!searchTranslationEnabled || (
+      input.searchTranslationEndpoint.startsWith("https://")
+      && validSearchTimeout
+      && validSearchCacheTtl
+      && hasSearchApiSecret
+      && hasSearchAppId
+    )),
   );
   const saveSettings = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -805,6 +860,123 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   </label>
                 </>
               ) : null}
+
+              <div className="core-translation-batch-settings core-translation-api-wide">
+                <div className="core-translation-batch-heading">
+                  <div>
+                    <Text size="2" weight="bold" as="div">
+                      {t("前台搜索设置")}
+                    </Text>
+                    <Text size="1" color="gray">
+                      百度 AI 只负责把访客的外语搜索词转换为商品源语言，不参与商品语言包翻译。
+                    </Text>
+                    <Text size="1" color="gray">
+                      来源：{settings?.searchTranslationSource === "database"
+                        ? "配置中心"
+                        : settings?.searchTranslationSource === "environment"
+                        ? "服务器环境变量"
+                        : "未配置"}
+                    </Text>
+                  </div>
+                  <Badge color={searchTranslationEnabled ? "jade" : "gray"} variant="soft">
+                    {t(searchTranslationEnabled ? "已启用" : "服务已停用")}
+                  </Badge>
+                </div>
+                <div className="core-translation-api-switch">
+                  <span>
+                    <Text size="2" weight="bold" as="div">{t("启用翻译服务")}</Text>
+                    <Text size="1" color="gray">
+                      外语搜索会先翻译为商品源语言，失败时仍会使用原搜索词。
+                    </Text>
+                  </span>
+                  <Switch
+                    checked={searchTranslationEnabled}
+                    onCheckedChange={(checked) => {
+                      clearResult();
+                      setSearchTranslationEnabled(checked);
+                    }}
+                  />
+                </div>
+                <div className="core-translation-batch-fields">
+                  <label className="core-translation-api-wide">
+                    <Text size="1" color="gray">{t("服务 Endpoint")}</Text>
+                    <TextField.Root
+                      type="url"
+                      value={searchTranslationEndpoint}
+                      onChange={(event) => {
+                        clearResult();
+                        setSearchTranslationEndpoint(event.target.value);
+                      }}
+                      placeholder={BAIDU_SEARCH_TRANSLATION_ENDPOINT}
+                      required={searchTranslationEnabled}
+                    />
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">百度 API Key</Text>
+                    <TextField.Root
+                      type="password"
+                      autoComplete="new-password"
+                      value={searchTranslationApiKey}
+                      onChange={(event) => {
+                        clearResult();
+                        setSearchTranslationApiKey(event.target.value);
+                      }}
+                      placeholder={settings?.searchTranslationApiKeyConfigured
+                        ? t("已配置 {hint}，留空则保持不变", {
+                            hint: settings.searchTranslationApiKeyHint ?? "",
+                          })
+                        : "请输入百度 API Key"}
+                      required={searchTranslationEnabled && !hasSearchApiSecret}
+                    />
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">百度 AppID</Text>
+                    <TextField.Root
+                      type="password"
+                      autoComplete="new-password"
+                      value={searchTranslationAppId}
+                      onChange={(event) => {
+                        clearResult();
+                        setSearchTranslationAppId(event.target.value);
+                      }}
+                      placeholder={settings?.searchTranslationAppIdConfigured
+                        ? t("已配置 {hint}，留空则保持不变", {
+                            hint: settings.searchTranslationAppIdHint ?? "",
+                          })
+                        : "请输入百度 AppID"}
+                      required={searchTranslationEnabled && !hasSearchAppId}
+                    />
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">搜索词翻译超时（秒）</Text>
+                    <TextField.Root
+                      type="number"
+                      min="1"
+                      max="120"
+                      value={searchTranslationTimeoutSeconds}
+                      onChange={(event) => {
+                        clearResult();
+                        setSearchTranslationTimeoutSeconds(event.target.value);
+                      }}
+                      required={searchTranslationEnabled}
+                    />
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">搜索词翻译缓存（秒）</Text>
+                    <TextField.Root
+                      type="number"
+                      min="60"
+                      max="2592000"
+                      value={searchTranslationCacheTtlSeconds}
+                      onChange={(event) => {
+                        clearResult();
+                        setSearchTranslationCacheTtlSeconds(event.target.value);
+                      }}
+                      required={searchTranslationEnabled}
+                    />
+                  </label>
+                </div>
+              </div>
 
               <div className="core-translation-api-actions">
                 <Button

@@ -1576,6 +1576,15 @@ export interface TranslationApiSettings {
   batchApiKeyConfigured: boolean;
   batchApiKeyHint?: string;
   updatedAt?: string;
+  searchTranslationSource: "database" | "environment" | "disabled";
+  searchTranslationEnabled: boolean;
+  searchTranslationEndpoint: string;
+  searchTranslationTimeoutSeconds: number;
+  searchTranslationCacheTtlSeconds: number;
+  searchTranslationApiKeyConfigured: boolean;
+  searchTranslationApiKeyHint?: string;
+  searchTranslationAppIdConfigured: boolean;
+  searchTranslationAppIdHint?: string;
 }
 
 export interface TranslationApiTestResult {

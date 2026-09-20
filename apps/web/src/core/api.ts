@@ -3293,6 +3293,15 @@ interface ApiTranslationSettings {
   batch_api_key_configured: boolean;
   batch_api_key_hint?: string | null;
   updated_at?: string | null;
+  search_translation_source?: "database" | "environment" | "disabled";
+  search_translation_enabled?: boolean;
+  search_translation_endpoint?: string;
+  search_translation_timeout_seconds?: number;
+  search_translation_cache_ttl_seconds?: number;
+  search_translation_api_key_configured?: boolean;
+  search_translation_api_key_hint?: string | null;
+  search_translation_app_id_configured?: boolean;
+  search_translation_app_id_hint?: string | null;
 }
 
 interface ApiTranslationSettingsTestResult {
@@ -3331,6 +3340,16 @@ function mapTranslationSettings(
     batchApiKeyConfigured: row.batch_api_key_configured,
     batchApiKeyHint: defined(row.batch_api_key_hint),
     updatedAt: defined(row.updated_at),
+    searchTranslationSource: row.search_translation_source ?? "disabled",
+    searchTranslationEnabled: row.search_translation_enabled ?? false,
+    searchTranslationEndpoint: row.search_translation_endpoint
+      ?? "https://fanyi-api.baidu.com/ait/api/aiTextTranslate",
+    searchTranslationTimeoutSeconds: row.search_translation_timeout_seconds ?? 8,
+    searchTranslationCacheTtlSeconds: row.search_translation_cache_ttl_seconds ?? 86400,
+    searchTranslationApiKeyConfigured: row.search_translation_api_key_configured ?? false,
+    searchTranslationApiKeyHint: defined(row.search_translation_api_key_hint),
+    searchTranslationAppIdConfigured: row.search_translation_app_id_configured ?? false,
+    searchTranslationAppIdHint: defined(row.search_translation_app_id_hint),
   };
 }
 
@@ -3353,6 +3372,12 @@ export interface TranslationSettingsWriteInput {
   batchModelName: string;
   batchApiKey?: string;
   reasoningEffort: TranslationReasoningEffort;
+  searchTranslationEnabled: boolean;
+  searchTranslationEndpoint: string;
+  searchTranslationTimeoutSeconds: number;
+  searchTranslationCacheTtlSeconds: number;
+  searchTranslationApiKey?: string;
+  searchTranslationAppId?: string;
 }
 
 function translationSettingsBody(input: TranslationSettingsWriteInput) {
@@ -3375,6 +3400,12 @@ function translationSettingsBody(input: TranslationSettingsWriteInput) {
     batch_model_name: input.batchModelName,
     batch_api_key: input.batchApiKey || undefined,
     reasoning_effort: input.reasoningEffort,
+    search_translation_enabled: input.searchTranslationEnabled,
+    search_translation_endpoint: input.searchTranslationEndpoint,
+    search_translation_timeout_seconds: input.searchTranslationTimeoutSeconds,
+    search_translation_cache_ttl_seconds: input.searchTranslationCacheTtlSeconds,
+    search_translation_api_key: input.searchTranslationApiKey || undefined,
+    search_translation_app_id: input.searchTranslationAppId || undefined,
   };
 }
 
