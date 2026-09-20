@@ -97,7 +97,9 @@ class DashboardResponse(BaseModel):
 
 
 class DashboardTimezoneSettingsRequest(BaseModel):
-    timezones: list[str] = Field(default_factory=list, max_length=32)
+    # A merchant may keep any number of clocks from the IANA catalogue on the
+    # dashboard. The upper bound is a payload guard, not a UI limit.
+    timezones: list[str] = Field(default_factory=list, max_length=1024)
 
 
 class DashboardTimezoneSettingsResponse(BaseModel):
