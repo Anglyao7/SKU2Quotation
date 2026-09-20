@@ -37,22 +37,16 @@ def test_exchange_rates_are_exposed_as_currency_to_cny(monkeypatch) -> None:
     assert source == "Frankfurter"
 
 
-def test_dashboard_timezones_include_all_iana_zones_with_legacy_aliases() -> None:
+def test_dashboard_timezones_are_grouped_by_utc_with_legacy_aliases() -> None:
     options = world_market.location_options(datetime(2026, 1, 15, 12, tzinfo=UTC))
     by_key = {item.key: item for item in options}
 
-    assert len(options) > 100
-    assert by_key["Asia/Shanghai"].utc_offset == "+08:00"
-    assert by_key["Asia/Shanghai"].timezone == "Asia/Shanghai"
-    assert by_key["Asia/Shanghai"].label == "UTC+08:00"
-    assert set(world_market.normalize_location_keys(
+    assert by_key["utc_plus_8"].utc_offset == "+08:00"
+    assert by_key["utc_plus_8"].timezone == "Asia/Shanghai"
+    assert len(options) == len({item.utc_offset for item in options})
+    assert world_market.normalize_location_keys(
         ["china", "united_states", "Asia/Shanghai"]
-    )) == {"America/Bogota", "Asia/Shanghai"}
-    assert world_market.normalize_location_keys(["utc_plus_8", "utc_plus_9"]) == (
-        "Asia/Shanghai",
-        "Asia/Tokyo",
-    )
-    assert len(world_market.normalize_location_keys([item.key for item in options])) == len(options)
+    ) == ("utc_minus_5", "utc_plus_8")
 
 
 def test_rate_only_snapshot_is_cached_without_fetching_world_times(monkeypatch) -> None:

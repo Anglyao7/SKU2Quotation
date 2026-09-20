@@ -218,7 +218,7 @@ function DashboardMarketPanel({
                 <span className="core-market-flag" aria-hidden="true">{item.flag}</span>
                 <span>
                   <strong>{item.label}</strong>
-                  <small>{item.city}</small>
+                  <small>{item.city} · {item.language}</small>
                 </span>
                 {manageTimezones ? <IconButton size="1" variant="ghost" color="gray" aria-label={t("移除时区")} onClick={() => removeTimezone(item.key)} disabled={savingTimezones}><Trash size={15} /></IconButton> : null}
               </div>
@@ -226,7 +226,7 @@ function DashboardMarketPanel({
                 <Clock size={16} weight="duotone" />
                 <strong>{formatLocalTime(item.timezone, item.localTime)}</strong>
               </div>
-              <small className="core-world-time-meta">{item.timezone}</small>
+              <small className="core-world-time-meta">UTC{item.utcOffset} · {item.currency}</small>
             </Card>
           ))}
         </div>

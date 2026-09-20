@@ -4,10 +4,9 @@ The dashboard only needs informational market context, not settlement-grade FX
 pricing.  Rates come from Frankfurter's public daily reference endpoint and
 are exposed as the amount of CNY represented by one unit of each currency
 (for example, ``1 USD = 7.2 CNY``).
-World clocks use the local IANA tzdata database, so a third-party clock API
-cannot make the dashboard slow or leave different cards out of sync. The
-timezone picker exposes the complete geographic IANA timezone catalogue;
-dashboard owners decide which of those clocks are shown on the home page.
+World clocks use one representative IANA region for each UTC offset and the
+local tzdata database, so a third-party clock API cannot make the dashboard
+slow or leave different cards out of sync.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from threading import RLock
 from time import monotonic
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
@@ -74,6 +73,43 @@ class MarketLocation:
     currency: str
 
 
+# One representative IANA zone is kept for each currently used UTC offset.
+# The offset is the user-facing identity; the IANA zone remains the value used
+# by Python/JavaScript for correct calendar and daylight-saving calculations.
+LOCATIONS: tuple[MarketLocation, ...] = (
+    MarketLocation("utc_minus_12", "UTC-12:00", "Etc/GMT+12", "UM", "🌐", "—", "Etc/GMT+12", "USD"),
+    MarketLocation("utc_minus_11", "UTC-11:00", "Pacific/Pago_Pago", "AS", "🇦🇸", "English", "Pacific/Pago_Pago", "USD"),
+    MarketLocation("utc_minus_10", "UTC-10:00", "Pacific/Honolulu", "US", "🇺🇸", "English", "Pacific/Honolulu", "USD"),
+    MarketLocation("utc_minus_9", "UTC-09:00", "Pacific/Gambier", "PF", "🇵🇫", "Français", "Pacific/Gambier", "EUR"),
+    MarketLocation("utc_minus_8", "UTC-08:00", "Pacific/Pitcairn", "PN", "🇵🇳", "English", "Pacific/Pitcairn", "USD"),
+    MarketLocation("utc_minus_7", "UTC-07:00", "America/Phoenix", "US", "🇺🇸", "English", "America/Phoenix", "USD"),
+    MarketLocation("utc_minus_6", "UTC-06:00", "America/Guatemala", "GT", "🇬🇹", "Español", "America/Guatemala", "USD"),
+    MarketLocation("utc_minus_5", "UTC-05:00", "America/Bogota", "CO", "🇨🇴", "Español", "America/Bogota", "USD"),
+    MarketLocation("utc_minus_4", "UTC-04:00", "America/La_Paz", "BO", "🇧🇴", "Español", "America/La_Paz", "USD"),
+    MarketLocation("utc_minus_3", "UTC-03:00", "America/Argentina/Buenos_Aires", "AR", "🇦🇷", "Español", "America/Argentina/Buenos_Aires", "USD"),
+    MarketLocation("utc_minus_2", "UTC-02:00", "Atlantic/South_Georgia", "GS", "🇬🇸", "English", "Atlantic/South_Georgia", "GBP"),
+    MarketLocation("utc_minus_1", "UTC-01:00", "Atlantic/Cape_Verde", "CV", "🇨🇻", "Português", "Atlantic/Cape_Verde", "EUR"),
+    MarketLocation("utc_plus_0", "UTC+00:00", "Africa/Accra", "GH", "🇬🇭", "English", "Africa/Accra", "GHS"),
+    MarketLocation("utc_plus_1", "UTC+01:00", "Africa/Lagos", "NG", "🇳🇬", "English", "Africa/Lagos", "USD"),
+    MarketLocation("utc_plus_2", "UTC+02:00", "Africa/Johannesburg", "ZA", "🇿🇦", "English", "Africa/Johannesburg", "USD"),
+    MarketLocation("utc_plus_3", "UTC+03:00", "Asia/Riyadh", "SA", "🇸🇦", "العربية", "Asia/Riyadh", "SAR"),
+    MarketLocation("utc_plus_4", "UTC+04:00", "Asia/Dubai", "AE", "🇦🇪", "العربية", "Asia/Dubai", "AED"),
+    MarketLocation("utc_plus_5", "UTC+05:00", "Asia/Karachi", "PK", "🇵🇰", "English", "Asia/Karachi", "USD"),
+    MarketLocation("utc_plus_5_30", "UTC+05:30", "Asia/Kolkata", "IN", "🇮🇳", "English", "Asia/Kolkata", "INR"),
+    MarketLocation("utc_plus_5_45", "UTC+05:45", "Asia/Kathmandu", "NP", "🇳🇵", "English", "Asia/Kathmandu", "USD"),
+    MarketLocation("utc_plus_6", "UTC+06:00", "Asia/Dhaka", "BD", "🇧🇩", "English", "Asia/Dhaka", "USD"),
+    MarketLocation("utc_plus_6_30", "UTC+06:30", "Asia/Yangon", "MM", "🇲🇲", "မြန်မာ", "Asia/Yangon", "USD"),
+    MarketLocation("utc_plus_7", "UTC+07:00", "Asia/Bangkok", "TH", "🇹🇭", "ไทย", "Asia/Bangkok", "THB"),
+    MarketLocation("utc_plus_8", "UTC+08:00", "Asia/Shanghai", "CN", "🇨🇳", "中文", "Asia/Shanghai", "CNY"),
+    MarketLocation("utc_plus_9", "UTC+09:00", "Asia/Tokyo", "JP", "🇯🇵", "日本語", "Asia/Tokyo", "JPY"),
+    MarketLocation("utc_plus_9_30", "UTC+09:30", "Australia/Darwin", "AU", "🇦🇺", "English", "Australia/Darwin", "AUD"),
+    MarketLocation("utc_plus_10", "UTC+10:00", "Australia/Brisbane", "AU", "🇦🇺", "English", "Australia/Brisbane", "AUD"),
+    MarketLocation("utc_plus_11", "UTC+11:00", "Pacific/Noumea", "NC", "🇳🇨", "Français", "Pacific/Noumea", "EUR"),
+    MarketLocation("utc_plus_12", "UTC+12:00", "Pacific/Funafuti", "TV", "🇹🇻", "English", "Pacific/Funafuti", "USD"),
+    MarketLocation("utc_plus_13", "UTC+13:00", "Pacific/Tongatapu", "TO", "🇹🇴", "English", "Pacific/Tongatapu", "USD"),
+    MarketLocation("utc_plus_14", "UTC+14:00", "Pacific/Kiritimati", "KI", "🇰🇮", "English", "Pacific/Kiritimati", "USD"),
+)
+
 _CURRENCY_META: dict[str, tuple[str, str]] = {
     "CNY": ("人民币", "¥"),
     "USD": ("美元", "$"),
@@ -100,104 +136,28 @@ _CURRENCY_META: dict[str, tuple[str, str]] = {
     "ZAR": ("南非兰特", "R"),
 }
 
-
-def _all_timezone_names() -> tuple[str, ...]:
-    """Return the complete user-facing geographic IANA timezone catalogue.
-
-    The tzdata package also contains implementation aliases under ``posix/``,
-    ``right/`` and ``SystemV/``. Those names are not useful in a merchant
-    picker and may duplicate a geographic clock, so only those technical
-    namespaces are excluded. Fixed-offset ``Etc/*`` zones remain available
-    for owners who explicitly want a clock without daylight-saving changes.
-    """
-
-    return tuple(
-        sorted(
-            {
-                name
-                for name in available_timezones()
-                if name == "UTC"
-                or "/" in name
-                and not name.startswith(("posix/", "right/", "SystemV/"))
-            }
-            | {"UTC"}
-        )
-    )
-
-
-_ALL_TIMEZONE_NAMES = _all_timezone_names()
-
-
-def _location_for_timezone(timezone: str) -> MarketLocation:
-    return MarketLocation(
-        key=timezone,
-        label="",
-        city=timezone,
-        country_code="",
-        flag="🌐",
-        language="",
-        timezone=timezone,
-        currency="",
-    )
-
-
-# Keep the public ``LOCATIONS`` name for older callers while exposing every
-# geographic IANA zone and allowing existing dashboard settings to be migrated.
-LOCATIONS = tuple(_location_for_timezone(timezone) for timezone in _ALL_TIMEZONE_NAMES)
-DEFAULT_LOCATION_KEYS = (
-    "Asia/Shanghai",
-    "America/Bogota",
-    "UTC",
-    "Africa/Lagos",
-    "Asia/Riyadh",
-    "Asia/Dubai",
-    "Asia/Tokyo",
+DEFAULT_LOCATION_KEYS: tuple[str, ...] = (
+    "utc_plus_8",
+    "utc_minus_5",
+    "utc_plus_0",
+    "utc_plus_1",
+    "utc_plus_3",
+    "utc_plus_4",
+    "utc_plus_9",
 )
 _LOCATION_BY_KEY = {location.key: location for location in LOCATIONS}
 _LOCATION_KEY_ALIASES = {
-    # Legacy offset keys from the previous dashboard picker.
-    "utc_minus_12": "Etc/GMT+12",
-    "utc_minus_11": "Pacific/Pago_Pago",
-    "utc_minus_10": "Pacific/Honolulu",
-    "utc_minus_9": "Pacific/Gambier",
-    "utc_minus_8": "Pacific/Pitcairn",
-    "utc_minus_7": "America/Phoenix",
-    "utc_minus_6": "America/Guatemala",
-    "utc_minus_5": "America/Bogota",
-    "utc_minus_4": "America/La_Paz",
-    "utc_minus_3": "America/Argentina/Buenos_Aires",
-    "utc_minus_2": "Atlantic/South_Georgia",
-    "utc_minus_1": "Atlantic/Cape_Verde",
-    "utc_plus_0": "Africa/Accra",
-    "utc_plus_1": "Africa/Lagos",
-    "utc_plus_2": "Africa/Johannesburg",
-    "utc_plus_3": "Asia/Riyadh",
-    "utc_plus_4": "Asia/Dubai",
-    "utc_plus_5": "Asia/Karachi",
-    "utc_plus_5_30": "Asia/Kolkata",
-    "utc_plus_5_45": "Asia/Kathmandu",
-    "utc_plus_6": "Asia/Dhaka",
-    "utc_plus_6_30": "Asia/Yangon",
-    "utc_plus_7": "Asia/Bangkok",
-    "utc_plus_8": "Asia/Shanghai",
-    "utc_plus_9": "Asia/Tokyo",
-    "utc_plus_9_30": "Australia/Darwin",
-    "utc_plus_10": "Australia/Brisbane",
-    "utc_plus_11": "Pacific/Noumea",
-    "utc_plus_12": "Pacific/Funafuti",
-    "utc_plus_13": "Pacific/Tongatapu",
-    "utc_plus_14": "Pacific/Kiritimati",
-    # Older named presets.
-    "china": "Asia/Shanghai",
-    "united_states": "America/Bogota",
-    "spain": "Africa/Lagos",
-    "turkey": "Asia/Riyadh",
-    "arab_region": "Asia/Riyadh",
-    "united_arab_emirates": "Asia/Dubai",
-    "united_kingdom": "Africa/Accra",
-    "japan": "Asia/Tokyo",
-    "south_korea": "Asia/Tokyo",
+    "china": "utc_plus_8",
+    "united_states": "utc_minus_5",
+    "spain": "utc_plus_1",
+    "turkey": "utc_plus_3",
+    "arab_region": "utc_plus_3",
+    "united_arab_emirates": "utc_plus_4",
+    "united_kingdom": "utc_plus_0",
+    "japan": "utc_plus_9",
+    "south_korea": "utc_plus_9",
 }
+_LOCATION_KEY_BY_TIMEZONE = {location.timezone: location.key for location in LOCATIONS}
 
 _CACHE_LOCK = RLock()
 _CACHE: dict[tuple[str, ...], DashboardMarketSnapshot] = {}
@@ -207,7 +167,7 @@ _RATE_CACHE_AT = 0.0
 
 
 def normalize_location_keys(value: object | None) -> tuple[str, ...]:
-    """Return valid IANA keys while preserving the owner's chosen order.
+    """Return configured location keys in the canonical market order.
 
     ``None`` means the legacy/default dashboard set. An explicitly empty list
     is preserved so an owner can temporarily hide every clock and add them
@@ -218,44 +178,30 @@ def normalize_location_keys(value: object | None) -> tuple[str, ...]:
         return DEFAULT_LOCATION_KEYS
     if not isinstance(value, (list, tuple, set, frozenset)):
         return DEFAULT_LOCATION_KEYS
-    selected: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        raw = str(item).strip()
-        if not raw:
-            continue
-        canonical = _LOCATION_KEY_ALIASES.get(raw, raw)
-        if canonical in _LOCATION_BY_KEY and canonical not in seen:
-            selected.append(canonical)
-            seen.add(canonical)
-    return tuple(selected)
+    selected = {
+        _LOCATION_KEY_ALIASES.get(str(item).strip(), _LOCATION_KEY_BY_TIMEZONE.get(str(item).strip(), str(item).strip()))
+        for item in value
+        if str(item).strip()
+    }
+    return tuple(location.key for location in LOCATIONS if location.key in selected)
 
 
 def location_options(observed_at: datetime | None = None) -> list[DashboardTimezoneOption]:
     observed = observed_at or datetime.now(UTC)
-    options: list[tuple[int, DashboardTimezoneOption]] = []
-    for location in LOCATIONS:
-        local = _zone_now(location, observed)
-        offset = _offset_text(local)
-        options.append(
-            (
-                _offset_minutes(local),
-                DashboardTimezoneOption(
-                    key=location.key,
-                    label=f"UTC{offset}",
-                    city=location.city,
-                    country_code=location.country_code,
-                    flag=location.flag,
-                    language=location.language,
-                    timezone=location.timezone,
-                    currency=location.currency,
-                    utc_offset=offset,
-                ),
-            )
+    return [
+        DashboardTimezoneOption(
+            key=location.key,
+            label=location.label,
+            city=location.city,
+            country_code=location.country_code,
+            flag=location.flag,
+            language=location.language,
+            timezone=location.timezone,
+            currency=location.currency,
+            utc_offset=_offset_text(_zone_now(location, observed)),
         )
-    # Group by the actual offset at the instant being displayed, then sort
-    # within each group by the IANA identifier so the long picker is stable.
-    return [item for _minutes, item in sorted(options, key=lambda row: (row[0], row[1].timezone))]
+        for location in LOCATIONS
+    ]
 
 
 def _cache_seconds() -> int:
@@ -289,17 +235,11 @@ def _offset_text(value: datetime) -> str:
     return f"{sign}{total_minutes // 60:02d}:{total_minutes % 60:02d}"
 
 
-def _offset_minutes(value: datetime) -> int:
-    offset = value.utcoffset()
-    return int(offset.total_seconds() // 60) if offset is not None else 0
-
-
 def _local_time_fallback(location: MarketLocation, observed_at: datetime) -> DashboardWorldTime:
     local = _zone_now(location, observed_at)
-    offset = _offset_text(local)
     return DashboardWorldTime(
         key=location.key,
-        label=f"UTC{offset}",
+        label=location.label,
         city=location.city,
         country_code=location.country_code,
         flag=location.flag,
@@ -307,7 +247,7 @@ def _local_time_fallback(location: MarketLocation, observed_at: datetime) -> Das
         timezone=location.timezone,
         currency=location.currency,
         local_time=local.strftime("%Y-%m-%d %H:%M:%S"),
-        utc_offset=offset,
+        utc_offset=_offset_text(local),
         is_dst=bool(local.dst()),
         source="system",
     )
