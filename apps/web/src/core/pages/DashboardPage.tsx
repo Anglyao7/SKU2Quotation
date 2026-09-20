@@ -202,7 +202,7 @@ function DashboardMarketPanel({
             <Select.Trigger placeholder={t("添加时区")} />
             <Select.Content position="popper">
               {availableTimezones.filter((item) => !selectedTimezoneKeys.includes(item.key)).map((item) => (
-                <Select.Item key={item.key} value={item.key}>{item.flag} {t(item.label)} · {item.city}</Select.Item>
+                <Select.Item key={item.key} value={item.key}>{item.flag} {item.label} · {item.city}</Select.Item>
               ))}
             </Select.Content>
           </Select.Root>
@@ -217,7 +217,7 @@ function DashboardMarketPanel({
               <div className="core-world-time-top">
                 <span className="core-market-flag" aria-hidden="true">{item.flag}</span>
                 <span>
-                  <strong>{t(item.label)}</strong>
+                  <strong>{item.label}</strong>
                   <small>{item.city} · {item.language}</small>
                 </span>
                 {manageTimezones ? <IconButton size="1" variant="ghost" color="gray" aria-label={t("移除时区")} onClick={() => removeTimezone(item.key)} disabled={savingTimezones}><Trash size={15} /></IconButton> : null}

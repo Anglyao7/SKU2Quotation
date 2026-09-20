@@ -457,6 +457,7 @@ export interface DashboardSnapshot {
       language: string;
       timezone: string;
       currency: string;
+      utcOffset: string;
     }>;
     exchangeRates: Array<{
       currency: string;

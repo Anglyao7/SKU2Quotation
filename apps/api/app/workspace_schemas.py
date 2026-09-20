@@ -61,6 +61,7 @@ class DashboardTimezoneOption(BaseModel):
     language: str
     timezone: str
     currency: str
+    utc_offset: str
 
 
 class DashboardExchangeRate(BaseModel):

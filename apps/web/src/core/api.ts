@@ -6612,7 +6612,7 @@ interface ApiDashboard {
   market?: {
     observed_at: string;
     world_times: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string; local_time: string; utc_offset: string; is_dst: boolean; source: string }>;
-    available_timezones?: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string }>;
+    available_timezones?: Array<{ key: string; label: string; city: string; country_code: string; flag: string; language: string; timezone: string; currency: string; utc_offset: string }>;
     exchange_rates: Array<{ currency: string; name: string; symbol: string; rate?: number | string | null; base_currency: string; rate_date?: string | null; source: string }>;
     rate_date?: string | null;
     time_source: string;
@@ -6631,7 +6631,7 @@ export async function getDashboard(): Promise<DashboardSnapshot> {
     market: row.market ? {
       observedAt: row.market.observed_at,
       worldTimes: row.market.world_times.map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency, localTime: item.local_time, utcOffset: item.utc_offset, isDst: item.is_dst, source: item.source })),
-      availableTimezones: (row.market.available_timezones ?? []).map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency })),
+      availableTimezones: (row.market.available_timezones ?? []).map((item) => ({ key: item.key, label: item.label, city: item.city, countryCode: item.country_code, flag: item.flag, language: item.language, timezone: item.timezone, currency: item.currency, utcOffset: item.utc_offset })),
       exchangeRates: row.market.exchange_rates.map((item) => ({ currency: item.currency, name: item.name, symbol: item.symbol, rate: item.rate == null ? undefined : Number(item.rate), baseCurrency: item.base_currency, rateDate: defined(item.rate_date), source: item.source })),
       rateDate: defined(row.market.rate_date),
       timeSource: row.market.time_source,

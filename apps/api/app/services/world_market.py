@@ -4,16 +4,15 @@ The dashboard only needs informational market context, not settlement-grade FX
 pricing.  Rates come from Frankfurter's public daily reference endpoint and
 are exposed as the amount of CNY represented by one unit of each currency
 (for example, ``1 USD = 7.2 CNY``).
-times come from TimeAPI's IANA timezone endpoint.  Both calls are best-effort:
-the local IANA timezone database and the last successful rates are used when a
-provider is unavailable, so an external outage cannot make the dashboard fail.
+World clocks use one representative IANA region for each UTC offset and the
+local tzdata database, so a third-party clock API cannot make the dashboard
+slow or leave different cards out of sync.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -34,7 +33,6 @@ from ..workspace_schemas import (
 
 logger = logging.getLogger(__name__)
 
-TIME_API_URL = "https://timeapi.io/api/Time/current/zone"
 RATES_API_URL = "https://api.frankfurter.dev/v2/rates"
 BASE_CURRENCY = "CNY"
 RATE_QUOTE_CURRENCIES = (
@@ -75,16 +73,41 @@ class MarketLocation:
     currency: str
 
 
+# One representative IANA zone is kept for each currently used UTC offset.
+# The offset is the user-facing identity; the IANA zone remains the value used
+# by Python/JavaScript for correct calendar and daylight-saving calculations.
 LOCATIONS: tuple[MarketLocation, ...] = (
-    MarketLocation("china", "中国", "上海", "CN", "🇨🇳", "中文", "Asia/Shanghai", "CNY"),
-    MarketLocation("united_states", "美国", "纽约", "US", "🇺🇸", "English", "America/New_York", "USD"),
-    MarketLocation("spain", "西班牙", "马德里", "ES", "🇪🇸", "Español", "Europe/Madrid", "EUR"),
-    MarketLocation("turkey", "土耳其", "伊斯坦布尔", "TR", "🇹🇷", "Türkçe", "Europe/Istanbul", "TRY"),
-    MarketLocation("arab_region", "阿拉伯地区", "利雅得", "SA", "🇸🇦", "العربية", "Asia/Riyadh", "SAR"),
-    MarketLocation("united_arab_emirates", "阿联酋", "迪拜", "AE", "🇦🇪", "العربية", "Asia/Dubai", "AED"),
-    MarketLocation("united_kingdom", "英国", "伦敦", "GB", "🇬🇧", "English", "Europe/London", "GBP"),
-    MarketLocation("japan", "日本", "东京", "JP", "🇯🇵", "日本語", "Asia/Tokyo", "JPY"),
-    MarketLocation("south_korea", "韩国", "首尔", "KR", "🇰🇷", "한국어", "Asia/Seoul", "KRW"),
+    MarketLocation("utc_minus_12", "UTC-12:00", "Etc/GMT+12", "UM", "🌐", "—", "Etc/GMT+12", "USD"),
+    MarketLocation("utc_minus_11", "UTC-11:00", "Pacific/Pago_Pago", "AS", "🇦🇸", "English", "Pacific/Pago_Pago", "USD"),
+    MarketLocation("utc_minus_10", "UTC-10:00", "Pacific/Honolulu", "US", "🇺🇸", "English", "Pacific/Honolulu", "USD"),
+    MarketLocation("utc_minus_9", "UTC-09:00", "Pacific/Gambier", "PF", "🇵🇫", "Français", "Pacific/Gambier", "EUR"),
+    MarketLocation("utc_minus_8", "UTC-08:00", "Pacific/Pitcairn", "PN", "🇵🇳", "English", "Pacific/Pitcairn", "USD"),
+    MarketLocation("utc_minus_7", "UTC-07:00", "America/Phoenix", "US", "🇺🇸", "English", "America/Phoenix", "USD"),
+    MarketLocation("utc_minus_6", "UTC-06:00", "America/Guatemala", "GT", "🇬🇹", "Español", "America/Guatemala", "USD"),
+    MarketLocation("utc_minus_5", "UTC-05:00", "America/Bogota", "CO", "🇨🇴", "Español", "America/Bogota", "USD"),
+    MarketLocation("utc_minus_4", "UTC-04:00", "America/La_Paz", "BO", "🇧🇴", "Español", "America/La_Paz", "USD"),
+    MarketLocation("utc_minus_3", "UTC-03:00", "America/Argentina/Buenos_Aires", "AR", "🇦🇷", "Español", "America/Argentina/Buenos_Aires", "USD"),
+    MarketLocation("utc_minus_2", "UTC-02:00", "Atlantic/South_Georgia", "GS", "🇬🇸", "English", "Atlantic/South_Georgia", "GBP"),
+    MarketLocation("utc_minus_1", "UTC-01:00", "Atlantic/Cape_Verde", "CV", "🇨🇻", "Português", "Atlantic/Cape_Verde", "EUR"),
+    MarketLocation("utc_plus_0", "UTC+00:00", "Africa/Accra", "GH", "🇬🇭", "English", "Africa/Accra", "GHS"),
+    MarketLocation("utc_plus_1", "UTC+01:00", "Africa/Lagos", "NG", "🇳🇬", "English", "Africa/Lagos", "USD"),
+    MarketLocation("utc_plus_2", "UTC+02:00", "Africa/Johannesburg", "ZA", "🇿🇦", "English", "Africa/Johannesburg", "USD"),
+    MarketLocation("utc_plus_3", "UTC+03:00", "Asia/Riyadh", "SA", "🇸🇦", "العربية", "Asia/Riyadh", "SAR"),
+    MarketLocation("utc_plus_4", "UTC+04:00", "Asia/Dubai", "AE", "🇦🇪", "العربية", "Asia/Dubai", "AED"),
+    MarketLocation("utc_plus_5", "UTC+05:00", "Asia/Karachi", "PK", "🇵🇰", "English", "Asia/Karachi", "USD"),
+    MarketLocation("utc_plus_5_30", "UTC+05:30", "Asia/Kolkata", "IN", "🇮🇳", "English", "Asia/Kolkata", "INR"),
+    MarketLocation("utc_plus_5_45", "UTC+05:45", "Asia/Kathmandu", "NP", "🇳🇵", "English", "Asia/Kathmandu", "USD"),
+    MarketLocation("utc_plus_6", "UTC+06:00", "Asia/Dhaka", "BD", "🇧🇩", "English", "Asia/Dhaka", "USD"),
+    MarketLocation("utc_plus_6_30", "UTC+06:30", "Asia/Yangon", "MM", "🇲🇲", "မြန်မာ", "Asia/Yangon", "USD"),
+    MarketLocation("utc_plus_7", "UTC+07:00", "Asia/Bangkok", "TH", "🇹🇭", "ไทย", "Asia/Bangkok", "THB"),
+    MarketLocation("utc_plus_8", "UTC+08:00", "Asia/Shanghai", "CN", "🇨🇳", "中文", "Asia/Shanghai", "CNY"),
+    MarketLocation("utc_plus_9", "UTC+09:00", "Asia/Tokyo", "JP", "🇯🇵", "日本語", "Asia/Tokyo", "JPY"),
+    MarketLocation("utc_plus_9_30", "UTC+09:30", "Australia/Darwin", "AU", "🇦🇺", "English", "Australia/Darwin", "AUD"),
+    MarketLocation("utc_plus_10", "UTC+10:00", "Australia/Brisbane", "AU", "🇦🇺", "English", "Australia/Brisbane", "AUD"),
+    MarketLocation("utc_plus_11", "UTC+11:00", "Pacific/Noumea", "NC", "🇳🇨", "Français", "Pacific/Noumea", "EUR"),
+    MarketLocation("utc_plus_12", "UTC+12:00", "Pacific/Funafuti", "TV", "🇹🇻", "English", "Pacific/Funafuti", "USD"),
+    MarketLocation("utc_plus_13", "UTC+13:00", "Pacific/Tongatapu", "TO", "🇹🇴", "English", "Pacific/Tongatapu", "USD"),
+    MarketLocation("utc_plus_14", "UTC+14:00", "Pacific/Kiritimati", "KI", "🇰🇮", "English", "Pacific/Kiritimati", "USD"),
 )
 
 _CURRENCY_META: dict[str, tuple[str, str]] = {
@@ -113,8 +136,28 @@ _CURRENCY_META: dict[str, tuple[str, str]] = {
     "ZAR": ("南非兰特", "R"),
 }
 
-DEFAULT_LOCATION_KEYS: tuple[str, ...] = tuple(location.key for location in LOCATIONS)
+DEFAULT_LOCATION_KEYS: tuple[str, ...] = (
+    "utc_plus_8",
+    "utc_minus_5",
+    "utc_plus_0",
+    "utc_plus_1",
+    "utc_plus_3",
+    "utc_plus_4",
+    "utc_plus_9",
+)
 _LOCATION_BY_KEY = {location.key: location for location in LOCATIONS}
+_LOCATION_KEY_ALIASES = {
+    "china": "utc_plus_8",
+    "united_states": "utc_minus_5",
+    "spain": "utc_plus_1",
+    "turkey": "utc_plus_3",
+    "arab_region": "utc_plus_3",
+    "united_arab_emirates": "utc_plus_4",
+    "united_kingdom": "utc_plus_0",
+    "japan": "utc_plus_9",
+    "south_korea": "utc_plus_9",
+}
+_LOCATION_KEY_BY_TIMEZONE = {location.timezone: location.key for location in LOCATIONS}
 
 _CACHE_LOCK = RLock()
 _CACHE: dict[tuple[str, ...], DashboardMarketSnapshot] = {}
@@ -135,11 +178,16 @@ def normalize_location_keys(value: object | None) -> tuple[str, ...]:
         return DEFAULT_LOCATION_KEYS
     if not isinstance(value, (list, tuple, set, frozenset)):
         return DEFAULT_LOCATION_KEYS
-    selected = {str(item).strip() for item in value if str(item).strip()}
+    selected = {
+        _LOCATION_KEY_ALIASES.get(str(item).strip(), _LOCATION_KEY_BY_TIMEZONE.get(str(item).strip(), str(item).strip()))
+        for item in value
+        if str(item).strip()
+    }
     return tuple(location.key for location in LOCATIONS if location.key in selected)
 
 
-def location_options() -> list[DashboardTimezoneOption]:
+def location_options(observed_at: datetime | None = None) -> list[DashboardTimezoneOption]:
+    observed = observed_at or datetime.now(UTC)
     return [
         DashboardTimezoneOption(
             key=location.key,
@@ -150,6 +198,7 @@ def location_options() -> list[DashboardTimezoneOption]:
             language=location.language,
             timezone=location.timezone,
             currency=location.currency,
+            utc_offset=_offset_text(_zone_now(location, observed)),
         )
         for location in LOCATIONS
     ]
@@ -205,35 +254,11 @@ def _local_time_fallback(location: MarketLocation, observed_at: datetime) -> Das
 
 
 def _fetch_world_time(location: MarketLocation, observed_at: datetime) -> DashboardWorldTime:
+    # World clocks are calculated from the same UTC instant and the local IANA
+    # tzdata. This avoids a per-card external request and keeps every card
+    # aligned even when a third-party time API is slow or unavailable.
     fallback = _local_time_fallback(location, observed_at)
-    try:
-        response = httpx.get(
-            TIME_API_URL,
-            params={"timeZone": location.timezone},
-            timeout=_request_timeout(),
-            follow_redirects=True,
-            trust_env=False,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            return fallback
-        time_text = str(payload.get("dateTime") or "").strip()
-        local_time = time_text.replace("T", " ").split(".", 1)[0]
-        if not local_time:
-            local_time = str(payload.get("time") or "").strip()
-        if not local_time:
-            return fallback
-        return fallback.model_copy(
-            update={
-                "local_time": local_time,
-                "is_dst": bool(payload.get("dstActive", fallback.is_dst)),
-                "source": "timeapi.io",
-            }
-        )
-    except Exception as exc:  # pragma: no cover - provider/network dependent
-        logger.info("World time provider unavailable for %s: %s", location.timezone, type(exc).__name__)
-        return fallback
+    return fallback
 
 
 def _parse_rate(value: Any) -> Decimal | None:
@@ -327,18 +352,8 @@ def _snapshot(
     location_keys: tuple[str, ...] = DEFAULT_LOCATION_KEYS,
 ) -> DashboardMarketSnapshot:
     locations = [_LOCATION_BY_KEY[key] for key in location_keys if key in _LOCATION_BY_KEY]
-    times: list[DashboardWorldTime] = []
-    with ThreadPoolExecutor(max_workers=max(1, min(8, len(locations)))) as executor:
-        futures = {
-            executor.submit(_fetch_world_time, location, observed_at): location
-            for location in locations
-        }
-        rates_future = executor.submit(_fetch_exchange_rates, previous)
-        for future in as_completed(futures):
-            times.append(future.result())
-    order = {location.key: index for index, location in enumerate(locations)}
-    times.sort(key=lambda item: order.get(item.key, len(order)))
-    rates, rate_date, rate_source = rates_future.result()
+    times = [_fetch_world_time(location, observed_at) for location in locations]
+    rates, rate_date, rate_source = _fetch_exchange_rates(previous)
     time_sources = {item.source for item in times}
     time_source = (
         "timeapi.io"
@@ -350,7 +365,7 @@ def _snapshot(
     return DashboardMarketSnapshot(
         observed_at=observed_at,
         world_times=times,
-        available_timezones=location_options(),
+        available_timezones=location_options(observed_at),
         exchange_rates=rates,
         rate_date=rate_date,
         time_source=time_source,
@@ -467,7 +482,7 @@ def _snapshot_local_only(
     return DashboardMarketSnapshot(
         observed_at=observed_at,
         world_times=[_local_time_fallback(location, observed_at) for location in locations],
-        available_timezones=location_options(),
+        available_timezones=location_options(observed_at),
         exchange_rates=_fallback_rates(None),
         time_source="system",
         rate_source="fallback",
