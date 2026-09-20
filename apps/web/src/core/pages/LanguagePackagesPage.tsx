@@ -1248,7 +1248,10 @@ export function LanguagePackagesPage() {
           </div>
         </Card>
       ) : selectedJob ? (
-        <Card className={`language-job-card is-${selectedJob.status.toLocaleLowerCase()}`}>
+        <Card
+          key={`${selectedJob.id}:${selectedJob.status}:${selectedJob.stage}`}
+          className={`language-job-card is-${selectedJob.status.toLocaleLowerCase()}`}
+        >
           <div className="language-job-header">
             <div>
               <Text size="1" color="gray">{t("最近任务")}</Text>

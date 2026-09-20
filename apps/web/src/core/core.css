@@ -13,6 +13,33 @@
   color: var(--core-ink);
 }
 
+/* Keep console navigation feeling continuous: modules rise into place instead
+   of appearing as a hard cut. The easing mirrors the marketing home page's
+   entrance motion, while the small stagger keeps dense admin pages readable. */
+@keyframes core-module-enter {
+  from { opacity: 0; transform: translateY(18px) scale(.992); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.core-workspace > * {
+  animation: core-module-enter 520ms cubic-bezier(.16, 1, .3, 1) both;
+}
+.core-workspace > :nth-child(2) { animation-delay: 45ms; }
+.core-workspace > :nth-child(3) { animation-delay: 90ms; }
+.core-workspace > :nth-child(4) { animation-delay: 135ms; }
+.core-workspace > :nth-child(5) { animation-delay: 180ms; }
+.core-workspace > :nth-child(6) { animation-delay: 225ms; }
+
+.core-workspace > .language-pack-grid > *,
+.language-batch-row {
+  animation: core-module-enter 460ms cubic-bezier(.16, 1, .3, 1) both;
+}
+.core-workspace > .language-pack-grid > :nth-child(2) { animation-delay: 70ms; }
+.language-batch-row:nth-child(2) { animation-delay: 45ms; }
+.language-batch-row:nth-child(3) { animation-delay: 90ms; }
+.language-batch-row:nth-child(4) { animation-delay: 135ms; }
+.language-batch-row:nth-child(5) { animation-delay: 180ms; }
+
 .reseller-products-page, .reseller-orders-page { gap: 18px; }
 
 .reseller-catalog-toolbar { padding: 12px !important; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -1743,4 +1770,12 @@
   .reseller-pagination { gap: 7px; }
   .reseller-pagination .rt-Button { padding-inline: 8px; }
   .reseller-pagination .rt-Button span { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .core-workspace > *,
+  .core-workspace > .language-pack-grid > *,
+  .language-batch-row {
+    animation: none !important;
+  }
 }
