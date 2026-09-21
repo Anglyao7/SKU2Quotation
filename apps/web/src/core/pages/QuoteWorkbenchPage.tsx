@@ -438,6 +438,21 @@ function displayOptionValue(value: unknown, separator = "、") {
   return value == null ? "" : String(value);
 }
 
+const skuNoteOptionKeys = ["备注", "備註", "note", "notes", "remark", "remarks"];
+
+function skuNoteFromOptionValues(values: Record<string, unknown> | undefined) {
+  if (!values) return "";
+  for (const [rawKey, rawValue] of Object.entries(values)) {
+    const key = rawKey.trim().toLocaleLowerCase();
+    if (!skuNoteOptionKeys.some((candidate) => candidate.toLocaleLowerCase() === key)) continue;
+    if (rawValue === null || rawValue === undefined || rawValue === "") continue;
+    if (typeof rawValue === "object") continue;
+    const note = String(rawValue).trim();
+    if (note) return note;
+  }
+  return "";
+}
+
 function previewValue(item: PublicQuoteDraftItem, field: QuoteTemplateField, locale: StorefrontLocale) {
   switch (field) {
     case "serial_number": return String(item.position);
@@ -476,6 +491,10 @@ export function QuoteWorkbenchPage() {
   // Supplier, cost and procurement data is internal. Fail closed while the
   // profile is loading or if a future account scope is introduced.
   const canViewSupplierData = accountScope === "STAFF";
+  // SKU notes are catalogue-owner data, not supplier data. Keep the same
+  // fail-closed boundary for child accounts, but do not make the note depend
+  // on the supplier section being rendered.
+  const canViewCatalogNotes = accountScope === "STAFF";
   const { t } = useLocale();
   const { notify } = useToast();
   const [draft, setDraft] = useState<PublicQuoteDraft>();
@@ -1773,7 +1792,18 @@ export function QuoteWorkbenchPage() {
   const selectedDetailImageUrl = selectedLiveProductImage?.url
     ?? selectedProductDetail?.primaryImageUrl
     ?? selectedDrawerItem?.imageUrl;
-  const selectedLiveSku = selectedProductDetail?.skus.find((sku) => sku.id === selectedDrawerItem?.skuId);
+  const selectedLiveSku = selectedProductDetail?.skus.find((sku) =>
+    sku.id === selectedDrawerItem?.skuId || sku.skuCode === selectedDrawerItem?.skuCode,
+  );
+  // Older quote snapshots intentionally remove private option keys. Prefer
+  // the owner-only API note, then fall back to the live option map and finally
+  // any legacy snapshot that still contains it. The account guard is applied
+  // before all fallbacks so a child account can never see the note.
+  const selectedSkuNote = canViewCatalogNotes
+    ? selectedLiveSku?.note?.trim()
+      || skuNoteFromOptionValues(selectedLiveSku?.optionValues)
+      || skuNoteFromOptionValues(selectedDrawerItem?.optionValues)
+    : "";
   const selectedSupplierOffers = canViewSupplierData && selectedProductDetail
     ? (() => {
       const exact = selectedProductDetail.sources.filter((source) => source.skuId === selectedDrawerItem?.skuId);
@@ -2395,13 +2425,13 @@ export function QuoteWorkbenchPage() {
                   <div><Text size="1" color="gray">{t("SKU 数量")}</Text><strong>{selectedProductDetail.skuCount}</strong></div>
                 </div>
                 {selectedProductDetail.description ? <Text size="2">{selectedProductDetail.description}</Text> : null}
-                {selectedLiveSku ? (
+                {selectedLiveSku || selectedSkuNote ? (
                   <div className="quote-live-sku-card">
                     <Text size="1" color="gray">{t("当前 SKU")}</Text>
-                    <strong className="mono-text">{selectedLiveSku.skuCode}</strong>
-                    {selectedLiveSku.name ? <Text size="1">{selectedLiveSku.name}</Text> : null}
-                    {canViewSupplierData && selectedLiveSku.note ? <div className="quote-live-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedLiveSku.note}</Text></div> : null}
-                    {Object.keys(selectedLiveSku.optionValues).length ? <Text size="1" color="gray">{Object.entries(selectedLiveSku.optionValues).map(([key, value]) => `${key}: ${String(value)}`).join(quoteSeparator(locale))}</Text> : null}
+                    <strong className="mono-text">{selectedLiveSku?.skuCode ?? selectedDrawerItem.skuCode}</strong>
+                    {selectedLiveSku?.name ? <Text size="1">{selectedLiveSku.name}</Text> : null}
+                    {selectedSkuNote ? <div className="quote-live-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedSkuNote}</Text></div> : null}
+                    {selectedLiveSku && Object.keys(selectedLiveSku.optionValues).length ? <Text size="1" color="gray">{Object.entries(selectedLiveSku.optionValues).map(([key, value]) => `${key}: ${String(value)}`).join(quoteSeparator(locale))}</Text> : null}
                   </div>
                 ) : null}
                 {canViewSupplierData ? <div className="quote-supplier-section">
