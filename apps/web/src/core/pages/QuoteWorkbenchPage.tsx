@@ -2380,6 +2380,7 @@ export function QuoteWorkbenchPage() {
             </div>
             {selectedDrawerItem.description ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品描述")}</Text><Text as="p">{selectedDrawerItem.description}</Text></div> : null}
             {selectedDrawerItem.customerNote ? <div className="quote-item-detail-section quote-item-detail-customer-note"><Text size="1" color="amber">{t("客户商品备注")}</Text><Text as="p">{selectedDrawerItem.customerNote}</Text></div> : null}
+            {selectedSkuNote ? <div className="quote-item-detail-section quote-item-detail-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedSkuNote}</Text></div> : null}
             {selectedDrawerItem.specification ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品规格")}</Text><Text as="p">{selectedDrawerItem.specification}</Text></div> : null}
             {selectedDrawerItem.tags.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品标签")}</Text><div className="quote-item-tags">{selectedDrawerItem.tags.map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div></div> : null}
             {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value, quoteSeparator(locale))}</strong></div>)}</div></div> : null}
@@ -2430,7 +2431,6 @@ export function QuoteWorkbenchPage() {
                     <Text size="1" color="gray">{t("当前 SKU")}</Text>
                     <strong className="mono-text">{selectedLiveSku?.skuCode ?? selectedDrawerItem.skuCode}</strong>
                     {selectedLiveSku?.name ? <Text size="1">{selectedLiveSku.name}</Text> : null}
-                    {selectedSkuNote ? <div className="quote-live-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedSkuNote}</Text></div> : null}
                     {selectedLiveSku && Object.keys(selectedLiveSku.optionValues).length ? <Text size="1" color="gray">{Object.entries(selectedLiveSku.optionValues).map(([key, value]) => `${key}: ${String(value)}`).join(quoteSeparator(locale))}</Text> : null}
                   </div>
                 ) : null}

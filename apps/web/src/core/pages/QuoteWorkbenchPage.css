@@ -1046,6 +1046,20 @@
   overflow-wrap: anywhere;
 }
 
+.quote-item-detail-sku-note {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--quote-accent) 26%, var(--gray-a5));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--quote-accent) 6%, var(--color-panel));
+}
+
+.quote-item-detail-sku-note p {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
 .quote-item-tags {
   display: flex;
   gap: 6px;
