@@ -76,6 +76,7 @@ from ..services.auth.service import AuthError, reset_password_for_user
 from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
+    subaccount_prices_hidden,
     subaccount_sku_price_rules,
 )
 from ..services.storefront_paths import (
@@ -381,6 +382,7 @@ def _pricing_policy(
             membership_id=membership_id,
             markup_percent=Decimal("0"),
             hidden_product_ids=[],
+            prices_hidden=False,
         )
         session.add(policy)
         session.flush()
@@ -597,6 +599,7 @@ def _summary_rows(
             override_count=override_counts.get(membership.id, 0),
             category_override_count=category_override_counts.get(membership.id, 0),
             sku_override_count=sku_override_counts.get(membership.id, 0),
+            prices_hidden=bool(policies.get(membership.id).prices_hidden) if policies.get(membership.id) else False,
         )
         for membership, user in rows
     ]
@@ -1455,6 +1458,7 @@ def get_subaccount_pricing(
             membership_id=child.id,
             markup_percent=Decimal("0"),
             hidden_product_ids=[],
+            prices_hidden=False,
         )
     overrides = {
         row.product_id: row
@@ -1514,12 +1518,13 @@ def get_subaccount_pricing(
             else None
         )
         effective = [
-            effective_subaccount_price(
-                price,
-                markup_percent=Decimal(policy.markup_percent),
-                override=override,
-                category_markup_percent=category_markup,
-                sku_override=sku_overrides.get(group[index][2].id),
+                effective_subaccount_price(
+                    price,
+                    markup_percent=Decimal(policy.markup_percent),
+                    override=override,
+                    category_markup_percent=category_markup,
+                    sku_override=sku_overrides.get(group[index][2].id),
+                    prices_hidden=bool(policy.prices_hidden),
             )
             for index, price in enumerate(prices)
         ]
@@ -1554,6 +1559,7 @@ def get_subaccount_pricing(
                             override=override,
                             category_markup_percent=category_markup,
                             sku_override=sku_overrides.get(row[2].id),
+                            prices_hidden=bool(policy.prices_hidden),
                         ),
                         currency=str(row[1].currency).upper(),
                         override_mode=(
@@ -1585,6 +1591,7 @@ def get_subaccount_pricing(
                 tenant_id=context.tenant_id,
                 membership_id=child.id,
             ),
+            prices_hidden=bool(policy.prices_hidden),
         ),
         category_rules=[
             SubaccountCategoryPricingRule(
@@ -1616,6 +1623,8 @@ def update_subaccount_pricing_policy(
         session, tenant_id=context.tenant_id, membership_id=child.id
     )
     policy.markup_percent = request.markup_percent
+    if request.prices_hidden is not None:
+        policy.prices_hidden = request.prices_hidden
     policy.updated_at = utcnow()
     session.commit()
     override_count = int(
@@ -1651,6 +1660,7 @@ def update_subaccount_pricing_policy(
             tenant_id=context.tenant_id,
             membership_id=child.id,
         ),
+        prices_hidden=bool(policy.prices_hidden),
     )
 
 
@@ -1715,6 +1725,7 @@ def update_subaccount_category_price_override(
             or 0
         ),
         hidden_product_count=len(policy.hidden_product_ids or []) if policy else 0,
+        prices_hidden=bool(policy.prices_hidden) if policy else False,
         category_override_count=int(
             session.scalar(
                 select(func.count(SubaccountCategoryPriceOverrideRow.id)).where(
@@ -1998,6 +2009,11 @@ def list_customer_portal_orders(
         .order_by(PublicQuoteDraftRow.created_at.desc(), PublicQuoteDraftRow.id)
         .limit(100)
     ).all()
+    prices_hidden = subaccount_prices_hidden(
+        session,
+        tenant_id=context.tenant_id,
+        membership_id=context.membership_id,
+    )
     return [
         CustomerPortalOrderSummary(
             id=row.id,
@@ -2006,7 +2022,7 @@ def list_customer_portal_orders(
             customer_name=row.customer_name,
             customer_company=row.customer_company,
             currency=row.currency,
-            total_amount=row.estimated_total,
+            total_amount=Decimal("0") if prices_hidden else row.estimated_total,
             created_at=row.created_at,
             valid_until=row.expires_at,
         )

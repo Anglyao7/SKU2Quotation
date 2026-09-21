@@ -64,6 +64,28 @@ def subaccount_price_rules(
     return Decimal(policy.markup_percent), overrides, hidden
 
 
+def subaccount_prices_hidden(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    membership_id: UUID | None,
+) -> bool:
+    """Return whether a child account must see every public price as zero."""
+
+    if membership_id is None:
+        return False
+    return bool(
+        session.scalar(
+            select(SubaccountPricingPolicyRow.prices_hidden).where(
+                SubaccountPricingPolicyRow.tenant_id == tenant_id,
+                SubaccountPricingPolicyRow.membership_id == membership_id,
+                SubaccountPricingPolicyRow.deleted_at.is_(None),
+            )
+        )
+        or False
+    )
+
+
 def effective_subaccount_price(
     base_price: Decimal,
     *,
@@ -71,7 +93,10 @@ def effective_subaccount_price(
     override: SubaccountProductPriceOverrideRow | None,
     category_markup_percent: Decimal | None = None,
     sku_override: SubaccountSkuPriceOverrideRow | None = None,
+    prices_hidden: bool = False,
 ) -> Decimal:
+    if prices_hidden:
+        return Decimal("0.00")
     # Rules are intentionally most-specific-first.  A fixed SKU price is an
     # explicit exception; a percentage SKU rule still preserves the source
     # price differences between variants.

@@ -172,6 +172,7 @@ class CustomerSubaccountSummary(BaseModel):
     override_count: int = 0
     category_override_count: int = 0
     sku_override_count: int = 0
+    prices_hidden: bool = False
 
 
 class CustomerSubaccountOrderSummary(BaseModel):
@@ -236,6 +237,7 @@ class SubaccountPricingPolicyResponse(BaseModel):
     hidden_product_count: int = Field(ge=0)
     category_override_count: int = Field(default=0, ge=0)
     sku_override_count: int = Field(default=0, ge=0)
+    prices_hidden: bool = False
 
 
 class SubaccountSkuPricingItem(BaseModel):
@@ -284,6 +286,7 @@ class SubaccountPricingPage(BaseModel):
 
 class SubaccountPricingPolicyUpdate(BaseModel):
     markup_percent: Decimal = Field(ge=0, le=100000)
+    prices_hidden: bool | None = None
 
 
 class SubaccountCategoryPriceOverrideRequest(BaseModel):

@@ -118,6 +118,7 @@ from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
     subaccount_price_rules,
+    subaccount_prices_hidden,
     subaccount_sku_price_rules,
 )
 from ..services.platform_usage import increment_image_search
@@ -1214,6 +1215,7 @@ def _sku_response(
     pricing_overrides: dict[UUID, object] | None = None,
     category_markup_percent: Decimal | None = None,
     sku_price_override: object | None = None,
+    prices_hidden: bool = False,
 ) -> PublicSkuResponse:
     offer, sku, product, category = row
     source = catalog_translation_source(row)
@@ -1306,6 +1308,7 @@ def _sku_response(
             override=(pricing_overrides or {}).get(product.id),
             category_markup_percent=category_markup_percent,
             sku_override=sku_price_override,
+            prices_hidden=prices_hidden,
         ),
         currency=display_currency,
         unit_code=product.default_unit or "piece",
@@ -2278,6 +2281,7 @@ def _product_summary_response(
     pricing_overrides: dict[UUID, object] | None = None,
     category_markup_percent: Decimal | None = None,
     sku_price_overrides: dict[UUID, object] | None = None,
+    prices_hidden: bool = False,
 ) -> PublicProductSummary:
     _offer, first_sku, product, category = rows[0]
     tags = _product_group_tags(rows)
@@ -2290,6 +2294,7 @@ def _product_summary_response(
             override=(pricing_overrides or {}).get(product.id),
             category_markup_percent=category_markup_percent,
             sku_override=(sku_price_overrides or {}).get(row[1].id),
+            prices_hidden=prices_hidden,
         )
         for row in rows
     ]
@@ -2541,6 +2546,9 @@ def list_public_products(
     if sort_mode not in {"default", "price_asc", "price_desc", "popular"}:
         sort_mode = "default"
     tenant, profile = _resolve_store(session, slug=slug)
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant.id, membership_id=subaccount_membership_id
+    )
     shared_product_ids: set[UUID] | None = None
     if share_token:
         from .catalog_shares import resolve_share_constraint
@@ -2842,6 +2850,7 @@ def list_public_products(
                     else None
                 ),
                 sku_price_overrides=sku_price_overrides,
+                prices_hidden=prices_hidden,
             )
             for rows in groups
         ],
@@ -2980,6 +2989,9 @@ def get_public_product(
     subaccount_membership_id: UUID | None = None,
 ) -> PublicProductDetail:
     tenant, profile = _resolve_store(session, slug=slug)
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant.id, membership_id=subaccount_membership_id
+    )
     shared_category: str | None = None
     if share_token:
         from .catalog_shares import resolve_share_constraint
@@ -3090,6 +3102,7 @@ def get_public_product(
             else None
         ),
         sku_price_overrides=sku_price_overrides,
+        prices_hidden=prices_hidden,
     )
     source_group_tags = _product_group_tags(rows)
     translated_tag_by_source = (
@@ -3129,6 +3142,7 @@ def get_public_product(
                 else None
             ),
             sku_price_override=sku_price_overrides.get(row[1].id),
+            prices_hidden=prices_hidden,
         )
         source_specification = str(
             (row[1].option_values or {}).get("规格名称") or ""
@@ -3259,6 +3273,9 @@ def list_public_skus(
     subaccount_membership_id: UUID | None = None,
 ) -> PublicSkuPage:
     tenant, profile = _resolve_store(session, slug=slug)
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant.id, membership_id=subaccount_membership_id
+    )
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
             session,
@@ -3432,6 +3449,7 @@ def list_public_skus(
                     else None
                 ),
                 sku_price_override=sku_price_overrides.get(row[1].id),
+                prices_hidden=prices_hidden,
             )
             for row in selected
         ],
@@ -3477,6 +3495,9 @@ def get_public_sku(
     subaccount_membership_id: UUID | None = None,
 ) -> PublicSkuResponse:
     tenant, profile = _resolve_store(session, slug=slug)
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant.id, membership_id=subaccount_membership_id
+    )
     source_locale, requested_locale, _available_locales = (
         _requested_storefront_locale(
             session,
@@ -3588,6 +3609,7 @@ def get_public_sku(
             else None
         ),
         sku_price_override=sku_price_overrides.get(sku_id),
+        prices_hidden=prices_hidden,
     )
 
 
@@ -4320,6 +4342,7 @@ def _draft_response(
         getattr(draft, "document_locale", None),
         default="zh-CN",
     )
+
     return PublicQuoteDraftResponse(
         id=draft.id,
         tenant_id=draft.tenant_id,
@@ -4360,6 +4383,30 @@ def _draft_response(
         download_expires_at=token_expires_at,
         pdf_url=f"{document_base}/pdf" if raw_token else None,
         xlsx_url=f"{document_base}/xlsx" if raw_token else None,
+    )
+
+
+def _zero_public_quote_prices(
+    response: PublicQuoteDraftResponse,
+) -> PublicQuoteDraftResponse:
+    """Mask quote amounts for a child whose owner disabled price display."""
+
+    zero = Decimal("0.00")
+    return response.model_copy(
+        update={
+            "subtotal": zero,
+            "total": zero,
+            "total_amount": zero,
+            "proforma_invoice": (
+                response.proforma_invoice.model_copy(update={"freight": zero})
+                if response.proforma_invoice is not None
+                else None
+            ),
+            "items": [
+                item.model_copy(update={"unit_price_snapshot": zero, "line_total": zero})
+                for item in response.items
+            ],
+        }
     )
 
 
@@ -4640,6 +4687,9 @@ def create_public_quote_draft(
         membership_id=submitted_by_membership_id,
         product_ids={row[2].id for row in rows},
     )
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant.id, membership_id=submitted_by_membership_id
+    )
     if hidden_product_ids:
         rows = [row for row in rows if row[2].id not in hidden_product_ids]
         row_by_sku = {row[1].id: row for row in rows}
@@ -4696,6 +4746,7 @@ def create_public_quote_draft(
                 else None
             ),
             sku_override=sku_price_overrides.get(sku.id),
+            prices_hidden=prices_hidden,
         )
         line_total = _money(unit_price * quantity)
         subtotal += line_total
@@ -5204,6 +5255,15 @@ def list_tenant_quote_drafts(
         ),
         merchant_storefront_only=(account_scope == "STAFF"),
     )
+    prices_hidden = (
+        subaccount_prices_hidden(
+            session,
+            tenant_id=tenant_id,
+            membership_id=membership_id,
+        )
+        if account_scope == "CUSTOMER_SUBACCOUNT"
+        else False
+    )
     return [
         PublicQuoteDraftSummary(
             id=row.id,
@@ -5218,7 +5278,7 @@ def list_tenant_quote_drafts(
                 default="zh-CN",
             ),
             currency=row.currency,
-            total_amount=row.estimated_total,
+            total_amount=Decimal("0") if prices_hidden else row.estimated_total,
             valid_until=row.expires_at,
             created_at=row.created_at,
             updated_at=row.updated_at,
@@ -5657,6 +5717,12 @@ def get_tenant_quote_draft(
         if tenant is not None
         else _draft_response(draft, items)
     )
+    if account_scope == "CUSTOMER_SUBACCOUNT" and subaccount_prices_hidden(
+        session,
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+    ):
+        response = _zero_public_quote_prices(response)
     return _sanitize_quote_document_response(
         session,
         tenant_id=tenant_id,
@@ -6510,6 +6576,9 @@ def add_tenant_quote_draft_items(
         membership_id=effective_membership_id,
         product_ids={row[2].id for row in rows},
     )
+    prices_hidden = subaccount_prices_hidden(
+        session, tenant_id=tenant_id, membership_id=effective_membership_id
+    )
     if hidden_product_ids:
         hidden_skus = [
             str(row[1].id) for row in rows if row[2].id in hidden_product_ids
@@ -6602,6 +6671,7 @@ def add_tenant_quote_draft_items(
                 else None
             ),
             sku_price_override=sku_price_overrides.get(sku.id),
+            prices_hidden=prices_hidden,
         )
         base_unit_price = _money(Decimal(public_sku.price))
         unit_price = _money(base_unit_price * factor)

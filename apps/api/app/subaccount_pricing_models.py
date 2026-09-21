@@ -52,6 +52,8 @@ class SubaccountPricingPolicyRow(AuditTimestampMixin, Base):
     markup_percent: Mapped[Decimal] = mapped_column(
         Numeric(12, 4), default=Decimal("0"), nullable=False
     )
+    # Owner-controlled policy: all public prices for this child become zero.
+    prices_hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Product ids explicitly hidden from this child account.  This is kept as
     # a small policy projection for the first version; price overrides remain
     # normalized in ``subaccount_product_price_overrides``.

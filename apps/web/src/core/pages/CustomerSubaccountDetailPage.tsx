@@ -286,8 +286,8 @@ export function CustomerSubaccountDetailPage() {
       <Card className="customer-subaccount-pricing-summary-card">
         <Text size="1" color="gray">{t("价格策略")}</Text>
         <Heading size="5">{t("当前账号价格规则")}</Heading>
-        <strong>+{Number(account.markupPercent || 0).toLocaleString()}%</strong>
-        <Text size="2" color="gray">{t("默认加价比例")}</Text>
+        <strong>{account.pricesHidden ? t("价格为 0") : `+${Number(account.markupPercent || 0).toLocaleString()}%`}</strong>
+        <Text size="2" color="gray">{account.pricesHidden ? t("子账号前台已隐藏价格") : t("默认加价比例")}</Text>
         <div>
           <span><b>{account.overrideCount}</b><small>{t("单品规则")}</small></span>
           <span><b>{account.categoryOverrideCount ?? 0}</b><small>{t("分类规则")}</small></span>
@@ -299,7 +299,7 @@ export function CustomerSubaccountDetailPage() {
 
       </Tabs.Content>
       <Tabs.Content value="pricing" forceMount hidden={activeTab !== "pricing"}>
-        <SubaccountPricingDialog embedded account={account} onClose={() => setActiveTab("overview")} onSaved={(policy) => setAccount((current) => current ? { ...current, markupPercent: policy.markupPercent, overrideCount: policy.overrideCount, categoryOverrideCount: policy.categoryOverrideCount, skuOverrideCount: policy.skuOverrideCount } : current)} />
+        <SubaccountPricingDialog embedded account={account} onClose={() => setActiveTab("overview")} onSaved={(policy) => setAccount((current) => current ? { ...current, markupPercent: policy.markupPercent, overrideCount: policy.overrideCount, categoryOverrideCount: policy.categoryOverrideCount, skuOverrideCount: policy.skuOverrideCount, pricesHidden: policy.pricesHidden ?? current.pricesHidden } : current)} />
       </Tabs.Content>
       <Tabs.Content value="orders">
     <Card className="customer-order-panel customer-subaccount-orders-panel">

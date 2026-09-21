@@ -98,6 +98,7 @@ from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
     subaccount_price_rules,
+    subaccount_prices_hidden,
     subaccount_sku_price_rules,
 )
 from ..services.public_catalog_privacy import (
@@ -491,7 +492,7 @@ def _child_pricing_context(
     product_ids: set[UUID],
     category_ids: set[UUID],
     sku_ids: set[UUID] | None = None,
-) -> tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]]:
+) -> tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID], bool]:
     """Load one child account's effective-price rules for a catalog read.
 
     The context is intentionally assembled once per page.  Besides avoiding a
@@ -500,7 +501,7 @@ def _child_pricing_context(
     """
 
     if membership_id is None:
-        return Decimal("0"), {}, {}, {}, set()
+        return Decimal("0"), {}, {}, {}, set(), False
     markup, overrides, hidden = subaccount_price_rules(
         session,
         tenant_id=tenant_id,
@@ -520,7 +521,9 @@ def _child_pricing_context(
         sku_ids=sku_ids,
         product_ids=product_ids,
     )
-    return markup, overrides, category_markup, sku_overrides, hidden
+    return markup, overrides, category_markup, sku_overrides, hidden, subaccount_prices_hidden(
+        session, tenant_id=tenant_id, membership_id=membership_id
+    )
 
 
 def _public_offer_is_live(offer: PublicCatalogOfferRow, *, now: datetime) -> bool:
@@ -544,7 +547,7 @@ def _child_offer_prices(
     membership_id: UUID | None,
     product: Any,
     skus: list[SkuRow],
-    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
+    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID], bool] | None = None,
     offers: list[PublicCatalogOfferRow] | None = None,
     now: datetime | None = None,
 ) -> dict[UUID, tuple[Decimal, str]]:
@@ -565,7 +568,7 @@ def _child_offer_prices(
         product_ids={product.id},
         category_ids={product.category_id} if product.category_id else set(),
     )
-    markup, overrides, category_markup_by_id, sku_overrides, hidden = context
+    markup, overrides, category_markup_by_id, sku_overrides, hidden, prices_hidden = context
     if product.id in hidden:
         return {}
     category_markup = (
@@ -595,6 +598,7 @@ def _child_offer_prices(
                 override=overrides.get(product.id),
                 category_markup_percent=category_markup,
                 sku_override=sku_overrides.get(sku.id),
+                prices_hidden=prices_hidden,
             ),
             str(offer.currency).upper(),
         )
@@ -610,7 +614,7 @@ def _card(
     storefront_slug: str | None,
     account_scope: str = "STAFF",
     membership_id: UUID | None = None,
-    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID]] | None = None,
+    pricing_context: tuple[Decimal, dict[UUID, Any], dict[UUID, Decimal], dict[UUID, Any], set[UUID], bool] | None = None,
     category_rows: list[ProductCategoryRow] | None = None,
 ) -> ProductCard:
     if category_rows is None:

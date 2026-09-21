@@ -967,6 +967,7 @@ interface ApiCustomerSubaccount {
   override_count?: number;
   category_override_count?: number;
   sku_override_count?: number;
+  prices_hidden?: boolean;
 }
 
 interface ApiCustomerSubaccountOrder {
@@ -1038,6 +1039,7 @@ function mapCustomerSubaccount(row: ApiCustomerSubaccount): CustomerSubaccount {
     overrideCount: Number(row.override_count || 0),
     categoryOverrideCount: Number(row.category_override_count || 0),
     skuOverrideCount: Number(row.sku_override_count || 0),
+    pricesHidden: Boolean(row.prices_hidden),
   };
 }
 
@@ -1158,6 +1160,7 @@ function mapSubaccountPricingPolicy(row: {
   hidden_product_count: number;
   category_override_count?: number;
   sku_override_count?: number;
+  prices_hidden?: boolean;
 }): SubaccountPricingPolicy {
   return {
     membershipId: row.membership_id,
@@ -1166,6 +1169,7 @@ function mapSubaccountPricingPolicy(row: {
     hiddenProductCount: Number(row.hidden_product_count || 0),
     categoryOverrideCount: Number(row.category_override_count || 0),
     skuOverrideCount: Number(row.sku_override_count || 0),
+    pricesHidden: Boolean(row.prices_hidden),
   };
 }
 
@@ -1206,7 +1210,7 @@ export async function getCustomerSubaccountPricing(
   pageSize = 20,
 ): Promise<SubaccountPricingPage> {
   const row = await request<{
-    policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number };
+    policy: { membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number; prices_hidden?: boolean };
     category_rules?: Array<{ category_id: string; markup_percent: number | string }>;
     items: ApiSubaccountPricingItem[];
     total: number;
@@ -1229,10 +1233,11 @@ export async function getCustomerSubaccountPricing(
 export async function updateCustomerSubaccountPricing(
   membershipId: string,
   markupPercent: number,
+  pricesHidden?: boolean,
 ): Promise<SubaccountPricingPolicy> {
-  const row = await request<{ membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number }>(
+  const row = await request<{ membership_id: string; markup_percent: number | string; override_count: number; hidden_product_count: number; category_override_count?: number; sku_override_count?: number; prices_hidden?: boolean }>(
     `/customer-accounts/${encodeURIComponent(membershipId)}/pricing`,
-    { method: "PATCH", body: JSON.stringify({ markup_percent: markupPercent }) },
+    { method: "PATCH", body: JSON.stringify({ markup_percent: markupPercent, ...(pricesHidden === undefined ? {} : { prices_hidden: pricesHidden }) }) },
   );
   return mapSubaccountPricingPolicy(row);
 }

@@ -143,6 +143,7 @@ export interface CustomerSubaccount {
   overrideCount: number;
   categoryOverrideCount?: number;
   skuOverrideCount?: number;
+  pricesHidden: boolean;
 }
 
 export interface CustomerSubaccountOrder {
@@ -209,6 +210,7 @@ export interface SubaccountPricingPolicy {
   hiddenProductCount: number;
   categoryOverrideCount: number;
   skuOverrideCount: number;
+  pricesHidden: boolean;
 }
 
 export interface SubaccountProductPricingItem {

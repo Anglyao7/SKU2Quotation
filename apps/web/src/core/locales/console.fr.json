@@ -3970,5 +3970,10 @@
   "商品已加入报价单。": "Produit ajouté au devis.",
   "搜索商品名称或 SKU 编码": "Rechercher par nom de produit ou code SKU",
   "添加商品": "Ajouter un produit",
-  "已添加": "Ajouté"
+  "已添加": "Ajouté",
+  "子账号价格显示为 0": "Afficher les prix du sous-compte à 0",
+  "开启后，不受主账号价格变动影响。": "Une fois activé, les changements de prix du compte principal ne s'appliquent pas.",
+  "价格已隐藏（显示为 0）": "Prix masqués (affichés à 0)",
+  "价格为 0": "Les prix sont à 0",
+  "子账号前台已隐藏价格": "Prix masqués sur la vitrine du sous-compte"
 }

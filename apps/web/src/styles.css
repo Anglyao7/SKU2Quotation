@@ -3895,6 +3895,11 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
 .subaccount-pricing-policy > * { min-width: 0; }
 .subaccount-pricing-policy label { display: grid; gap: 7px; }
 .subaccount-pricing-policy > .rt-Text { align-self: center; }
+.subaccount-price-visibility-toggle { display: flex !important; align-items: flex-start; gap: 8px; }
+.subaccount-price-visibility-toggle > span { display: grid; gap: 3px; }
+.subaccount-price-visibility-toggle .rt-CheckboxRoot { margin-top: 2px; }
+.subaccount-pricing-policy > .rt-Text { grid-column: 1 / span 2; }
+.subaccount-pricing-policy > button { grid-column: 3; grid-row: 2; justify-self: end; }
 .subaccount-category-pricing { min-width: 0; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 16px; background: color-mix(in srgb, var(--accent-soft) 26%, var(--surface)); }
 .subaccount-category-pricing > * { min-width: 0; }
 .subaccount-category-pricing-heading { min-height: 66px; padding: 13px 16px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent-soft) 48%, var(--page-soft)); }
@@ -4140,6 +4145,7 @@ html[data-theme="dark"] .legal-lead { background: rgba(255, 255, 255, .04); }
   .subaccount-access-options { grid-template-columns: 1fr; }
   .subaccount-pricing-dialog { width: calc(100vw - 20px) !important; }
   .subaccount-pricing-policy { grid-template-columns: 1fr; align-items: stretch; }
+  .subaccount-pricing-policy > .rt-Text, .subaccount-pricing-policy > button { grid-column: auto; grid-row: auto; justify-self: stretch; }
   .subaccount-category-pricing-heading { display: grid; gap: 5px; }
   .subaccount-category-pricing-count { text-align: left; }
   .subaccount-category-pricing-node.child { margin-left: 22px; }

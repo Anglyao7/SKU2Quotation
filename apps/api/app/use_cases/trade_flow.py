@@ -17,6 +17,7 @@ from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
     subaccount_price_rules,
+    subaccount_prices_hidden,
     subaccount_sku_price_rules,
 )
 from ..model_mixins import utcnow
@@ -579,6 +580,9 @@ def create_quotation(
             membership_id=membership_id,
             product_ids=product_ids,
         )
+        prices_hidden = subaccount_prices_hidden(
+            session, tenant_id=tenant_id, membership_id=membership_id
+        )
         if hidden_product_ids.intersection(product_ids):
             raise ApplicationError(
                 "PRODUCT_NOT_AVAILABLE",
@@ -607,6 +611,7 @@ def create_quotation(
                 override=product_overrides.get(product.id),
                 category_markup_percent=category_markups.get(product.category_id),
                 sku_override=sku_overrides.get(match.sku_id),
+                prices_hidden=prices_hidden,
             )
             line_total = (unit_price * line["item"].quantity).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
@@ -821,6 +826,9 @@ def revise_quotation(
             membership_id=membership_id,
             product_ids=product_ids,
         )
+        prices_hidden = subaccount_prices_hidden(
+            session, tenant_id=tenant_id, membership_id=membership_id
+        )
         if hidden_product_ids.intersection(product_ids):
             raise ApplicationError(
                 "PRODUCT_NOT_AVAILABLE",
@@ -862,6 +870,7 @@ def revise_quotation(
                     else None
                 ),
                 sku_override=sku_overrides.get(current.sku_id),
+                prices_hidden=prices_hidden,
             )
             line_total = (unit_price * line["quantity"]).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP

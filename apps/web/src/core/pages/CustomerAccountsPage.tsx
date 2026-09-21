@@ -181,7 +181,7 @@ export function CustomerAccountsPage() {
           {data.accounts.map((account) => <article className="customer-account-row" key={account.id}>
             <Link className="customer-account-identity customer-account-primary-link" to={`/console/customer-accounts/${encodeURIComponent(account.id)}`}>
               <span className="customer-account-avatar">{account.displayName.slice(0, 2).toUpperCase()}</span>
-              <span><strong>{account.displayName}</strong><small>{account.loginIdentifier}{account.email ? ` · ${account.email}` : ""}</small><small className="customer-account-pricing-summary">+{Number(account.markupPercent || 0).toLocaleString()}% · {t("{count} 个单品规则", { count: account.overrideCount })} · {t("{count} 个分类规则", { count: account.categoryOverrideCount ?? 0 })} · {t("{count} 个 SKU 特价", { count: account.skuOverrideCount ?? 0 })}</small></span>
+              <span><strong>{account.displayName}</strong><small>{account.loginIdentifier}{account.email ? ` · ${account.email}` : ""}</small><small className="customer-account-pricing-summary">{account.pricesHidden ? t("价格已隐藏（显示为 0）") : `+${Number(account.markupPercent || 0).toLocaleString()}%`} · {t("{count} 个单品规则", { count: account.overrideCount })} · {t("{count} 个分类规则", { count: account.categoryOverrideCount ?? 0 })} · {t("{count} 个 SKU 特价", { count: account.skuOverrideCount ?? 0 })}</small></span>
             </Link>
             <div className="customer-account-signal">
               <small>{t("最近访问")}</small><strong>{account.lastLoginAt ? coreDate(account.lastLoginAt) : t("尚未登录")}</strong>
@@ -476,12 +476,13 @@ export function SubaccountPricingDialog({
   account: CustomerSubaccount;
   embedded?: boolean;
   onClose: () => void;
-  onSaved: (policy: { markupPercent: number; overrideCount: number; categoryOverrideCount?: number; skuOverrideCount?: number }) => void;
+  onSaved: (policy: { markupPercent: number; overrideCount: number; categoryOverrideCount?: number; skuOverrideCount?: number; pricesHidden?: boolean }) => void;
 }) {
   const { t } = useLocale();
   const { notify } = useToast();
   const [data, setData] = useState<SubaccountPricingPage>();
   const [markupDraft, setMarkupDraft] = useState<string>();
+  const [pricesHiddenDraft, setPricesHiddenDraft] = useState<boolean>();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -531,6 +532,7 @@ export function SubaccountPricingDialog({
     ? categoryRulesById.get(selectedCategory.parentId)
     : undefined;
   const markup = markupDraft ?? String(data?.policy.markupPercent ?? account.markupPercent ?? 0);
+  const pricesHidden = pricesHiddenDraft ?? data?.policy.pricesHidden ?? account.pricesHidden ?? false;
   const categoryMarkup = categoryId
     ? Object.prototype.hasOwnProperty.call(categoryDrafts, categoryId)
       ? categoryDrafts[categoryId]
@@ -540,12 +542,14 @@ export function SubaccountPricingDialog({
     : "";
   const hasGlobalPricingChange = markupDraft !== undefined
     && (markupDraft.trim() === "" || Number(markupDraft) !== Number(data?.policy.markupPercent ?? account.markupPercent ?? 0));
+  const hasPriceVisibilityChange = pricesHiddenDraft !== undefined
+    && pricesHiddenDraft !== Boolean(data?.policy.pricesHidden ?? account.pricesHidden ?? false);
   const hasCategoryPricingChange = Object.entries(categoryDrafts).some(([draftCategoryId, rawValue]) => {
     const savedValue = savedCategoryRulesById.get(draftCategoryId);
     if (!rawValue.trim()) return savedValue != null;
     return Number(rawValue) !== savedValue;
   });
-  const hasPricingChanges = hasGlobalPricingChange || hasCategoryPricingChange;
+  const hasPricingChanges = hasGlobalPricingChange || hasCategoryPricingChange || hasPriceVisibilityChange;
   useUnsavedChanges(!loading && (hasPricingChanges || saving));
 
   const load = useCallback(async () => {
@@ -619,8 +623,12 @@ export function SubaccountPricingDialog({
     setError("");
     try {
       let policy = data?.policy;
-      if (markupDraft !== undefined && globalValue !== Number(data?.policy.markupPercent ?? account.markupPercent ?? 0)) {
-        policy = await updateCustomerSubaccountPricing(account.id, globalValue);
+      if (hasGlobalPricingChange || hasPriceVisibilityChange) {
+        policy = await updateCustomerSubaccountPricing(
+          account.id,
+          globalValue,
+          hasPriceVisibilityChange ? pricesHidden : undefined,
+        );
       }
       for (const update of categoryUpdates) {
         if (update.value == null) {
@@ -631,6 +639,7 @@ export function SubaccountPricingDialog({
       }
       const refreshed = await load();
       setMarkupDraft(undefined);
+      setPricesHiddenDraft(undefined);
       setCategoryDrafts({});
       if (refreshed) onSaved(refreshed.policy);
       else if (policy) onSaved(policy);
@@ -745,6 +754,7 @@ export function SubaccountPricingDialog({
       <Text size="2" color="gray" className="subaccount-pricing-description">{t("最终价格按 SKU 计算：SKU 特价 > 商品规则 > 分类规则 > 统一加价。子账号只会看到最终销售价。")}</Text>
       <section className="subaccount-pricing-policy">
         <label><Text size="2" weight="medium">{t("统一加价（%）")}</Text><TextField.Root type="number" min="0" max="100000" step="0.1" value={markup} onChange={(event) => setMarkupDraft(event.target.value)} /></label>
+        <label className="subaccount-price-visibility-toggle"><Checkbox checked={pricesHidden} onCheckedChange={(checked) => setPricesHiddenDraft(checked === true)} /><span><Text size="2" weight="medium">{t("子账号价格显示为 0")}</Text><Text size="1" color="gray">{t("开启后，不受主账号价格变动影响。")}</Text></span></label>
         <Text size="1" color="gray">{t("当前已有 {count} 个单品规则、{skuCount} 个 SKU 特价；整体和分类改动统一保存。", { count: data?.policy.overrideCount ?? account.overrideCount, skuCount: data?.policy.skuOverrideCount ?? 0 })}</Text>
         <Button loading={saving} disabled={loading || !hasPricingChanges} onClick={() => void savePriceSettings()}><CurrencyDollar />{t("应用价格设置")}</Button>
       </section>

@@ -24673,6 +24673,22 @@ def test_customer_subaccount_is_restricted_and_orders_remain_owner_read_only(
                     SubaccountPricingPolicyRow.membership_id == UUID(account['id']),
                 ))
                 policy.hidden_product_ids = []
+                policy.prices_hidden = True
+                session.commit()
+
+            zero_price_catalog = child_client.get(
+                f"/api/store/{account['storefront_slug']}/skus",
+                params={"account": account["id"], "page_size": 1},
+                headers=headers,
+            )
+            assert zero_price_catalog.status_code == 200, zero_price_catalog.text
+            assert zero_price_catalog.json()["items"][0]["price"] == 0
+
+            with SessionLocal() as session:
+                policy = session.scalar(select(SubaccountPricingPolicyRow).where(
+                    SubaccountPricingPolicyRow.membership_id == UUID(account['id']),
+                ))
+                policy.prices_hidden = False
                 session.commit()
 
             for private_endpoint in (

@@ -12,6 +12,11 @@ import trGenerated from "./locales/console.tr.json";
 type ConsoleDictionary = Record<string, string>;
 
 const en: ConsoleDictionary = {
+  "子账号价格显示为 0": "Show subaccount prices as 0",
+  "开启后，不受主账号价格变动影响。": "When enabled, changes to the main account price will not affect it.",
+  "价格已隐藏（显示为 0）": "Prices hidden (shown as 0)",
+  "价格为 0": "Prices are 0",
+  "子账号前台已隐藏价格": "Prices are hidden on the subaccount storefront",
   "报价单商品": "Quotation items",
   "报价单中暂无商品": "No products in this quotation",
   "从报价单移除商品": "Remove product from quotation",
