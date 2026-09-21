@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { storefrontPriceLabel, storefrontText } from "../lib/storefrontLocale";
 import type { StoreProduct, StorefrontLocale } from "../types";
 import { StorefrontCatalogImage } from "./StorefrontCatalogImage";
+import { StorefrontReveal } from "./StorefrontReveal";
 
 export function ProductCard({
   product,
@@ -16,6 +17,7 @@ export function ProductCard({
   showPrice = true,
   visualMatch,
   deferImages = false,
+  revealIndex = 0,
 }: {
   product: StoreProduct;
   tenantSlug: string;
@@ -25,6 +27,7 @@ export function ProductCard({
   locale: StorefrontLocale;
   showPrice?: boolean;
   deferImages?: boolean;
+  revealIndex?: number;
   visualMatch?: {
     percent: number;
     label: string;
@@ -68,15 +71,16 @@ export function ProductCard({
   };
 
   return (
-    <Card
-      className="sku-card product-card"
-      variant="surface"
-      onPointerEnter={() => prefetchDetails()}
-      onPointerLeave={cancelPrefetch}
-      onPointerDown={() => prefetchDetails(true)}
-      onFocus={() => prefetchDetails()}
-      onBlur={cancelPrefetch}
-    >
+    <StorefrontReveal index={revealIndex}>
+      <Card
+        className="sku-card product-card"
+        variant="surface"
+        onPointerEnter={() => prefetchDetails()}
+        onPointerLeave={cancelPrefetch}
+        onPointerDown={() => prefetchDetails(true)}
+        onFocus={() => prefetchDetails()}
+        onBlur={cancelPrefetch}
+      >
       <Link
         to={detailsHref}
         state={{ fromStorefrontCatalog: true }}
@@ -146,6 +150,7 @@ export function ProductCard({
           </Button>
         </div>
       </div>
-    </Card>
+      </Card>
+    </StorefrontReveal>
   );
 }

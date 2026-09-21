@@ -34,6 +34,7 @@ import { BRAND_NAME_ZH } from "../brand";
 import { CartDrawer, type CartLine } from "../components/CartDrawer";
 import { ProductCard } from "../components/ProductCard";
 import { StorefrontCatalogImage } from "../components/StorefrontCatalogImage";
+import { StorefrontReveal } from "../components/StorefrontReveal";
 import { EmptyState, ErrorState, ProductGridSkeleton } from "../components/States";
 import { StorefrontAnnouncements } from "../components/StorefrontAnnouncements";
 import { StorefrontExchangeRates } from "../components/StorefrontExchangeRates";
@@ -1579,7 +1580,7 @@ export function StorePage() {
                 ) : imageSearchResults.length ? (
                   <div className="sku-grid-shell store-image-results-shell">
                     <div className="sku-grid store-image-results-grid">
-                      {imageSearchResults.map((item) => {
+                      {imageSearchResults.map((item, index) => {
                         const product = item.product;
                         const confidenceLabel = item.confidence === "HIGH"
                           ? t("高度相似")
@@ -1596,6 +1597,7 @@ export function StorePage() {
                             onPrefetchDetails={() => prefetchProductDetails(product.id)}
                             locale={locale}
                             showPrice={store.prices_visible !== false}
+                            revealIndex={index}
                             visualMatch={{
                               percent: item.match_percent,
                               label: confidenceLabel,
@@ -1626,28 +1628,33 @@ export function StorePage() {
                 )
               ) : showCategoryShowcase ? (
                 <div className="category-showcase-grid">
-                  {categoryShowcaseOptions.map((item) => (
-                    <button
-                      type="button"
-                      className="category-showcase-card"
-                      {...categoryIntent(item.path)}
-                      onClick={() => {
-                        setPrimaryCategory(item.parentPath);
-                        setSecondaryCategory(item.path);
-                      }}
+                  {categoryShowcaseOptions.map((item, index) => (
+                    <StorefrontReveal
+                      className="category-showcase-reveal"
+                      index={index}
                       key={`${item.parentPath}:${item.path}`}
                     >
-                      <span className="category-showcase-image">
-                        {item.coverImageUrl ? (
-                          <StorefrontCatalogImage key={item.coverImageUrl} src={item.coverImageUrl} alt=""
-                            fallback={<span><FolderOpen weight="duotone" /></span>} />
-                        ) : (
-                          <span><FolderOpen weight="duotone" /></span>
-                        )}
-                      </span>
-                      <strong>{primaryCategory ? item.name : `${item.parentName} / ${item.name}`}</strong>
-                      <span>{t("查看商品")}<CaretRight weight="bold" /></span>
-                    </button>
+                      <button
+                        type="button"
+                        className="category-showcase-card"
+                        {...categoryIntent(item.path)}
+                        onClick={() => {
+                          setPrimaryCategory(item.parentPath);
+                          setSecondaryCategory(item.path);
+                        }}
+                      >
+                        <span className="category-showcase-image">
+                          {item.coverImageUrl ? (
+                            <StorefrontCatalogImage key={item.coverImageUrl} src={item.coverImageUrl} alt=""
+                              fallback={<span><FolderOpen weight="duotone" /></span>} />
+                          ) : (
+                            <span><FolderOpen weight="duotone" /></span>
+                          )}
+                        </span>
+                        <strong>{primaryCategory ? item.name : `${item.parentName} / ${item.name}`}</strong>
+                        <span>{t("查看商品")}<CaretRight weight="bold" /></span>
+                      </button>
+                    </StorefrontReveal>
                   ))}
                 </div>
               ) : searchPending ? (
@@ -1676,7 +1683,7 @@ export function StorePage() {
                   aria-busy={pageTransitioning}
                 >
                   <div className="sku-grid">
-                    {products.map((product) => (
+                    {products.map((product, index) => (
                       <ProductCard
                         key={product.id}
                         deferImages={pageScrolling}
@@ -1687,6 +1694,7 @@ export function StorePage() {
                         onPrefetchDetails={() => prefetchProductDetails(product.id)}
                         locale={locale}
                         showPrice={store.prices_visible !== false}
+                        revealIndex={index}
                       />
                     ))}
                   </div>
