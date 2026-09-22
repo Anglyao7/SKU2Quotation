@@ -491,10 +491,12 @@ export function QuoteWorkbenchPage() {
   // Supplier, cost and procurement data is internal. Fail closed while the
   // profile is loading or if a future account scope is introduced.
   const canViewSupplierData = accountScope === "STAFF";
-  // SKU notes are catalogue-owner data, not supplier data. Keep the same
-  // fail-closed boundary for child accounts, but do not make the note depend
-  // on the supplier section being rendered.
-  const canViewCatalogNotes = accountScope === "STAFF";
+  // SKU notes are catalogue-owner data, not supplier data. They must never be
+  // exposed to child accounts, but the owner workspace can still load before
+  // the profile has finished hydrating its explicit STAFF scope. Keep the
+  // rendering boundary aligned with the API's child-account projection while
+  // allowing the owner detail drawer to render the field consistently.
+  const canViewCatalogNotes = accountScope !== "CUSTOMER_SUBACCOUNT";
   const { t } = useLocale();
   const { notify } = useToast();
   const [draft, setDraft] = useState<PublicQuoteDraft>();
@@ -2380,7 +2382,12 @@ export function QuoteWorkbenchPage() {
             </div>
             {selectedDrawerItem.description ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品描述")}</Text><Text as="p">{selectedDrawerItem.description}</Text></div> : null}
             {selectedDrawerItem.customerNote ? <div className="quote-item-detail-section quote-item-detail-customer-note"><Text size="1" color="amber">{t("客户商品备注")}</Text><Text as="p">{selectedDrawerItem.customerNote}</Text></div> : null}
-            {selectedSkuNote ? <div className="quote-item-detail-section quote-item-detail-sku-note"><Text size="1" color="gray">{t("备注")}</Text><Text as="p">{selectedSkuNote}</Text></div> : null}
+            {canViewCatalogNotes ? (
+              <div className="quote-item-detail-section quote-item-detail-sku-note" data-testid="quote-item-sku-note">
+                <Text size="1" color="gray">{t("备注")}</Text>
+                <Text as="p">{selectedSkuNote || "—"}</Text>
+              </div>
+            ) : null}
             {selectedDrawerItem.specification ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品规格")}</Text><Text as="p">{selectedDrawerItem.specification}</Text></div> : null}
             {selectedDrawerItem.tags.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品标签")}</Text><div className="quote-item-tags">{selectedDrawerItem.tags.map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div></div> : null}
             {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value, quoteSeparator(locale))}</strong></div>)}</div></div> : null}
