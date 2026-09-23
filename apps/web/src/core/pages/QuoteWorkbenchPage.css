@@ -658,7 +658,10 @@
 .quote-item-detail-dialog {
   width: min(720px, calc(100vw - 32px)) !important;
   max-width: 720px !important;
-  max-height: min(88dvh, 860px) !important;
+  /* Keep the live catalogue section in view for longer before the detail
+     scroller takes over.  This is a desktop workbench dialog, so use the
+     available vertical space instead of truncating the bottom card. */
+  max-height: min(94dvh, 920px) !important;
   padding: 24px !important;
   display: flex;
   flex-direction: column;
@@ -687,8 +690,13 @@
   min-height: 0;
   display: grid;
   align-content: start;
-  gap: 18px;
-  padding: 2px 4px 8px 0;
+  /* Keep the catalogue card from being pushed below the first viewport while
+     retaining enough separation between each detail block. */
+  gap: 14px;
+  /* Leave enough breathing room after the live catalogue card so its header
+     is never pressed against the dialog edge when the detail is scrolled. */
+  padding: 2px 4px 28px 0;
+  scroll-padding-block: 18px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -854,7 +862,7 @@
 }
 
 .quote-item-detail {
-  gap: 18px;
+  gap: 14px;
 }
 
 .quote-item-detail-hero {
@@ -1089,12 +1097,37 @@
 }
 
 .quote-live-product-card {
+  /* Radix Card applies paint containment; without an explicit intrinsic
+     height the grid row can collapse to the heading (28px) and clip the
+     image/details below it. */
+  height: max-content;
+  min-height: max-content;
   padding: 13px;
+  border: 1px solid var(--gray-a5);
+  box-shadow: 0 5px 18px color-mix(in srgb, var(--gray-12) 5%, transparent);
   background: var(--gray-a3);
 }
 
 .quote-live-product-heading {
+  position: sticky;
+  top: -2px;
+  z-index: 1;
   gap: 7px;
+  min-height: 28px;
+  margin: -2px -2px 0;
+  padding: 4px 2px 7px;
+  color: var(--gray-12);
+  background: var(--gray-a3);
+}
+
+.quote-live-product-heading .rt-Text {
+  color: var(--gray-12) !important;
+  font-weight: 600;
+}
+
+.quote-live-product-heading svg {
+  flex: 0 0 auto;
+  color: var(--quote-accent);
 }
 
 .quote-live-image-manager {
