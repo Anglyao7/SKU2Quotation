@@ -2034,7 +2034,7 @@ interface ApiSkuListPage {
 interface ApiProductDetail extends ApiProduct {
   description?: string | null;
   default_unit?: string | null;
-  attributes: Array<{ id: string; definition_id?: string | null; key: string; value: unknown; unit_code?: string | null; review_status: string }>;
+  attributes: Array<{ id: string; definition_id?: string | null; display_name?: string | null; key: string; value: unknown; unit_code?: string | null; review_status: string }>;
   images: Array<{
     id: string;
     product_id: string;
@@ -2237,7 +2237,7 @@ function mapActivity(row: ApiProductDetail["activity"][number]): ProductActivity
 }
 
 function mapAttribute(row: ApiProductDetail["attributes"][number]): ProductAttribute {
-  return { id: row.id, definitionId: defined(row.definition_id), key: row.key, value: row.value, unitCode: defined(row.unit_code), reviewStatus: row.review_status };
+  return { id: row.id, definitionId: defined(row.definition_id), displayName: defined(row.display_name), key: row.key, value: row.value, unitCode: defined(row.unit_code), reviewStatus: row.review_status };
 }
 
 function mapProductDetail(row: ApiProductDetail): ProductDetail {
@@ -4226,6 +4226,7 @@ export async function updateProduct(
         status: input.status,
         attributes: input.attributes?.map((attribute) => ({
           id: attribute.id,
+          definition_id: attribute.definitionId,
           key: attribute.key,
           value: attribute.value,
           unit_code: attribute.unitCode,
@@ -6939,7 +6940,7 @@ export async function listQuotations(): Promise<QuotationSummary[]> {
   return rows.map((row) => ({ id: row.id, quotationNumber: row.quotation_number, customerName: row.customer_name, currency: row.currency, status: row.status, currentVersion: row.current_version, totalAmount: Number(row.total_amount), updatedAt: row.updated_at, readOnly: row.read_only }));
 }
 
-interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; customer_note?: string | null; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
+interface ApiPublicQuoteDraftItem { id: string; sku_id: string; product_id?: string | null; position: number; quantity: number | string; customer_note?: string | null; sku_code_snapshot: string; name_snapshot: string; description_snapshot?: string | null; specification_snapshot?: string | null; option_values_snapshot?: Record<string, unknown>; product_attributes?: Record<string, unknown>; category_snapshot?: string | null; tags_snapshot: string[]; image_url_snapshot?: string | null; unit_code_snapshot: string; currency_snapshot: string; unit_price_snapshot: number | string; line_total: number | string; product_version: number; sku_version: number }
 interface ApiProformaInvoiceSettings { invoice_number: string; issue_date: string; seller_address?: string; seller_email?: string; seller_phone?: string; buyer_address?: string; incoterm?: string; payment_terms?: string; delivery_terms?: string; shipment_method?: string; port_of_loading?: string; port_of_destination?: string; beneficiary_name?: string; bank_name?: string; bank_address?: string; bank_account_number?: string; swift_code?: string; freight?: number | string; remarks?: string }
 interface ApiPublicQuoteDraft { id: string; tenant_id: string; quote_number: string; request_number?: string | null; status: string; customer_name: string; customer_company?: string | null; customer_email?: string | null; customer_phone?: string | null; visitor_country_code?: string | null; read_only?: boolean; notes?: string | null; locale: StorefrontLocale; document_style?: "indigo" | "emerald" | "gold" | "slate" | "rose"; quote_template_id?: string | null; visible_columns?: QuoteTemplateField[]; currency: string; subtotal: number | string; total: number | string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string; content_hash: string; disclaimer: string; disclaimer_version: string; extra_information?: Array<{ title: string; content: string }>; custom_fields?: Array<{ id: string; label: string; values: Record<string, string> }>; proforma_invoice?: ApiProformaInvoiceSettings | null; items: ApiPublicQuoteDraftItem[] }
 interface ApiPublicQuoteDraftSummary { id: string; quote_number: string; status: string; customer_name: string; customer_company?: string | null; visitor_country_code?: string | null; read_only?: boolean; locale: StorefrontLocale; currency: string; total_amount: number | string; valid_until: string; created_at: string; updated_at: string }
@@ -7067,7 +7068,7 @@ function mapPublicQuoteDraft(row: ApiPublicQuoteDraft): PublicQuoteDraft {
       remarks: proforma?.remarks ?? "",
     },
     packingList: row.packing_list ? mapPackingList(row.packing_list) : undefined,
-    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), customerNote: defined(item.customer_note), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
+    items: row.items.map((item) => ({ id: item.id, skuId: item.sku_id, productId: item.product_id ?? item.sku_id, position: item.position, quantity: Number(item.quantity), customerNote: defined(item.customer_note), skuCode: item.sku_code_snapshot, name: item.name_snapshot, description: defined(item.description_snapshot), specification: defined(item.specification_snapshot), optionValues: item.option_values_snapshot ?? {}, productAttributes: item.product_attributes ?? {}, category: defined(item.category_snapshot), tags: item.tags_snapshot ?? [], imageUrl: defined(item.image_url_snapshot), unitCode: item.unit_code_snapshot, currency: item.currency_snapshot, unitPrice: Number(item.unit_price_snapshot), lineTotal: Number(item.line_total), productVersion: item.product_version, skuVersion: item.sku_version })),
   };
 }
 

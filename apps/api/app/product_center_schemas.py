@@ -451,6 +451,7 @@ class ProductAttributeUpdateItem(BaseModel):
     """A product attribute value edited from the catalog detail view."""
 
     id: UUID | None = None
+    definition_id: UUID | None = None
     key: str = Field(min_length=1, max_length=100)
     value: Any = None
     unit_code: str | None = Field(default=None, max_length=32)
@@ -695,6 +696,7 @@ class SupplierPriceResponse(SupplierPriceCreateRequest):
 class ProductAttributeResponse(BaseModel):
     id: UUID
     definition_id: UUID | None
+    display_name: str | None = None
     key: str
     value: Any
     unit_code: str | None

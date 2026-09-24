@@ -801,6 +801,8 @@ const english: Record<string, string> = {
   "自定义商品字段": "Custom product fields",
   "字段仅用于当前单据，可自由命名并逐项填写。": "Fields apply only to this document. Rename them freely and enter a value for each item.",
   "新增字段": "Add field",
+  "从商品属性添加": "Add product attribute",
+  "新增空白字段": "Add blank field",
   "输入字段名": "Enter field name",
   "自定义字段名称": "Custom field name",
   "删除自定义字段": "Delete custom field",

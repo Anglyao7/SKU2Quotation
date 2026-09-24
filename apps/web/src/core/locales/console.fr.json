@@ -3948,6 +3948,8 @@
   "自定义商品字段": "Champs produit personnalisés",
   "字段仅用于当前单据，可自由命名并逐项填写。": "Ces champs s’appliquent uniquement à ce document ; vous pouvez les nommer et les renseigner pour chaque article.",
   "新增字段": "Ajouter un champ",
+  "从商品属性添加": "Ajouter un attribut produit",
+  "新增空白字段": "Ajouter un champ vide",
   "输入字段名": "Saisir le nom du champ",
   "自定义字段名称": "Nom du champ personnalisé",
   "删除自定义字段": "Supprimer le champ personnalisé",

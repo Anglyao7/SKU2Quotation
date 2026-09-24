@@ -3948,6 +3948,8 @@
   "自定义商品字段": "Özel ürün alanları",
   "字段仅用于当前单据，可自由命名并逐项填写。": "Alanlar yalnızca bu belge için geçerlidir; adlarını belirleyip her ürün için doldurabilirsiniz.",
   "新增字段": "Alan ekle",
+  "从商品属性添加": "Ürün özelliği ekle",
+  "新增空白字段": "Boş alan ekle",
   "输入字段名": "Alan adını girin",
   "自定义字段名称": "Özel alan adı",
   "删除自定义字段": "Özel alanı sil",

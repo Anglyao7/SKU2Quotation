@@ -2205,6 +2205,9 @@
   gap: 3px;
 }
 
+.quote-custom-field-actions { display: flex !important; grid-auto-flow: column; align-items: center; gap: 8px !important; }
+.quote-product-attribute-menu { max-height: 320px; overflow-y: auto; }
+
 .quote-custom-field-list { display: grid; gap: 8px; }
 
 .quote-custom-field-definition {

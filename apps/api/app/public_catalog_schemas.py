@@ -245,6 +245,7 @@ class PublicQuoteDraftItemResponse(BaseModel):
     description_snapshot: str | None
     specification_snapshot: str | None
     option_values_snapshot: dict[str, Any]
+    product_attributes: dict[str, Any] = Field(default_factory=dict)
     category_snapshot: str | None
     tags_snapshot: list[str]
     image_url_snapshot: str | None

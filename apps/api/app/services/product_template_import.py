@@ -30,10 +30,17 @@ from ..file_security_models import MediaObjectRow, WorkerJobRow
 from ..identity_models import TenantRow
 from ..model_mixins import utcnow
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY, SkuRow
-from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
+from ..product_supplier_models import (
+    ProductCategoryRow,
+    ProductImageRow,
+    ProductRow,
+)
 from ..public_catalog_models import PublicCatalogOfferRow
 from .category_template_import import category_name_key
 from .import_progress import publish_runtime_import_progress
+from .product_description_attributes import (
+    ProductDescriptionAttributeSynchronizer,
+)
 from .sku_codes import CatalogSkuCodeAllocator
 from .sku_quotas import sku_quota_snapshot
 from .tag_service import get_or_create_tags
@@ -267,8 +274,6 @@ class ProductTemplateValidationError(ValueError):
     ) -> None:
         super().__init__(message)
         self.issues = issues
-
-
 @dataclass(frozen=True, slots=True)
 class EmbeddedTemplateImage:
     row_number: int
@@ -5270,6 +5275,26 @@ def process_product_template_import(
         synced_image_product_keys: set[str] = set()
         moved_from_product_ids: set[UUID] = set()
         runtime_warnings = [*parsed.warnings, *quota_warnings]
+        description_attribute_synchronizer = ProductDescriptionAttributeSynchronizer(
+            session,
+            tenant_id=tenant_id,
+            product_ids={
+                product.id
+                for product in planned_product_by_key.values()
+                if product is not None
+            },
+        )
+
+        synced_description_attribute_products: set[UUID] = set()
+
+        def sync_description_attributes(
+            product: ProductRow,
+            description: str | None,
+        ) -> bool:
+            if product.id in synced_description_attribute_products:
+                return False
+            synced_description_attribute_products.add(product.id)
+            return description_attribute_synchronizer.sync(product, description)
 
         def sync_product_images(
             product: ProductRow,
@@ -5579,6 +5604,8 @@ def process_product_template_import(
                     sku = None
 
                 if sku is None:
+                    if sync_description_attributes(product, template_row.description):
+                        changed = True
                     if sync_product_images(product, template_row):
                         changed = True
                     if is_new:
@@ -5612,6 +5639,9 @@ def process_product_template_import(
                             base_offer.publication_status = "SUSPENDED"
                             base_offer.deleted_at = now
                         changed = True
+
+            if sync_description_attributes(product, template_row.description):
+                changed = True
 
             if sku is None:
                 # Rows matched earlier in this import may already have been

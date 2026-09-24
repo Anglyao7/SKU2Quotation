@@ -671,6 +671,7 @@ export interface PublicCatalogOffer {
 export interface ProductAttribute {
   id: string;
   definitionId?: string;
+  displayName?: string;
   key: string;
   value: unknown;
   unitCode?: string;
@@ -679,6 +680,7 @@ export interface ProductAttribute {
 
 export interface ProductAttributeUpdateInput {
   id?: string;
+  definitionId?: string | null;
   key: string;
   value: unknown;
   unitCode?: string | null;
@@ -1926,6 +1928,7 @@ export interface PublicQuoteDraftItem {
   description?: string;
   specification?: string;
   optionValues: Record<string, unknown>;
+  productAttributes: Record<string, unknown>;
   category?: string;
   tags: string[];
   imageUrl?: string;

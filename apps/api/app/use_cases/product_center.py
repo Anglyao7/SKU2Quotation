@@ -94,6 +94,9 @@ from ..services.sku_catalog_export import (
 )
 from ..services.sku_quotas import ensure_sku_capacity
 from ..services.sku_codes import issue_sku_codes
+from ..services.product_description_attributes import (
+    sync_product_description_attributes,
+)
 from ..services.subaccount_pricing import (
     effective_subaccount_price,
     subaccount_category_price_rules,
@@ -1408,6 +1411,16 @@ def get_product(
         membership_id=membership_id,
     )
     attributes = repository.list_attributes(session, tenant_id=tenant_id, product_id=product.id)
+    definition_ids = {row.attribute_definition_id for row in attributes if row.attribute_definition_id is not None}
+    definitions_by_id = {
+        row.id: row
+        for row in session.scalars(
+            select(AttributeDefinitionRow).where(
+                AttributeDefinitionRow.tenant_id == tenant_id,
+                AttributeDefinitionRow.id.in_(definition_ids),
+            )
+        ).all()
+    } if definition_ids else {}
     images = repository.list_images(session, tenant_id=tenant_id, product_id=product.id)
     skus = repository.list_skus(session, tenant_id=tenant_id, product_id=product.id)
     # Fail closed: only an explicitly authenticated staff workspace receives
@@ -1428,6 +1441,11 @@ def get_product(
             ProductAttributeResponse(
                 id=row.id,
                 definition_id=row.attribute_definition_id,
+                display_name=(
+                    definitions_by_id[row.attribute_definition_id].display_name
+                    if row.attribute_definition_id in definitions_by_id
+                    else None
+                ),
                 key=row.attribute_key,
                 value=_attribute_value(row),
                 unit_code=row.unit_code,
@@ -1784,6 +1802,7 @@ def update_product(
                 row = ProductAttributeRow(
                     tenant_id=tenant_id,
                     product_id=product.id,
+                    attribute_definition_id=item.definition_id,
                     attribute_key=item.key,
                     review_status=item.review_status,
                 )
@@ -1798,7 +1817,23 @@ def update_product(
                 "unit_code": row.unit_code,
                 "review_status": row.review_status,
             })
-            row.attribute_key = item.key
+            if item.definition_id is not None:
+                definition = session.scalar(
+                    select(AttributeDefinitionRow).where(
+                        AttributeDefinitionRow.tenant_id == tenant_id,
+                        AttributeDefinitionRow.id == item.definition_id,
+                    )
+                )
+                if definition is None:
+                    raise ApplicationError(
+                        "ATTRIBUTE_DEFINITION_NOT_FOUND",
+                        "Attribute definition was not found.",
+                        kind="not_found",
+                    )
+                row.attribute_definition_id = definition.id
+                row.attribute_key = definition.attribute_key
+            else:
+                row.attribute_key = item.key
             row.unit_code = item.unit_code
             row.review_status = item.review_status
             _set_product_attribute_value(row, item.value)
@@ -1819,6 +1854,15 @@ def update_product(
                     "review_status": row.review_status,
                 })
                 session.delete(row)
+
+    if "description" in changes:
+        sync_product_description_attributes(
+            session,
+            tenant_id=tenant_id,
+            product=product,
+            description=product.description,
+            protected_attribute_ids=submitted_ids if request.attributes is not None else None,
+        )
 
     product.current_version += 1
     product.search_document_version = 0

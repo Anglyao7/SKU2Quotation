@@ -86,6 +86,7 @@ type EditableAttributeKind = "text" | "number" | "boolean" | "json";
 
 interface EditableProductAttribute {
   id?: string;
+  definitionId?: string;
   key: string;
   value: string;
   unitCode: string;
@@ -2585,7 +2586,8 @@ function attributeDraft(attribute: ProductAttribute): EditableProductAttribute {
   const kind = attributeKind(attribute.value);
   return {
     id: attribute.id,
-    key: attribute.key,
+    definitionId: attribute.definitionId,
+    key: attribute.displayName ?? attribute.key,
     value: kind === "json" ? JSON.stringify(attribute.value) : String(attribute.value ?? ""),
     unitCode: attribute.unitCode ?? "",
     kind,
@@ -2654,7 +2656,13 @@ function ProductEditor({ product, categories, onChanged }: {
 
   const updateAttribute = (index: number, patch: Partial<EditableProductAttribute>) => {
     setAttributes((current) => current.map((item, itemIndex) => (
-      itemIndex === index ? { ...item, ...patch } : item
+      itemIndex === index ? {
+        ...item,
+        ...patch,
+        reviewStatus: ("value" in patch || "unitCode" in patch)
+          ? "CONFIRMED"
+          : item.reviewStatus,
+      } : item
     )));
   };
 
@@ -2680,6 +2688,7 @@ function ProductEditor({ product, categories, onChanged }: {
         status,
         attributes: attributes.map((attribute) => ({
           id: attribute.id,
+          definitionId: attribute.definitionId,
           key: attribute.key.trim(),
           value: parseAttributeDraft(attribute),
           unitCode: attribute.unitCode.trim() || null,
@@ -2761,7 +2770,7 @@ function ProductEditor({ product, categories, onChanged }: {
           <div className="core-product-editor-section-heading"><span /><Button size="1" variant="soft" onClick={() => setAttributes((current) => [...current, { key: "", value: "", unitCode: "", kind: "text", reviewStatus: "CONFIRMED" }])}><Plus />{t("添加属性")}</Button></div>
           {attributes.length ? <div className="core-product-attribute-list">{attributes.map((attribute, index) => (
             <div className="core-product-attribute-row" key={attribute.id ?? `new-${index}`}>
-              <TextField.Root value={attribute.key} placeholder={t("属性名称")} onChange={(event) => updateAttribute(index, { key: event.target.value })} />
+              <TextField.Root value={attribute.key} placeholder={t("属性名称")} readOnly={Boolean(attribute.definitionId)} onChange={(event) => updateAttribute(index, { key: event.target.value })} />
               <TextField.Root value={attribute.value} placeholder={t("属性值")} onChange={(event) => updateAttribute(index, { value: event.target.value })} />
               <TextField.Root value={attribute.unitCode} placeholder={t("单位")} onChange={(event) => updateAttribute(index, { unitCode: event.target.value })} />
               <select value={attribute.kind} onChange={(event) => updateAttribute(index, { kind: event.target.value as EditableAttributeKind })}><option value="text">{t("文本")}</option><option value="number">{t("数字")}</option><option value="boolean">{t("布尔值")}</option><option value="json">JSON</option></select>

@@ -32,7 +32,8 @@ from ..identity_models import (
 )
 from ..knowledge_embedding_schemas import DEFAULT_AI_SEARCH_RECOMMENDED_QUESTIONS
 from ..model_mixins import utcnow
-from ..product_center_models import SupplierPriceRow
+from ..product_center_models import AttributeDefinitionRow, SupplierPriceRow
+from ..product_supplier_models import ProductAttributeRow
 from ..public_catalog_models import (
     PublicQuoteDownloadTokenRow,
     PublicQuoteDraftItemRow,
@@ -182,6 +183,11 @@ def _sanitize_quote_document_response(
 ) -> PublicQuoteDraftResponse:
     """Do not expose legacy extended-document data to basic-plan accounts."""
 
+    response = _with_quote_product_attributes(
+        session,
+        tenant_id=tenant_id,
+        response=response,
+    )
     if _tenant_has_extended_quote_documents(session, tenant_id):
         return response
     return response.model_copy(update={"proforma_invoice": None, "packing_list": None})
@@ -3631,6 +3637,7 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         option_values_snapshot=public_sku_option_values(
             row.option_values_snapshot or {}
         ),
+        product_attributes={},
         category_snapshot=row.category_snapshot,
         tags_snapshot=row.tags_snapshot,
         image_url_snapshot=row.image_url_snapshot,
@@ -3641,6 +3648,30 @@ def _item_response(row: PublicQuoteDraftItemRow) -> PublicQuoteDraftItemResponse
         product_version=row.product_version,
         sku_version=row.sku_version,
     )
+
+
+def _with_quote_product_attributes(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    response: PublicQuoteDraftResponse,
+) -> PublicQuoteDraftResponse:
+    product_ids = {item.product_id for item in response.items if item.product_id is not None}
+    if not product_ids:
+        return response
+    attributes = _product_attribute_options(
+        session,
+        tenant_id=tenant_id,
+        product_ids=product_ids,
+    )
+    if not attributes:
+        return response
+    return response.model_copy(update={
+        "items": [
+            item.model_copy(update={"product_attributes": attributes.get(item.product_id, {})})
+            for item in response.items
+        ]
+    })
 
 
 def _draft_extra_information(draft: PublicQuoteDraftRow) -> list[PublicQuoteExtraInformation]:
@@ -3676,6 +3707,119 @@ def _draft_custom_fields(draft: PublicQuoteDraftRow) -> list[PublicQuoteCustomFi
         except Exception:
             continue
     return result
+
+
+def _product_attribute_options(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    product_ids: set[UUID],
+) -> dict[UUID, dict[str, object]]:
+    """Load reusable product attributes for quote-line field population."""
+
+    if not product_ids:
+        return {}
+    attributes = session.scalars(
+        select(ProductAttributeRow)
+        .where(
+            ProductAttributeRow.tenant_id == tenant_id,
+            ProductAttributeRow.product_id.in_(product_ids),
+            ProductAttributeRow.review_status != "REJECTED",
+        )
+        .order_by(ProductAttributeRow.product_id, ProductAttributeRow.created_at, ProductAttributeRow.id)
+    ).all()
+    definition_ids = {
+        row.attribute_definition_id
+        for row in attributes
+        if row.attribute_definition_id is not None
+    }
+    definitions = {
+        row.id: row
+        for row in session.scalars(
+            select(AttributeDefinitionRow).where(
+                AttributeDefinitionRow.tenant_id == tenant_id,
+                AttributeDefinitionRow.id.in_(definition_ids),
+            )
+        ).all()
+    } if definition_ids else {}
+    result: dict[UUID, dict[str, object]] = {}
+    for row in attributes:
+        key = str(
+            definitions.get(row.attribute_definition_id).display_name
+            if row.attribute_definition_id in definitions
+            else row.attribute_key
+            or ""
+        ).strip()
+        if not key or is_private_sku_option_key(key):
+            continue
+        if row.value_text is not None:
+            value: object = row.value_text
+        elif row.value_number is not None:
+            value = format(row.value_number, "f").rstrip("0").rstrip(".") or "0"
+        elif row.value_boolean is not None:
+            value = row.value_boolean
+        else:
+            value = row.value_json
+        if value in (None, ""):
+            continue
+        result.setdefault(row.product_id, {}).setdefault(key, value)
+    return result
+
+
+def _populate_quote_custom_fields_from_product_attributes(
+    session: Session,
+    *,
+    tenant_id: UUID,
+    draft: PublicQuoteDraftRow,
+    items: list[PublicQuoteDraftItemRow],
+) -> None:
+    """Populate missing reusable attribute cells when quote lines are added."""
+
+    snapshot = dict(draft.snapshot) if isinstance(draft.snapshot, dict) else {}
+    fields = snapshot.get("custom_fields")
+    if not isinstance(fields, list) or not fields:
+        return
+    attributes_by_product = _product_attribute_options(
+        session,
+        tenant_id=tenant_id,
+        product_ids={item.product_id_snapshot for item in items},
+    )
+    normalized_attributes = {
+        product_id: {
+            str(key).strip().casefold(): value
+            for key, value in attributes.items()
+        }
+        for product_id, attributes in attributes_by_product.items()
+    }
+    changed = False
+    next_fields: list[object] = []
+    for field in fields:
+        if not isinstance(field, dict):
+            next_fields.append(field)
+            continue
+        next_field = dict(field)
+        label = str(next_field.get("label") or "").strip()
+        values = (
+            dict(next_field.get("values") or {})
+            if isinstance(next_field.get("values"), dict)
+            else {}
+        )
+        for item in items:
+            item_key = str(item.id)
+            if item_key in values:
+                continue
+            value = normalized_attributes.get(item.product_id_snapshot, {}).get(
+                label.casefold()
+            )
+            values[item_key] = "" if value is None else str(value)
+            changed = True
+        next_field["values"] = values
+        next_fields.append(next_field)
+    if not changed:
+        return
+    snapshot["custom_fields"] = next_fields
+    draft.snapshot = snapshot
+    draft.content_hash = _quote_snapshot_content_hash(snapshot)
 
 
 def _default_proforma_invoice_number(draft: PublicQuoteDraftRow) -> str:
@@ -6746,6 +6890,12 @@ def add_tenant_quote_draft_items(
         draft,
         all_items,
         conversion=conversion_payload,
+    )
+    _populate_quote_custom_fields_from_product_attributes(
+        session,
+        tenant_id=tenant_id,
+        draft=draft,
+        items=all_items,
     )
     session.commit()
     return _quote_draft_item_edit_response(

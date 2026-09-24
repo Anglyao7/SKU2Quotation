@@ -60,6 +60,7 @@ import {
   getMerchantSettings,
   getPublicQuoteDraft,
   getPublicQuoteDraftPurchaseOrder,
+  listAttributeDefinitions,
   listQuoteExcelTemplates,
   listSkus,
   syncPublicQuoteDraftItemPrice,
@@ -84,6 +85,7 @@ import {
 } from "../quoteLocalization";
 import type {
   MerchantSettings,
+  AttributeDefinition,
   ProductDetail,
   ProformaInvoiceSettings,
   PublicQuoteDraft,
@@ -177,6 +179,44 @@ function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: Quote
     && JSON.stringify(left.customFields) === JSON.stringify(right.customFields)
     && JSON.stringify(left.proformaInvoice) === JSON.stringify(right.proformaInvoice)
     && JSON.stringify(left.packingList) === JSON.stringify(right.packingList));
+}
+
+function productAttributeValue(
+  item: PublicQuoteDraft["items"][number],
+  label: string,
+  attributeKey?: string,
+) {
+  const candidates = new Set(
+    [label, attributeKey]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .map((value) => value.trim().toLocaleLowerCase()),
+  );
+  const entry = Object.entries(item.productAttributes ?? {}).find(([key]) => (
+    candidates.has(key.trim().toLocaleLowerCase())
+  ));
+  return displayOptionValue(entry?.[1]);
+}
+
+function mergeCustomFieldsWithProductAttributes(
+  fields: QuoteCustomField[],
+  items: PublicQuoteDraft["items"],
+  definitions: AttributeDefinition[],
+) {
+  const definitionsByLabel = new Map(
+    definitions.map((definition) => [definition.displayName.trim().toLocaleLowerCase(), definition]),
+  );
+  const validItemIds = new Set(items.map((item) => item.id));
+  return fields.map((field) => {
+    const definition = definitionsByLabel.get(field.label.trim().toLocaleLowerCase());
+    return {
+      ...field,
+      values: Object.fromEntries(items.map((item) => {
+        const stored = field.values[item.id];
+        if (stored !== undefined) return [item.id, stored];
+        return [item.id, productAttributeValue(item, field.label, definition?.attributeKey)];
+      }).filter(([itemId]) => validItemIds.has(itemId))),
+    };
+  });
 }
 
 const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> = [
@@ -549,6 +589,7 @@ export function QuoteWorkbenchPage() {
   const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultVisibleTableFields);
   const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
   const [customFields, setCustomFields] = useState<QuoteCustomField[]>([]);
+  const [attributeDefinitions, setAttributeDefinitions] = useState<AttributeDefinition[]>([]);
   const [collapsedExtraRows, setCollapsedExtraRows] = useState<Record<number, boolean>>({});
   const [manualOpen, setManualOpen] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -909,10 +950,11 @@ export function QuoteWorkbenchPage() {
     purchaseOrderDraftIdRef.current = undefined;
     savedPurchaseOrderRef.current = "";
     try {
-      const [nextDraft, nextTemplates, merchantSettings] = await Promise.all([
+      const [nextDraft, nextTemplates, merchantSettings, nextAttributeDefinitions] = await Promise.all([
         getPublicQuoteDraft(quoteDraftId),
         listQuoteExcelTemplates().catch(() => []),
         getMerchantSettings().catch(() => undefined),
+        listAttributeDefinitions().catch(() => []),
       ]);
       const nextReadyTemplates = nextTemplates.filter((template) => template.isReady);
       const nextTemplate = nextReadyTemplates.find((template) => template.id === (nextDraft.quoteTemplateId ?? "")) ?? nextReadyTemplates.find((template) => template.isDefault);
@@ -921,9 +963,16 @@ export function QuoteWorkbenchPage() {
         .filter((field) => nextAvailable.includes(field))
         .slice(0, MAX_PDF_COLUMNS);
       const nextActiveColumns = nextVisible.length ? nextVisible : preferredVisibleColumns(nextAvailable);
+      const nextDefinitions = nextAttributeDefinitions.filter((definition) => definition.status === "ACTIVE" && !definition.isVariant);
+      const nextCustomFields = mergeCustomFieldsWithProductAttributes(
+        nextDraft.customFields ?? [],
+        nextDraft.items,
+        nextDefinitions,
+      );
       setDraft(nextDraft);
       setTemplates(nextTemplates);
       setSettings(merchantSettings);
+      setAttributeDefinitions(nextDefinitions);
       setLocale(nextDraft.locale);
       setStyle(nextDraft.documentStyle);
       setTemplateId(nextDraft.quoteTemplateId ?? "");
@@ -932,7 +981,7 @@ export function QuoteWorkbenchPage() {
       setPackingList(nextDraft.packingList);
       setVisibleColumns(nextActiveColumns);
       setExtraInformation(nextDraft.extraInformation ?? []);
-      setCustomFields(nextDraft.customFields ?? []);
+      setCustomFields(nextCustomFields);
       setCollapsedExtraRows({});
       savedSettingsRef.current = {
         locale: nextDraft.locale,
@@ -941,7 +990,7 @@ export function QuoteWorkbenchPage() {
         quoteNumber: nextDraft.quoteNumber.trim(),
         visibleColumns: [...nextActiveColumns],
         extraInformation: (nextDraft.extraInformation ?? []).map((entry) => ({ ...entry })),
-        customFields: (nextDraft.customFields ?? []).map((field) => ({ ...field, values: { ...field.values } })),
+        customFields: nextCustomFields.map((field) => ({ ...field, values: { ...field.values } })),
         proformaInvoice: { ...nextDraft.proformaInvoice },
         packingList: nextDraft.packingList,
       };
@@ -1247,10 +1296,15 @@ export function QuoteWorkbenchPage() {
     const nextSelectedItemId = selectedItemId && next.items.some((item) => item.id === selectedItemId)
       ? selectedItemId
       : undefined;
+    const nextCustomFields = mergeCustomFieldsWithProductAttributes(
+      next.customFields ?? [],
+      next.items,
+      attributeDefinitions,
+    );
     setDraft(next);
     setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
     setItemEdits({});
-    setCustomFields(next.customFields ?? []);
+    setCustomFields(nextCustomFields);
     setPackingList(next.packingList);
     setProformaInvoice(next.proformaInvoice);
     setSelectedItemId(nextSelectedItemId);
@@ -1265,13 +1319,13 @@ export function QuoteWorkbenchPage() {
       quoteNumber: next.quoteNumber.trim(),
       visibleColumns: [...activeColumns],
       extraInformation: (next.extraInformation ?? []).map((entry) => ({ ...entry })),
-      customFields: (next.customFields ?? []).map((field) => ({ ...field, values: { ...field.values } })),
+      customFields: nextCustomFields.map((field) => ({ ...field, values: { ...field.values } })),
       proformaInvoice: { ...next.proformaInvoice },
       packingList: next.packingList,
     };
     failedItemsRef.current = undefined;
     setSaveFailed(false);
-  }, [activeColumns, selectedItemId]);
+  }, [activeColumns, attributeDefinitions, selectedItemId]);
 
   const addQuoteItem = useCallback(async (candidate: SkuListItem) => {
     if (!draft || !canEditPrices || itemMutationId) return;
@@ -1680,6 +1734,23 @@ export function QuoteWorkbenchPage() {
     }]);
   };
 
+  const addProductAttributeField = (definition: AttributeDefinition) => {
+    if (!draft || isReadOnly || customFields.length >= 12) return;
+    const label = definition.displayName.trim();
+    if (!label || customFields.some((field) => field.label.trim().toLocaleLowerCase() === label.toLocaleLowerCase())) return;
+    setCustomFields((current) => [...current, {
+      id: crypto.randomUUID(),
+      label,
+      values: Object.fromEntries(draft.items.map((item) => {
+        return [item.id, productAttributeValue(item, label, definition.attributeKey)];
+      })),
+    }]);
+  };
+
+  const availableAttributeDefinitions = attributeDefinitions.filter((definition) => (
+    !customFields.some((field) => field.label.trim().toLocaleLowerCase() === definition.displayName.trim().toLocaleLowerCase())
+  ));
+
   const renameCustomField = (fieldId: string, label: string) => {
     setCustomFields((current) => current.map((field) => field.id === fieldId ? { ...field, label } : field));
   };
@@ -1699,7 +1770,23 @@ export function QuoteWorkbenchPage() {
     <div className="quote-custom-field-manager">
       <div className="quote-custom-field-manager-heading">
         <div><Text size="2" weight="medium">{t("自定义商品字段")}</Text><Text size="1" color="gray">{t("字段仅用于当前单据，可自由命名并逐项填写。")}</Text></div>
-        <Button size="1" variant="soft" color="blue" disabled={isReadOnly || customFields.length >= 12} onClick={addCustomField}><Plus />{t("新增字段")}</Button>
+        <div className="quote-custom-field-actions">
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              <Button size="1" variant="soft" color="gray" disabled={isReadOnly || customFields.length >= 12 || !availableAttributeDefinitions.length}>
+                <Plus />{t("从商品属性添加")}<CaretDown />
+              </Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="end" className="quote-product-attribute-menu">
+              {availableAttributeDefinitions.map((definition) => (
+                <DropdownMenu.Item key={definition.id} onSelect={() => addProductAttributeField(definition)}>
+                  {definition.displayName}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+          <Button size="1" variant="soft" color="blue" disabled={isReadOnly || customFields.length >= 12} onClick={addCustomField}><Plus />{t("新增空白字段")}</Button>
+        </div>
       </div>
       {customFields.length ? <div className="quote-custom-field-list">{customFields.map((field, index) => (
         <div className="quote-custom-field-definition" key={field.id}>
