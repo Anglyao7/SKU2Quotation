@@ -2705,6 +2705,17 @@ def create_manual_product(
     session.add(product)
     session.flush()
 
+    # Keep manually created products on the same deterministic description
+    # attribute path as imported and edited products.  This makes the
+    # one-time backfill and all future catalog entry points converge on the
+    # same reusable attribute definitions without overwriting confirmed data.
+    sync_product_description_attributes(
+        session,
+        tenant_id=tenant_id,
+        product=product,
+        description=product.description,
+    )
+
     sku_code, sku_sequence = issue_sku_codes(
         session,
         tenant=tenant,
