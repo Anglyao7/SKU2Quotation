@@ -166,6 +166,20 @@ def test_coalesces_changes_and_scopes_job_to_changed_sku(session, setup):
     assert automation.status(session, tenant_id=context.tenant_id, locale="ja")["state"] == "DISABLED"
 
 
+def test_removed_only_job_reports_package_cleanup_instead_of_translation_work(session, setup):
+    context, rows = setup
+    removed_count = len(rows)
+    rows.clear()
+    job_id = schedule(session, context, signal(session, context))
+    job = session.get(Job, job_id)
+    assert job.total_skus == 0
+    assert job.automatic_scope["sources"] == {}
+    assert job.automatic_scope["removed_sku_count"] == removed_count
+    response = translations._job_response(job)
+    assert response.removed_sku_count == removed_count
+    assert response.total_skus == 0
+
+
 @pytest.mark.parametrize("job_status", ["QUEUED", "RUNNING", "PAUSED"])
 @pytest.mark.parametrize("origin", ["AUTOMATIC", "MANUAL"])
 def test_active_or_paused_job_blocks_auto_without_consuming_change(session, setup, job_status, origin):

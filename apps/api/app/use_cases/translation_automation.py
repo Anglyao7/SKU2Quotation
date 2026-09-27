@@ -228,7 +228,11 @@ def schedule_one(session: Session, *, context, locale: str, now=None) -> UUID | 
         provider=translator.identity.provider, provider_version=translator.identity.version,
         total_skus=len(changed), processed_skus=0, failed_skus=0,
         remaining_sku_ids=changed,
-        automatic_scope={"sources": {key: snapshot[key] for key in changed}, "auto_publish": config.auto_publish},
+        automatic_scope={
+            "sources": {key: snapshot[key] for key in changed},
+            "removed_sku_count": len(removed),
+            "auto_publish": config.auto_publish,
+        },
     )
     session.add(job)
     config.last_job_id = job.id

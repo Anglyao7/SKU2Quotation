@@ -3498,6 +3498,7 @@ interface ApiCatalogTranslationJob {
   id: string;
   origin?: "MANUAL" | "AUTOMATIC";
   awaiting_publish?: boolean;
+  removed_sku_count?: number;
   source_locale: StorefrontLocale;
   target_locale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
@@ -3698,6 +3699,7 @@ function mapCatalogTranslationJob(row: ApiCatalogTranslationJob): CatalogTransla
     id: row.id,
     origin: row.origin ?? "MANUAL",
     awaitingPublish: Boolean(row.awaiting_publish),
+    removedSkuCount: row.removed_sku_count ?? 0,
     sourceLocale: row.source_locale,
     targetLocale: row.target_locale,
     mode: row.mode,

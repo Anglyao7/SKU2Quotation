@@ -566,6 +566,7 @@ def _job_response(job: CatalogTranslationJobRow) -> CatalogTranslationJobRespons
     return CatalogTranslationJobResponse(
         origin=getattr(job, "origin", "MANUAL"),
         awaiting_publish=bool((getattr(job, "automatic_scope", None) or {}).get("awaiting_publish")),
+        removed_sku_count=max(0, int((getattr(job, "automatic_scope", None) or {}).get("removed_sku_count") or 0)),
         id=job.id,
         source_locale=job.source_locale,
         target_locale=job.target_locale,
@@ -3481,6 +3482,8 @@ def _translate_realtime_text_outcome(
                 error_message=str(last_error),
             )
         )
+        if not last_error.retryable:
+            break
         if attempt < max_retry_count:
             time.sleep(min(base_delay * (2**attempt), 30))
     return _TextTranslationOutcome(
@@ -3768,6 +3771,22 @@ def _prepare_realtime_translation_values(
             )
             job.updated_at = utcnow()
             session.commit()
+
+            account_error = next(
+                (
+                    error for error in batch_errors
+                    if error.category == "UPSTREAM_ACCOUNT"
+                    or error.upstream_status_code in {401, 402, 403}
+                ),
+                None,
+            )
+            if account_error is not None:
+                raise TranslationProviderError(
+                    f"上游翻译账号不可用，已停止后续请求：{account_error}",
+                    category="UPSTREAM_ACCOUNT",
+                    retryable=False,
+                    upstream_status_code=account_error.upstream_status_code,
+                )
 
             request_index += len(window)
             if _pause_at_safe_checkpoint(session, job):

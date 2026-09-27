@@ -637,6 +637,74 @@ def test_realtime_text_batch_retries_and_preserves_upstream_reason(
     assert "HTTP 429" in (outcome.attempts[0].error_message or "")
 
 
+def test_realtime_text_batch_does_not_retry_account_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def translate_values(**kwargs):
+        nonlocal calls
+        calls += 1
+        value = kwargs["values"][0]
+        kwargs["failure_sink"][value] = TranslationProviderError(
+            "HTTP 400 Arrearage",
+            category="UPSTREAM_ACCOUNT",
+            retryable=False,
+            upstream_status_code=400,
+        )
+        return {}
+
+    monkeypatch.setattr(catalog_translations, "translate_values_with_memory", translate_values)
+    outcome = catalog_translations._translate_realtime_text_outcome(
+        _Translator(),
+        tenant_id=uuid4(),
+        values=["待翻译字段"],
+        forced_values=set(),
+        source_locale="zh-CN",
+        target_locale="es",
+        batch_items=1,
+        batch_characters=100,
+        max_retry_count=3,
+    )
+
+    assert calls == 1
+    assert len(outcome.attempts) == 1
+    assert outcome.error and outcome.error.category == "UPSTREAM_ACCOUNT"
+
+
+def test_realtime_translation_stops_remaining_batches_on_account_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = ["字段甲", "字段乙", "字段丙"]
+    attempted: list[str] = []
+    monkeypatch.setattr(catalog_translations, "resolved_catalog_translation_batch_limits", lambda _session: (1, 100))
+    monkeypatch.setattr(catalog_translations, "resolved_catalog_translation_concurrency", lambda _session: 1)
+    monkeypatch.setattr(catalog_translations, "resolved_catalog_translation_retry_count", lambda _session: 3)
+    monkeypatch.setattr(catalog_translations, "catalog_language_pack_translatable_values", lambda _rows: values)
+    monkeypatch.setattr(catalog_translations, "catalog_language_pack_translation_seed", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(catalog_translations, "_batch_translation_availability", lambda **_kwargs: ({}, {"zh-CN": values}))
+    monkeypatch.setattr(catalog_translations, "_pause_at_safe_checkpoint", lambda _session, _job: False)
+
+    def fail_first(_translator, **kwargs):
+        attempted.extend(kwargs["values"])
+        error = TranslationProviderError("HTTP 400 Arrearage", category="UPSTREAM_ACCOUNT", retryable=False, upstream_status_code=400)
+        return catalog_translations._TextTranslationOutcome({}, error, [])
+
+    monkeypatch.setattr(catalog_translations, "_translate_realtime_text_outcome", fail_first)
+    job = SimpleNamespace(
+        id=uuid4(), tenant_id=uuid4(), target_locale="es", source_locale="zh-CN",
+        total_skus=0, processed_skus=0, batch_request_payload={},
+        current_sku_id=None, current_sku_name=None, updated_at=None,
+    )
+    with pytest.raises(TranslationProviderError, match="已停止后续请求"):
+        catalog_translations._prepare_realtime_translation_values(
+            _Session(), job=job, translator=_Translator(), rows=[],
+            sku_translations={}, previous_payload=None, reuse_previous=False,
+            record_batches=False,
+        )
+    assert attempted == ["字段甲"]
+
+
 def test_realtime_translation_skips_failed_batch_and_finishes_others(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

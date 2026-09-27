@@ -262,6 +262,7 @@ class CatalogTranslationJobResponse(BaseModel):
     id: UUID
     origin: Literal["MANUAL", "AUTOMATIC"] = "MANUAL"
     awaiting_publish: bool = False
+    removed_sku_count: int = Field(default=0, ge=0)
     source_locale: str
     target_locale: str
     mode: Literal["INCREMENTAL", "FULL_REBUILD"]

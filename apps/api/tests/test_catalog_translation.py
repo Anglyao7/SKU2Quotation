@@ -586,6 +586,35 @@ def test_openai_compatible_adapter_marks_structured_http_400_as_recoverable() ->
     assert error.value.recover_with_smaller_batches is True
 
 
+def test_openai_compatible_adapter_stops_on_account_arrearage() -> None:
+    translator = OpenAICompatibleTranslator(
+        base_url="https://translation.example",
+        api_key="private-test-key",
+        model="catalog-translation-model",
+        production=True,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    400,
+                    json={"error": {"code": "Arrearage", "message": "Account payment is overdue"}},
+                )
+            )
+        ),
+    )
+
+    with pytest.raises(TranslationProviderError) as error:
+        translator.translate(
+            "[[ATCV_000]]\n商品\n[[ATCV_001]]\n产品",
+            source_locale="zh-CN",
+            target_locale="en-US",
+        )
+
+    assert error.value.category == "UPSTREAM_ACCOUNT"
+    assert error.value.upstream_status_code == 400
+    assert error.value.retryable is False
+    assert error.value.recover_with_smaller_batches is False
+
+
 def test_openai_compatible_adapter_exposes_safe_upstream_error_detail() -> None:
     translator = OpenAICompatibleTranslator(
         base_url="https://translation.example",

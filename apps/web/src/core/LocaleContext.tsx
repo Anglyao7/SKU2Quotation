@@ -2120,6 +2120,20 @@ const english: Record<string, string> = {
   "多语言管理": "Languages",
   "多语言": "Languages",
   "商家翻译": "Merchant translations",
+  "商家列表": "Merchants",
+  "返回商家列表": "Back to merchants",
+  "选择商家后查看翻译进度与商品译文。": "Choose a merchant to view translation progress and product wording.",
+  "点击商家查看各语言翻译情况。": "Select a merchant to see translation status for each language.",
+  "搜索商家名称或地址": "Search merchant name or address",
+  "没有匹配的商家。": "No matching merchants.",
+  "商家翻译子标签": "Merchant translation tabs",
+  "翻译概览": "Translation overview",
+  "已删除 SKU 同步任务": "Deleted SKU sync job",
+  "正在同步已删除商品": "Syncing deleted products",
+  "正在从语言包同步移除 {count} 个已删除 SKU；此任务无需请求翻译模型。":
+    "Removing {count} deleted SKUs from the language pack; no translation requests are needed.",
+  "正在核对商品变更，尚未产生需要翻译的 SKU。":
+    "Checking catalog changes; there are no SKUs to translate yet.",
   "选择商品前台展示的语言；未配置语言包时请联系平台管理员。":
     "Choose the languages shown in the product storefront. Contact a platform administrator when a language package is not configured.",
   "管理商品前台可用语言，并更新各语言的商品内容。":

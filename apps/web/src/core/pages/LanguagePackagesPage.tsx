@@ -8,12 +8,14 @@ import {
   Select,
   Spinner,
   Text,
+  TextField,
 } from "@radix-ui/themes";
 import {
   ArrowsClockwise,
   CaretLeft,
   CaretRight,
   LockSimple,
+  MagnifyingGlass,
   Package,
   Pause,
   Play,
@@ -65,7 +67,6 @@ import { automaticTranslationCopy } from "../automationMessages";
 const TARGET_LANGUAGES = STOREFRONT_LANGUAGE_OPTIONS.filter(
   (language) => language.code !== "zh-CN",
 );
-const TRANSLATION_TENANT_STORAGE_KEY = "atc.admin.catalog-translation-tenant";
 const BATCH_PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 
 type PaginationItem = number | "leading-ellipsis" | "trailing-ellipsis";
@@ -112,15 +113,16 @@ function completedSkuCount(job?: CatalogTranslationJob) {
 }
 
 export function LanguagePackagesPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const requestedTenant = searchParams.get("tenant");
   const requestedLanguage = searchParams.get("language");
+  const detailTab = searchParams.get("tab") === "review" ? "review" : "overview";
   const { hasPermission } = useCoreAuth();
   const { t, locale: uiLocale } = useLocale();
   const automationCopy = automaticTranslationCopy(uiLocale);
   const canEditProducts = hasPermission("product.edit");
   const [merchants, setMerchants] = useState<Tenant[]>([]);
-  const [selectedTenantId, setSelectedTenantId] = useState("");
+  const [merchantQuery, setMerchantQuery] = useState("");
   const [merchantsLoading, setMerchantsLoading] = useState(true);
   const [merchantsError, setMerchantsError] = useState("");
   const [storefrontLanguages, setStorefrontLanguages] = useState<PlatformTenantStorefrontLanguages>();
@@ -151,6 +153,8 @@ export function LanguagePackagesPage() {
   const [controllingJob, setControllingJob] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const selectedMerchant = merchants.find((merchant) => merchant.id === requestedTenant);
+  const selectedTenantId = selectedMerchant?.id ?? "";
   const selectedTenantIdRef = useRef(selectedTenantId);
   const selectedLocaleRef = useRef<StorefrontLocale>(selectedLocale);
   const localeRequestIdRef = useRef(0);
@@ -159,9 +163,24 @@ export function LanguagePackagesPage() {
   const batchPageSizeRef = useRef(batchPageSize);
   const batchStatusFilterRef = useRef(batchStatusFilter);
 
-  const selectedMerchant = merchants.find(
-    (merchant) => merchant.id === selectedTenantId,
-  );
+  const filteredMerchants = merchants.filter((merchant) => {
+    const query = merchantQuery.trim().toLocaleLowerCase();
+    return !query || `${merchant.name} ${merchant.slug}`.toLocaleLowerCase().includes(query);
+  });
+
+  const openMerchant = (tenantId: string) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tenant", tenantId);
+    next.delete("tab");
+    setSearchParams(next);
+  };
+
+  const openTab = (tab: "overview" | "review") => {
+    const next = new URLSearchParams(searchParams);
+    if (tab === "review") next.set("tab", "review");
+    else next.delete("tab");
+    setSearchParams(next);
+  };
 
   useEffect(() => {
     let active = true;
@@ -172,14 +191,6 @@ export function LanguagePackagesPage() {
           tenant.status !== "archived"
         ));
         setMerchants(available);
-        const remembered = window.localStorage.getItem(
-          TRANSLATION_TENANT_STORAGE_KEY,
-        );
-        const initial = available.find((tenant) => tenant.id === requestedTenant)
-          ?? available.find((tenant) => tenant.id === remembered)
-          ?? available.find((tenant) => tenant.status === "active")
-          ?? available[0];
-        setSelectedTenantId(initial?.id ?? "");
       })
       .catch((reason) => {
         if (active) {
@@ -194,7 +205,7 @@ export function LanguagePackagesPage() {
     return () => {
       active = false;
     };
-  }, [t, requestedTenant]);
+  }, [t]);
 
   useEffect(() => {
     if (!selectedTenantId) {
@@ -275,6 +286,10 @@ export function LanguagePackagesPage() {
   const selectedJob = job?.targetLocale === selectedLocale
     ? job
     : undefined;
+  const automaticZeroSkuJob = selectedJob?.origin === "AUTOMATIC" && selectedJob.totalSkus === 0;
+  // An automatic zero-SKU job is created only when catalog entries were removed.
+  // Older queued jobs do not carry removedSkuCount, so cover them as well.
+  const removalOnlyJob = automaticZeroSkuJob;
   const automationLoaded = automation?.tenant_id === selectedTenantId && automation.target_locale === selectedLocale;
   const automationBusy = automationLoaded && ["WAITING", "QUEUED", "RUNNING"].includes(automation.state);
   const translationStartBlocked = !automationLoaded || automationBusy;
@@ -483,11 +498,6 @@ export function LanguagePackagesPage() {
       setHistoryLoading(false);
       return;
     }
-    window.localStorage.setItem(
-      TRANSLATION_TENANT_STORAGE_KEY,
-      selectedTenantId,
-    );
-
     void refreshStatus(selectedLocale, selectedTenantId, requestId)
       .catch((caught) => {
         if (localeRequestIsCurrent(selectedLocale, selectedTenantId, requestId)) {
@@ -874,40 +884,77 @@ export function LanguagePackagesPage() {
     <div className="core-workspace language-pack-page">
       <div className="core-page-heading language-pack-heading">
         <div>
-          <Text size="2" color="gray">{t("平台")}</Text>
-          <Heading size="8">{t("商家翻译")}</Heading>
+          <Text size="2" color="gray">{t("平台")} / {t("商家翻译")}</Text>
+          <Heading size="8">{selectedMerchant ? selectedMerchant.name : t("商家翻译")}</Heading>
           <Text size="2" color="gray">
-            {t("管理员统一执行翻译任务，并查看、微调各语言的商品译文。")}
+            {selectedMerchant
+              ? `/${selectedMerchant.slug} · ${selectedMerchant.sku_count ?? 0} SKU`
+              : t("选择商家后查看翻译进度与商品译文。")}
           </Text>
         </div>
-        <div className="language-merchant-selector">
-          <Text size="1" color="gray">{t("当前翻译商家")}</Text>
-          <Select.Root
-            value={selectedTenantId}
-            onValueChange={setSelectedTenantId}
-            disabled={merchantsLoading || !merchants.length}
-          >
-            <Select.Trigger
-              placeholder={t(merchantsLoading ? "正在读取商家" : "选择要翻译的商家")}
-              aria-label={t("选择要翻译的商家")}
-            />
-            <Select.Content position="popper">
-              {merchants.map((merchant) => (
-                <Select.Item key={merchant.id} value={merchant.id}>
-                  {merchant.name} · {merchant.sku_count ?? 0} SKU
-                </Select.Item>
-              ))}
-            </Select.Content>
-          </Select.Root>
-          {selectedMerchant ? (
-            <Text size="1" color="gray">/{selectedMerchant.slug}</Text>
-          ) : null}
-        </div>
+        {selectedMerchant ? (
+          <Button size="2" variant="soft" color="gray" onClick={() => setSearchParams({})}>
+            <CaretLeft />{t("返回商家列表")}
+          </Button>
+        ) : null}
       </div>
 
       {merchantsError ? <ToastNotice kind="error" message={merchantsError} /> : null}
       {error ? <ToastNotice kind="error" message={error} /> : null}
       {success ? <ToastNotice kind="success" message={success} /> : null}
+      {!selectedTenantId ? (
+        <Card className="language-merchant-list-card">
+          <div className="language-merchant-list-heading">
+            <div>
+              <Heading size="5">{t("商家列表")}</Heading>
+              <Text size="2" color="gray">{t("点击商家查看各语言翻译情况。")}</Text>
+            </div>
+            <TextField.Root
+              value={merchantQuery}
+              onChange={(event) => setMerchantQuery(event.target.value)}
+              placeholder={t("搜索商家名称或地址")}
+              aria-label={t("搜索商家名称或地址")}
+            >
+              <TextField.Slot><MagnifyingGlass /></TextField.Slot>
+            </TextField.Root>
+          </div>
+          {merchantsLoading ? (
+            <div className="language-history-loading"><Spinner size="3" />{t("正在读取商家")}</div>
+          ) : !merchants.length ? (
+            <div className="language-batch-empty">{t("当前没有可翻译的商家。")}</div>
+          ) : !filteredMerchants.length ? (
+            <div className="language-batch-empty">{t("没有匹配的商家。")}</div>
+          ) : (
+            <div className="language-merchant-list">
+              {filteredMerchants.map((merchant) => (
+                <button
+                  type="button"
+                  className="language-merchant-row"
+                  key={merchant.id}
+                  onClick={() => openMerchant(merchant.id)}
+                >
+                  <span className="language-merchant-avatar">{merchant.name.trim().slice(0, 1) || "?"}</span>
+                  <span className="language-merchant-identity">
+                    <strong>{merchant.name}</strong>
+                    <small>/{merchant.slug}</small>
+                  </span>
+                  <Badge color={merchant.status === "active" ? "green" : "gray"}>
+                    {t(merchant.status === "active" ? "正常" : "已停用")}
+                  </Badge>
+                  <span className="language-merchant-count">{merchant.sku_count ?? 0} SKU</span>
+                  <CaretRight aria-hidden="true" />
+                </button>
+              ))}
+            </div>
+          )}
+        </Card>
+      ) : (
+        <>
+          <nav className="language-detail-tabs" aria-label={t("商家翻译子标签")}>
+            <button type="button" className={detailTab === "overview" ? "is-active" : undefined} aria-current={detailTab === "overview" ? "page" : undefined} onClick={() => openTab("overview")}>{t("翻译概览")}</button>
+            <button type="button" className={detailTab === "review" ? "is-active" : undefined} aria-current={detailTab === "review" ? "page" : undefined} onClick={() => openTab("review")}>{t("商品译文微调")}</button>
+          </nav>
+          {detailTab === "overview" ? <>
       {selectedTenantId ? (
         <Card className="platform-storefront-language-card">
           <div className="platform-storefront-language-heading">
@@ -1224,19 +1271,6 @@ export function LanguagePackagesPage() {
         </Card>
       </div>
 
-      {selectedTenantId ? (
-        <CatalogTranslationEditor
-          key={`editor:${selectedTenantId}:${selectedLocale}`}
-          tenantId={selectedTenantId}
-          locale={selectedLocale}
-          packageVersion={selectedStatus?.package?.version}
-          onLocaleChange={setSelectedLocale}
-          onSaved={async () => {
-            await refreshStatus(selectedLocale, selectedTenantId);
-          }}
-        />
-      ) : null}
-
       {historyLoading ? (
         <Card className="language-job-card">
           <div className="language-history-loading">
@@ -1256,7 +1290,9 @@ export function LanguagePackagesPage() {
             <div>
               <Text size="1" color="gray">{t("最近任务")}</Text>
               <Heading size="4">
-                {selectedJob.origin === "AUTOMATIC" && ["QUEUED", "RUNNING"].includes(selectedJob.status)
+                {removalOnlyJob && ["QUEUED", "RUNNING"].includes(selectedJob.status)
+                  ? t("正在同步已删除商品")
+                  : selectedJob.origin === "AUTOMATIC" && ["QUEUED", "RUNNING"].includes(selectedJob.status)
                   ? automationCopy[selectedJob.status as "QUEUED" | "RUNNING"]
                   : selectedJob.awaitingPublish && selectedJob.status === "SUCCEEDED"
                     ? automationCopy.READY
@@ -1274,20 +1310,32 @@ export function LanguagePackagesPage() {
                 : selectedJob.status === "PAUSED" || selectedJob.pauseRequested
                   ? "amber"
                   : "blue"}>
-              {selectedJob.progressPercent.toFixed(1)}%
+              {automaticZeroSkuJob && ["QUEUED", "RUNNING"].includes(selectedJob.status)
+                ? t("准备中")
+                : `${selectedJob.progressPercent.toFixed(1)}%`}
             </Badge>
           </div>
-          <Progress
-            value={selectedJob.progressPercent}
-            size="3"
-            color={selectedJob.status === "FAILED"
-              ? "red"
-              : selectedJob.status === "PAUSED" || selectedJob.pauseRequested
-                ? "amber"
-                : "blue"}
-          />
+          {!automaticZeroSkuJob ? (
+            <Progress
+              value={selectedJob.progressPercent}
+              size="3"
+              color={selectedJob.status === "FAILED"
+                ? "red"
+                : selectedJob.status === "PAUSED" || selectedJob.pauseRequested
+                  ? "amber"
+                  : "blue"}
+            />
+          ) : null}
           <div className="language-job-copy">
-            {selectedJob.translationTotalValues > 0 ? (
+            {removalOnlyJob ? (
+              <span>{["QUEUED", "RUNNING"].includes(selectedJob.status)
+                ? selectedJob.removedSkuCount > 0
+                  ? t("正在从语言包同步移除 {count} 个已删除 SKU；此任务无需请求翻译模型。", {
+                      count: selectedJob.removedSkuCount,
+                    })
+                  : t("正在同步已删除商品")
+                : t("已删除 SKU 同步任务")}</span>
+            ) : selectedJob.translationTotalValues > 0 ? (
               <>
                 <span>
                   {t("已完成 {done} / {total} 个翻译字段", {
@@ -1361,14 +1409,14 @@ export function LanguagePackagesPage() {
         </Card>
       ) : null}
 
-      {batchHistoryLoading && selectedJob && !selectedBatchHistory ? (
+      {!removalOnlyJob && batchHistoryLoading && selectedJob && !selectedBatchHistory ? (
         <Card className="language-batch-history-card">
           <div className="language-history-loading is-compact">
             <Spinner size="2" />
             <Text size="2" color="gray">{t("正在读取翻译批次记录")}</Text>
           </div>
         </Card>
-      ) : selectedJob ? (
+      ) : selectedJob && !removalOnlyJob ? (
         <Card className="language-batch-history-card">
           <div className="language-job-header">
             <div>
@@ -1602,6 +1650,20 @@ export function LanguagePackagesPage() {
           ) : null}
         </Card>
       ) : null}
+          </> : (
+            <CatalogTranslationEditor
+              key={`editor:${selectedTenantId}:${selectedLocale}`}
+              tenantId={selectedTenantId}
+              locale={selectedLocale}
+              packageVersion={selectedStatus?.package?.version}
+              onLocaleChange={setSelectedLocale}
+              onSaved={async () => {
+                await refreshStatus(selectedLocale, selectedTenantId);
+              }}
+            />
+          )}
+        </>
+      )}
     </div>
   );
 }

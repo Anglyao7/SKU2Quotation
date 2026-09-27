@@ -201,6 +201,27 @@ def _upstream_response_error_detail(response: httpx.Response) -> str | None:
     return message or code
 
 
+def _upstream_account_blocked(detail: str | None, status_code: int) -> bool:
+    if status_code in {401, 402, 403}:
+        return True
+    if not detail:
+        return False
+    normalized = detail.casefold()
+    return any(
+        marker in normalized
+        for marker in (
+            "arrearage",
+            "overdue payment",
+            "insufficient balance",
+            "payment required",
+            "account is in good standing",
+            "账户欠费",
+            "账号欠费",
+            "余额不足",
+        )
+    )
+
+
 def _deeplx_endpoint(value: str, *, production: bool) -> str:
     normalized = value.strip()
     parsed = urlsplit(normalized)
@@ -1153,6 +1174,7 @@ class OpenAICompatibleTranslator:
         if response.status_code < 200 or response.status_code >= 300:
             detail = _upstream_response_error_detail(response)
             detail_suffix = f"：{detail}" if detail else ""
+            account_blocked = _upstream_account_blocked(detail, response.status_code)
             retryable = response.status_code in {
                 408,
                 425,
@@ -1168,9 +1190,10 @@ class OpenAICompatibleTranslator:
                 recover_with_smaller_batches=(
                     structured
                     and response.status_code in {400, 413, 422}
+                    and not account_blocked
                 ),
-                category="UPSTREAM_HTTP",
-                retryable=retryable,
+                category="UPSTREAM_ACCOUNT" if account_blocked else "UPSTREAM_HTTP",
+                retryable=retryable and not account_blocked,
                 upstream_status_code=response.status_code,
             )
         try:

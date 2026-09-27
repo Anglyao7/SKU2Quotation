@@ -1628,6 +1628,7 @@ export interface CatalogTranslationJob {
   id: string;
   origin?: "MANUAL" | "AUTOMATIC";
   awaitingPublish?: boolean;
+  removedSkuCount: number;
   sourceLocale: StorefrontLocale;
   targetLocale: StorefrontLocale;
   mode: "INCREMENTAL" | "FULL_REBUILD";
