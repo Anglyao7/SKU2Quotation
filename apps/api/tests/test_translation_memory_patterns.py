@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import subprocess
+import sys
 from uuid import uuid4
 
 import pytest
@@ -178,13 +180,14 @@ def test_existing_memory_can_be_indexed_in_small_batches(
         target_locale="en-US",
         provider="qwen",
         provider_version="v1",
-        translations={"猫碗 10 cm": "Cat bowl 10 cm"},
+        translations={"猫碗 10 cm": "Cat bowl 10 cm", "狗碗 20 cm": "Dog bowl 20 cm"},
     )
     with memory_database() as session:
-        row = session.scalar(select(CatalogTextTranslationRow))
-        assert row is not None
-        row.normalized_source_hash = None
-        row.numeric_template_hash = None
+        rows = session.scalars(select(CatalogTextTranslationRow)).all()
+        assert len(rows) == 2
+        for row in rows:
+            row.normalized_source_hash = None
+            row.numeric_template_hash = None
         session.commit()
     monkeypatch.setattr(backfill_translation_memory_indexes, "SessionLocal", memory_database)
     monkeypatch.setattr(
@@ -195,7 +198,7 @@ def test_existing_memory_can_be_indexed_in_small_batches(
 
     assert backfill_translation_memory_indexes.backfill_tenant(
         tenant_id, batch_size=1, pause_seconds=0
-    ) == 1
+    ) == 2
     assert backfill_translation_memory_indexes.backfill_tenant(
         tenant_id, batch_size=1, pause_seconds=0
     ) == 0
@@ -207,6 +210,22 @@ def test_existing_memory_can_be_indexed_in_small_batches(
         provider="qwen",
         provider_version="v1",
     ) == {"猫碗 12 cm": "Cat bowl 12 cm"}
+
+
+def test_backfill_script_registers_tenant_foreign_key_target_in_fresh_process() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from scripts.backfill_translation_memory_indexes import backfill_tenant; "
+            "from app.database import Base; "
+            "assert 'tenants' in Base.metadata.tables",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_semantic_edit_still_reaches_qwen(

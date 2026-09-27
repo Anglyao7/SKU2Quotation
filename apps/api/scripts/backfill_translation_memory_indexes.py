@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.catalog_translation_models import CatalogTextTranslationRow
 from app.database import SessionLocal, set_public_tenant_context
+from app.identity_models import TenantRow  # noqa: F401 - registers the FK target
 from app.services.translation_memory_patterns import (
     normalized_translation_hash,
     numeric_template_hash,
@@ -26,23 +27,25 @@ def backfill_tenant(
     tenant_id: UUID, *, batch_size: int = 500, pause_seconds: float = 0.05
 ) -> int:
     indexed = 0
+    last_id: UUID | None = None
     with SessionLocal() as session:
         set_public_tenant_context(session, tenant_id=tenant_id)
         while True:
+            query = select(CatalogTextTranslationRow).where(
+                CatalogTextTranslationRow.tenant_id == tenant_id,
+                CatalogTextTranslationRow.normalized_source_hash.is_(None),
+            )
+            if last_id is not None:
+                query = query.where(CatalogTextTranslationRow.id > last_id)
             rows = session.scalars(
-                select(CatalogTextTranslationRow)
-                .where(
-                    CatalogTextTranslationRow.tenant_id == tenant_id,
-                    CatalogTextTranslationRow.normalized_source_hash.is_(None),
-                )
-                .order_by(CatalogTextTranslationRow.id)
-                .limit(batch_size)
+                query.order_by(CatalogTextTranslationRow.id).limit(batch_size)
             ).all()
             if not rows:
                 break
             for row in rows:
                 row.normalized_source_hash = normalized_translation_hash(row.source_text)
                 row.numeric_template_hash = numeric_template_hash(row.source_text)
+            last_id = rows[-1].id
             session.commit()
             indexed += len(rows)
             print(f"Indexed {indexed} translation-memory rows", flush=True)
