@@ -250,6 +250,7 @@ import app.workers.file_processing as file_processing_worker
 import app.use_cases.legacy_operations as legacy_operations_use_cases
 from app.workers.outbox_relay import relay_one_outbox_event
 from app.use_cases.product_center import (
+    get_product as get_product_use_case,
     list_products as list_authoritative_products,
     replace_product_main_image,
 )
@@ -6375,6 +6376,7 @@ def test_custom_role_and_soft_delete_contract() -> None:
 def test_phase2_product_supports_typed_attributes_images_and_multiple_suppliers() -> None:
     category_id = uuid4()
     product_id = uuid4()
+    private_definition_id = uuid4()
     with SessionLocal() as session:
         session.add(ProductCategoryRow(
             id=category_id,
@@ -6391,6 +6393,14 @@ def test_phase2_product_supports_typed_attributes_images_and_multiple_suppliers(
             default_unit="piece",
             status="ACTIVE",
         ))
+        session.add(AttributeDefinitionRow(
+            id=private_definition_id,
+            tenant_id=DEFAULT_TENANT_ID,
+            attribute_key=f"auto_{private_definition_id.hex[:20]}",
+            display_name="供应商名称",
+            data_type="TEXT",
+            status="ACTIVE",
+        ))
         session.flush()
         session.add_all([
             ProductAttributeRow(
@@ -6401,6 +6411,28 @@ def test_phase2_product_supports_typed_attributes_images_and_multiple_suppliers(
                 unit_code="g",
                 confidence=Decimal("0.9500"),
                 review_status="CONFIRMED",
+            ),
+            ProductAttributeRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                attribute_key="supplier_name",
+                value_text="Internal Factory",
+                review_status="CONFIRMED",
+            ),
+            ProductAttributeRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                attribute_key="internal_ai_note",
+                value_text="Staff only",
+                review_status="CONFIRMED",
+            ),
+            ProductAttributeRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                attribute_definition_id=private_definition_id,
+                attribute_key=f"auto_{private_definition_id.hex[:20]}",
+                value_text="Hidden by display name",
+                review_status="AI_SUGGESTED",
             ),
             ProductImageRow(
                 tenant_id=DEFAULT_TENANT_ID,
@@ -6462,6 +6494,17 @@ def test_phase2_product_supports_typed_attributes_images_and_multiple_suppliers(
         assert {source.supplier_id for source in sources} == {"SUP-001", "SUP-002"}
         assert attribute is not None and attribute.value_number == Decimal("200.000000")
         assert score is not None and score.delivery_score is None and score.sample_size == 0
+        owner_detail = get_product_use_case(
+            session, tenant_id=DEFAULT_TENANT_ID, permissions=frozenset({"product.view"}), product_id=product_id,
+        )
+        child_detail = get_product_use_case(
+            session, tenant_id=DEFAULT_TENANT_ID, permissions=frozenset({"product.view"}), product_id=product_id,
+            account_scope="CUSTOMER_SUBACCOUNT", membership_id=uuid4(),
+        )
+        assert {row.key for row in owner_detail.attributes} == {
+            "weight", "supplier_name", "internal_ai_note", f"auto_{private_definition_id.hex[:20]}",
+        }
+        assert {row.key for row in child_detail.attributes} == {"weight"}
 
         product = session.get(ProductRow, product_id)
         assert product is not None
@@ -9718,6 +9761,67 @@ def test_platform_admin_manages_encrypted_deeplx_endpoint() -> None:
             )
             assert row is not None and row.api_key_ciphertext is not None
             assert decrypt_translation_api_key(row.api_key_ciphertext) == endpoint
+    finally:
+        with SessionLocal() as session:
+            session.execute(delete(TranslationProviderSettingsRow))
+            session.commit()
+
+
+def test_platform_admin_configures_tencent_tokenhub_without_exposing_api_key() -> None:
+    api_key = "tokenhub-test-key-never-return-7788"
+    with SessionLocal() as session:
+        session.execute(delete(TranslationProviderSettingsRow))
+        session.commit()
+
+    try:
+        saved = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "provider": "tencent-tokenhub",
+                "enabled": True,
+                "base_url": "https://tokenhub.tencentmaas.com/v1",
+                "api_key": api_key,
+                "model_name": "hy-mt2-plus",
+                "timeout_seconds": 60,
+                "max_tokens": 4096,
+                "requests_per_minute": 30,
+                "catalog_batch_size": 20,
+                "catalog_batch_characters": 4000,
+                "reasoning_effort": "none",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["provider"] == "tencent-tokenhub"
+        assert saved.json()["api_key_hint"] == "••••7788"
+        assert api_key not in saved.text
+
+        with SessionLocal() as session:
+            row = session.get(TranslationProviderSettingsRow, "CATALOG_TRANSLATION")
+            assert row is not None
+            assert row.api_key_ciphertext is not None
+            assert decrypt_translation_api_key(row.api_key_ciphertext) == api_key
+            provider = resolved_catalog_translator(
+                session,
+                environment_factory=lambda: (_ for _ in ()).throw(
+                    AssertionError("database settings must win")
+                ),
+            )
+            assert provider.identity.provider == "tencent-tokenhub"
+
+        retained = client.put(
+            "/api/v1/system/translation/settings",
+            json={
+                "provider": "tencent-tokenhub",
+                "enabled": True,
+                "base_url": "https://tokenhub.tencentmaas.com/v1",
+                "model_name": "hy-mt2-lite",
+                "timeout_seconds": 60,
+                "max_tokens": 4096,
+                "requests_per_minute": 30,
+            },
+        )
+        assert retained.status_code == 200, retained.text
+        assert retained.json()["api_key_hint"] == "••••7788"
     finally:
         with SessionLocal() as session:
             session.execute(delete(TranslationProviderSettingsRow))
@@ -16110,6 +16214,97 @@ def test_product_main_image_upload_is_indexed_and_included_in_sku_export(
     after_last_delete = client.get(f"/api/v1/products/{product_id}")
     assert after_last_delete.status_code == 200, after_last_delete.text
     assert after_last_delete.json()["images"] == []
+
+
+def test_sku_catalog_export_selected_products_includes_all_variants_and_product_only(
+    request: pytest.FixtureRequest,
+) -> None:
+    suffix = uuid4().hex[:10].upper()
+    selected_product_id, other_product_id, product_only_id = uuid4(), uuid4(), uuid4()
+    selected_name = f"Selected export {suffix}"
+    other_name = f"Other export {suffix}"
+    product_only_name = f"Product-only export {suffix}"
+    sku_codes = [f"EXPORT-{suffix}-{index}" for index in range(3)]
+
+    def cleanup() -> None:
+        _cleanup_template_test_records(
+            import_job_ids=[],
+            sku_codes=sku_codes,
+            category_names=[],
+            product_names=[selected_name, other_name, product_only_name],
+        )
+
+    cleanup()
+    request.addfinalizer(cleanup)
+    with SessionLocal() as session:
+        session.add_all([
+            ProductRow(
+                id=product_id,
+                tenant_id=DEFAULT_TENANT_ID,
+                product_code=f"EXPORT-PRODUCT-{suffix}-{index}",
+                name=name,
+                status="ACTIVE",
+            )
+            for index, (product_id, name) in enumerate([
+                (selected_product_id, selected_name),
+                (other_product_id, other_name),
+                (product_only_id, product_only_name),
+            ])
+        ])
+        session.flush()
+        session.add_all([
+            SkuRow(
+                tenant_id=DEFAULT_TENANT_ID,
+                product_id=product_id,
+                sku_code=sku_code,
+                name=sku_code,
+                option_values={},
+                status="ACTIVE",
+            )
+            for product_id, sku_code in [
+                (selected_product_id, sku_codes[0]),
+                (selected_product_id, sku_codes[1]),
+                (other_product_id, sku_codes[2]),
+            ]
+        ])
+        session.commit()
+
+    exported = client.post(
+        "/api/v1/product-center/skus/export",
+        json={
+            "product_ids": [str(selected_product_id), str(product_only_id)],
+            "q": other_name,
+            "missing_images_only": True,
+        },
+    )
+    assert exported.status_code == 200, exported.text
+    workbook = load_workbook(BytesIO(exported.content), read_only=True)
+    try:
+        product_sheet = workbook[PRODUCT_MASTER_TEMPLATE_SHEET]
+        sku_sheet = workbook[SKU_DETAIL_TEMPLATE_SHEET]
+        product_headers = [cell.value for cell in product_sheet[1]]
+        sku_headers = [cell.value for cell in sku_sheet[1]]
+        product_codes = {
+            row[product_headers.index("商品编码")]
+            for row in product_sheet.iter_rows(min_row=2, values_only=True)
+        }
+        exported_sku_codes = {
+            row[sku_headers.index("SKU编号")]
+            for row in sku_sheet.iter_rows(min_row=2, values_only=True)
+        }
+        assert product_codes == {
+            f"EXPORT-PRODUCT-{suffix}-0",
+            f"EXPORT-PRODUCT-{suffix}-2",
+        }
+        assert exported_sku_codes == set(sku_codes[:2])
+    finally:
+        workbook.close()
+
+    missing = client.post(
+        "/api/v1/product-center/skus/export",
+        json={"product_ids": [str(uuid4())]},
+    )
+    assert missing.status_code == 409, missing.text
 
 
 def test_sku_catalog_export_round_trip_updates_existing_rows(
@@ -23295,7 +23490,7 @@ def test_anonymous_storefront_visitor_can_follow_merchant_quote_updates() -> Non
     assert quote_id not in {row["id"] for row in expired_rows.json()}
 
 
-def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_sheets() -> None:
+def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_file() -> None:
     listing = client.get("/api/store/demo/skus", params={"q": "PF-8G01"})
     assert listing.status_code == 200, listing.text
     sku = listing.json()["items"][0]
@@ -23324,6 +23519,7 @@ def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_sheets(
         assert purchase_order["purchase_order_number"].startswith("PO-")
         assert len(purchase_order["items"]) == 1
         purchase_order["purchase_order_number"] = "PO-INTEGRATION-0001"
+        purchase_order["locale"] = "en-US"
         purchase_order["custom_fields"] = [{
             "id": str(uuid4()),
             "label": "采购批次",
@@ -23349,6 +23545,7 @@ def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_sheets(
         assert saved.json()["items"][0]["supplier_name"] == "测试/采购供应商"
         assert Decimal(saved.json()["items"][0]["unit_price"]) == Decimal("6.25")
         assert saved.json()["custom_fields"] == purchase_order["custom_fields"]
+        assert saved.json()["locale"] == "en-US"
 
         exported = client.get(
             f"/api/v1/public-quote-drafts/{quote_id}/xlsx",
@@ -23359,7 +23556,7 @@ def test_quote_workbench_purchase_order_is_editable_and_exports_supplier_sheets(
         workbook = load_workbook(BytesIO(exported.content), data_only=False)
         assert workbook.sheetnames == ["测试-采购供应商"]
         sheet = workbook.active
-        assert sheet["A1"].value == "采购单 / PURCHASE ORDER"
+        assert sheet["A1"].value == "PURCHASE ORDER"
         assert sheet["D8"].value == "FACTORY-SKU-001"
         assert sheet["I8"].value == 6.25
         assert sheet["K8"].value == '=IF(OR(G8="",I8=""),"",G8*I8)'

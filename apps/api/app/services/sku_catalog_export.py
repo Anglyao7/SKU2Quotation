@@ -14,7 +14,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.writer.excel import ExcelWriter
 
 from ..product_center_models import SKU_TEMPLATE_SOURCE_OPTION_KEY
-from ..product_supplier_models import ProductImageRow
+from ..product_supplier_models import ProductCategoryRow, ProductImageRow, ProductRow
 from ..repositories.product_center_repository import SkuListRow
 from .product_template_import import (
     MAX_PRODUCT_IMAGE_COLUMN_COUNT,
@@ -58,8 +58,7 @@ _RESERVED_OPTION_KEYS = frozenset(
 )
 
 
-def _category_name(row: SkuListRow) -> str:
-    category = row.category
+def _category_name(category: ProductCategoryRow | None) -> str:
     if category is None:
         return "未分类"
     path = str(category.path or "").strip()
@@ -259,6 +258,7 @@ def build_sku_catalog_workbook(
     images_by_product: Mapping[UUID, Sequence[ProductImageRow]],
     image_urls: Mapping[UUID, str],
     supplier_names: Mapping[str, str],
+    standalone_products: Sequence[tuple[ProductRow, ProductCategoryRow | None]] = (),
     public_price_overrides: Mapping[UUID, float] | None = None,
     include_source_sku_codes: bool = True,
     include_notes: bool = True,
@@ -321,20 +321,22 @@ def build_sku_catalog_workbook(
         [_styled_cell(sku_sheet, header, header=True) for header in SKU_HEADERS]
     )
 
-    product_rows: dict[UUID, list[SkuListRow]] = {}
+    product_rows: dict[
+        UUID, tuple[ProductRow, ProductCategoryRow | None, list[SkuListRow]]
+    ] = {}
     for row in rows:
-        product_rows.setdefault(row.product.id, []).append(row)
+        product_rows.setdefault(row.product.id, (row.product, row.category, []))[2].append(row)
+    for product, category in standalone_products:
+        product_rows.setdefault(product.id, (product, category, []))
 
     image_offset = PRODUCT_HEADERS.index("商品图片1") + 1
-    for product_row_number, product_rows_for_product in enumerate(product_rows.values(), start=2):
-        row = product_rows_for_product[0]
-        product = row.product
+    for product_row_number, (product, category, product_rows_for_product) in enumerate(product_rows.values(), start=2):
         images = list(images_by_product.get(product.id, ()))[:MAX_PRODUCT_IMAGE_COLUMN_COUNT]
         urls = [image_urls.get(image.id, "") for image in images]
         product_values = [
             product.product_code or "",
             product.name or "",
-            _category_name(row),
+            _category_name(category),
             _first_option_text(product_rows_for_product, "商品型号"),
             _product_price(
                 product_rows_for_product,

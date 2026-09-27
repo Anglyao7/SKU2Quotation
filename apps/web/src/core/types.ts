@@ -1551,7 +1551,8 @@ export type TranslationReasoningEffort =
 export type TranslationProviderKind =
   | "openai-compatible"
   | "deeplx"
-  | "aliyun-alimt";
+  | "aliyun-alimt"
+  | "tencent-tokenhub";
 
 export type CatalogTranslationExecutionMode = "REALTIME" | "QWEN_BATCH";
 
@@ -2039,6 +2040,7 @@ export interface QuotePurchaseOrderItem {
 export interface QuotePurchaseOrderSettings {
   purchaseOrderNumber: string;
   issueDate: string;
+  locale: StorefrontLocale;
   items: QuotePurchaseOrderItem[];
   customFields: QuoteCustomField[];
 }
@@ -2127,6 +2129,7 @@ export interface StorefrontOrderStatistics {
 
 export type QuoteTemplateField =
   | "serial_number"
+  | "product_attribute"
   | "sku_code"
   | "product_name"
   | "description"

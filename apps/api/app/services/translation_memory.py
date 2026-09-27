@@ -1,4 +1,4 @@
-"""On-demand, tenant-scoped translation memory for public catalog text."""
+"""Durable, tenant-scoped translation memory for catalog and Batch text."""
 
 from __future__ import annotations
 
@@ -12,11 +12,10 @@ from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
 
 from ..catalog_translation_models import CatalogTextTranslationRow
 from ..database import SessionLocal, set_public_tenant_context
@@ -26,6 +25,11 @@ from .catalog_translation import (
     translate_catalog_values,
 )
 from .translation import TranslationProvider, TranslationProviderError
+from .translation_memory_patterns import (
+    normalized_translation_hash,
+    numeric_template_hash,
+    reuse_numeric_translation,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -39,11 +43,9 @@ _TRANSLATION_EXECUTOR = ThreadPoolExecutor(
 _SINGLEFLIGHT_LOCK = Lock()
 _INFLIGHT_TRANSLATIONS: dict[tuple[str, ...], Future[str]] = {}
 _REDIS_LOCK = Lock()
-_CLEANUP_LOCK = Lock()
 _redis_client: Any | None = None
 _redis_client_url: str | None = None
 _redis_disabled_until = 0.0
-_last_cleanup_by_tenant: dict[UUID, float] = {}
 
 
 def _positive_int_environment(name: str, default: int, *, maximum: int) -> int:
@@ -203,16 +205,30 @@ def _database_get_many(
         with SessionLocal() as session:
             set_public_tenant_context(session, tenant_id=tenant_id)
             rows: list[CatalogTextTranslationRow] = []
-            source_hashes = list(sources_by_hash)
-            for offset in range(0, len(source_hashes), 1_000):
-                hash_batch = source_hashes[offset : offset + 1_000]
+            requested_sources = list(sources_by_hash.values())
+            sources_by_normalized_hash: dict[str, list[str]] = {}
+            for source in requested_sources:
+                sources_by_normalized_hash.setdefault(
+                    normalized_translation_hash(source), []
+                ).append(source)
+            for offset in range(0, len(requested_sources), 1_000):
+                source_batch = requested_sources[offset : offset + 1_000]
+                hash_batch = [translation_source_hash(source) for source in source_batch]
+                normalized_batch = [
+                    normalized_translation_hash(source) for source in source_batch
+                ]
                 rows.extend(
                     session.scalars(
                         select(CatalogTextTranslationRow).where(
                             CatalogTextTranslationRow.tenant_id == tenant_id,
                             CatalogTextTranslationRow.source_locale == source_locale,
                             CatalogTextTranslationRow.target_locale == target_locale,
-                            CatalogTextTranslationRow.source_hash.in_(hash_batch),
+                            or_(
+                                CatalogTextTranslationRow.source_hash.in_(hash_batch),
+                                CatalogTextTranslationRow.normalized_source_hash.in_(
+                                    normalized_batch
+                                ),
+                            ),
                         ).order_by(CatalogTextTranslationRow.updated_at.desc())
                     ).all()
                 )
@@ -237,21 +253,89 @@ def _database_get_many(
                 session.commit()
             hits: dict[str, str] = {}
             for row in rows:
-                if (
-                    sources_by_hash.get(row.source_hash) != row.source_text
-                    or not row.translated_text.strip()
-                ):
+                if not row.translated_text.strip():
                     continue
                 # Multiple provider/model versions may exist for one source.
                 # The newest complete translation is reusable regardless of
                 # which provider produced it; the caller may cache it under
                 # the current provider identity.
-                hits.setdefault(row.source_text, row.translated_text)
+                for source in sources_by_normalized_hash.get(
+                    normalized_translation_hash(row.source_text), []
+                ):
+                    if catalog_translation_value_is_complete(
+                        source,
+                        row.translated_text,
+                        source_locale=source_locale,
+                        target_locale=target_locale,
+                    ):
+                        hits.setdefault(source, row.translated_text)
             return hits
     except SQLAlchemyError:
         logger.warning(
             "catalog translation memory lookup failed; continuing without cache"
         )
+        return {}
+
+
+def _database_get_numeric_templates(
+    *,
+    tenant_id: UUID,
+    source_locale: str,
+    target_locale: str,
+    sources: list[str],
+) -> dict[str, str]:
+    """Reuse only literal number changes in otherwise identical source text."""
+
+    sources_by_template: dict[str, list[str]] = {}
+    for source in sources:
+        template_hash = numeric_template_hash(source)
+        if template_hash is not None:
+            sources_by_template.setdefault(template_hash, []).append(source)
+    if not sources_by_template:
+        return {}
+    try:
+        with SessionLocal() as session:
+            set_public_tenant_context(session, tenant_id=tenant_id)
+            hits: dict[str, str] = {}
+            templates = list(sources_by_template)
+            for offset in range(0, len(templates), 200):
+                template_batch = templates[offset : offset + 200]
+                # Limit duplicate provider versions per template, rather than
+                # loading an unbounded tenant-wide translation history.
+                candidates = session.scalars(
+                    select(CatalogTextTranslationRow)
+                    .where(
+                        CatalogTextTranslationRow.tenant_id == tenant_id,
+                        CatalogTextTranslationRow.source_locale == source_locale,
+                        CatalogTextTranslationRow.target_locale == target_locale,
+                        CatalogTextTranslationRow.numeric_template_hash.in_(
+                            template_batch
+                        ),
+                    )
+                    .order_by(CatalogTextTranslationRow.updated_at.desc())
+                    .limit(2_000)
+                ).all()
+                for row in candidates:
+                    for source in sources_by_template.get(
+                        row.numeric_template_hash or "", []
+                    ):
+                        if source in hits:
+                            continue
+                        translated = reuse_numeric_translation(
+                            old_source=row.source_text,
+                            old_translation=row.translated_text,
+                            new_source=source,
+                        )
+                        if translated and catalog_translation_value_is_complete(
+                            source,
+                            translated,
+                            source_locale=source_locale,
+                            target_locale=target_locale,
+                        ):
+                            hits[source] = translated
+            return hits
+    except SQLAlchemyError:
+        logger.warning("catalog translation template lookup failed")
         return {}
 
 
@@ -274,6 +358,8 @@ def _database_store_many(
             "source_locale": source_locale,
             "target_locale": target_locale,
             "source_hash": translation_source_hash(source),
+            "normalized_source_hash": normalized_translation_hash(source),
+            "numeric_template_hash": numeric_template_hash(source),
             "source_text": source,
             "translated_text": translated,
             "provider": provider,
@@ -309,6 +395,8 @@ def _database_store_many(
                         set_={
                             "source_text": statement.excluded.source_text,
                             "translated_text": statement.excluded.translated_text,
+                            "normalized_source_hash": statement.excluded.normalized_source_hash,
+                            "numeric_template_hash": statement.excluded.numeric_template_hash,
                             "last_accessed_at": statement.excluded.last_accessed_at,
                             "updated_at": statement.excluded.updated_at,
                             "deleted_at": None,
@@ -324,6 +412,8 @@ def _database_store_many(
                         set_={
                             "source_text": statement.excluded.source_text,
                             "translated_text": statement.excluded.translated_text,
+                            "normalized_source_hash": statement.excluded.normalized_source_hash,
+                            "numeric_template_hash": statement.excluded.numeric_template_hash,
                             "last_accessed_at": statement.excluded.last_accessed_at,
                             "updated_at": statement.excluded.updated_at,
                             "deleted_at": None,
@@ -336,15 +426,38 @@ def _database_store_many(
                         for record in record_batch
                     )
             session.commit()
-            try:
-                _cleanup_stale_rows(session, tenant_id=tenant_id, now=now)
-            except SQLAlchemyError:
-                session.rollback()
-                logger.warning("catalog translation memory cleanup failed")
     except SQLAlchemyError:
         logger.warning(
             "catalog translation memory persistence failed; response remains usable"
         )
+
+
+def _reused_numeric_values(
+    *,
+    tenant_id: UUID,
+    source_locale: str,
+    target_locale: str,
+    sources: list[str],
+) -> dict[str, str]:
+    reused = _database_get_numeric_templates(
+        tenant_id=tenant_id,
+        source_locale=source_locale,
+        target_locale=target_locale,
+        sources=sources,
+    )
+    if reused:
+        # Record the derived text under its own provenance, not under Qwen (or
+        # another currently configured provider). This also makes the next
+        # lookup an exact match, including for a future provider switch.
+        _database_store_many(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            provider="tm-numeric-template",
+            provider_version="v1",
+            translations=reused,
+        )
+    return reused
 
 
 def cached_translation_values(
@@ -389,6 +502,16 @@ def cached_translation_values(
         )
         translations.update(database_hits)
         _redis_store_many(memory_keys_by_source, database_hits)
+    missing = [source for source in unique_sources if source not in translations]
+    if missing:
+        numeric_hits = _reused_numeric_values(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            sources=missing,
+        )
+        translations.update(numeric_hits)
+        _redis_store_many(memory_keys_by_source, numeric_hits)
     return {
         source: translated
         for source, translated in translations.items()
@@ -448,53 +571,6 @@ def store_translation_values(
         for source in complete
     }
     _redis_store_many(memory_keys_by_source, complete)
-
-
-def _cleanup_stale_rows(
-    session: Session,
-    *,
-    tenant_id: UUID,
-    now: datetime,
-) -> None:
-    interval_seconds = _positive_int_environment(
-        "PUBLIC_TRANSLATION_CLEANUP_INTERVAL_SECONDS",
-        3_600,
-        maximum=86_400,
-    )
-    current_tick = monotonic()
-    with _CLEANUP_LOCK:
-        last_cleanup = _last_cleanup_by_tenant.get(tenant_id, 0.0)
-        if current_tick - last_cleanup < interval_seconds:
-            return
-        _last_cleanup_by_tenant[tenant_id] = current_tick
-
-    retention_days = _positive_int_environment(
-        "PUBLIC_TRANSLATION_RETENTION_DAYS",
-        60,
-        maximum=3_650,
-    )
-    batch_size = _positive_int_environment(
-        "PUBLIC_TRANSLATION_CLEANUP_BATCH_SIZE",
-        500,
-        maximum=5_000,
-    )
-    stale_ids = (
-        select(CatalogTextTranslationRow.id)
-        .where(
-            CatalogTextTranslationRow.tenant_id == tenant_id,
-            CatalogTextTranslationRow.last_accessed_at
-            < now - timedelta(days=retention_days),
-        )
-        .order_by(CatalogTextTranslationRow.last_accessed_at)
-        .limit(batch_size)
-    )
-    session.execute(
-        delete(CatalogTextTranslationRow).where(
-            CatalogTextTranslationRow.tenant_id == tenant_id,
-            CatalogTextTranslationRow.id.in_(stale_ids),
-        )
-    )
-    session.commit()
 
 
 def _translation_batches(
@@ -734,6 +810,21 @@ def translate_values_with_memory(
         translations.update(database_hits)
         _redis_store_many(memory_keys_by_source, database_hits)
 
+    template_sources = [
+        source
+        for source in unique_sources
+        if source not in translations and source not in forced_sources
+    ]
+    if template_sources:
+        numeric_hits = _reused_numeric_values(
+            tenant_id=tenant_id,
+            source_locale=source_locale,
+            target_locale=target_locale,
+            sources=template_sources,
+        )
+        translations.update(numeric_hits)
+        _redis_store_many(memory_keys_by_source, numeric_hits)
+
     missing_sources = [
         source for source in unique_sources if source not in translations
     ]
@@ -839,5 +930,3 @@ def _reset_translation_memory_for_tests() -> None:
         _redis_disabled_until = 0.0
     with _SINGLEFLIGHT_LOCK:
         _INFLIGHT_TRANSLATIONS.clear()
-    with _CLEANUP_LOCK:
-        _last_cleanup_by_tenant.clear()

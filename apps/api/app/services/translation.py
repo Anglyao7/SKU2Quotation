@@ -76,6 +76,15 @@ ALIYUN_LOCALE_CODES = {
 
 DEFAULT_ALIYUN_ALIMT_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com"
 DEFAULT_ALIYUN_ALIMT_REGION = "cn-hangzhou"
+DEFAULT_TENCENT_TOKENHUB_BASE_URL = "https://tokenhub.tencentmaas.com/v1"
+DEFAULT_TENCENT_TOKENHUB_MODEL = "hy-mt2-plus"
+TENCENT_TOKENHUB_MODELS = {"hy-mt2-lite", "hy-mt2-plus", "hy-mt2-pro"}
+TENCENT_TOKENHUB_HOSTS = {
+    "tokenhub.tencentmaas.com",
+    "tokenhub.tencentmaas.cn",
+    "tokenhub-intl.tencentcloudmaas.com",
+    "tokenhub-intl.tencentcloudmaas.cn",
+}
 
 LOCALE_NAMES = {
     "auto": "automatically detected source language",
@@ -305,6 +314,25 @@ def _openai_chat_completions_endpoint(
     return urlunsplit(
         (parsed.scheme, parsed.netloc, endpoint_path, "", "")
     )
+
+
+def _tencent_tokenhub_base_url(value: str) -> str:
+    """Keep the Tencent preset on an official regional TokenHub endpoint."""
+
+    parsed = urlsplit(value.strip().rstrip("/"))
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc.casefold() not in TENCENT_TOKENHUB_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/v1"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise TranslationProviderError(
+            "Tencent TokenHub endpoint must be an official HTTPS regional URL"
+        )
+    return f"https://{parsed.netloc.casefold()}/v1"
 
 
 def _strip_outer_markdown_fence(value: str) -> str:
@@ -1238,6 +1266,40 @@ class OpenAICompatibleTranslator:
         )
 
 
+class TencentTokenHubTranslator(OpenAICompatibleTranslator):
+    """Hy-MT2 adapter using Tencent's supported TokenHub chat API."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout_seconds: float = 20.0,
+        max_tokens: int = 4096,
+        client: httpx.Client | None = None,
+    ) -> None:
+        normalized_model = model.strip()
+        if normalized_model not in TENCENT_TOKENHUB_MODELS:
+            raise TranslationProviderError(
+                "Tencent TokenHub model must be hy-mt2-lite, hy-mt2-plus, or hy-mt2-pro"
+            )
+        super().__init__(
+            base_url=_tencent_tokenhub_base_url(base_url),
+            api_key=api_key,
+            model=normalized_model,
+            timeout_seconds=timeout_seconds,
+            max_tokens=min(max_tokens, 4096),
+            reasoning_effort="",
+            production=True,
+            client=client,
+        )
+        self.identity = TranslationIdentity(
+            provider="tencent-tokenhub",
+            version=self.identity.version,
+        )
+
+
 def catalog_translation_is_configured(
     values: Mapping[str, str] | None = None,
 ) -> bool:
@@ -1263,6 +1325,8 @@ def catalog_translation_is_configured(
                 "ALIYUN_TRANSLATION_ACCESS_KEY_SECRET",
             )
         )
+    if profile == "tencent_tokenhub":
+        return bool(values.get("TENCENT_TOKENHUB_API_KEY", "").strip())
     return False
 
 
@@ -1276,7 +1340,9 @@ def configured_catalog_translator(
         raise TranslationProviderError(
             "catalog translation provider is not configured"
         )
-    if profile not in {"deeplx", "openai_compatible", "aliyun_alimt"}:
+    if profile not in {
+        "deeplx", "openai_compatible", "aliyun_alimt", "tencent_tokenhub"
+    }:
         raise TranslationProviderError(
             f"unsupported CATALOG_TRANSLATION_PROFILE: {profile}"
         )
@@ -1341,6 +1407,26 @@ def configured_catalog_translator(
             timeout_seconds=timeout_seconds,
         )
 
+    if profile == "tencent_tokenhub":
+        try:
+            timeout_seconds = float(
+                values.get("TENCENT_TOKENHUB_TIMEOUT_SECONDS", "20").strip()
+            )
+        except ValueError as exc:
+            raise TranslationProviderError(
+                "TENCENT_TOKENHUB_TIMEOUT_SECONDS must be a number"
+            ) from exc
+        return tencent_tokenhub_translation_provider(
+            base_url=values.get(
+                "TENCENT_TOKENHUB_BASE_URL", DEFAULT_TENCENT_TOKENHUB_BASE_URL
+            ),
+            api_key=values.get("TENCENT_TOKENHUB_API_KEY", ""),
+            model=values.get(
+                "TENCENT_TOKENHUB_MODEL", DEFAULT_TENCENT_TOKENHUB_MODEL
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+
     base_url = values.get("OPENAI_TRANSLATION_BASE_URL", "").strip()
     api_key = values.get("OPENAI_TRANSLATION_API_KEY", "").strip()
     model = values.get("OPENAI_TRANSLATION_MODEL", "").strip()
@@ -1402,6 +1488,25 @@ def openai_compatible_translation_provider(
         max_tokens,
         reasoning_effort.strip().lower(),
         production,
+    )
+
+
+def tencent_tokenhub_translation_provider(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout_seconds: float = 20.0,
+    max_tokens: int = 4096,
+) -> TranslationProvider:
+    """Tencent's supported Hy-MT2 service, using its OpenAI-compatible API."""
+
+    return _cached_tencent_tokenhub_translator(
+        _tencent_tokenhub_base_url(base_url),
+        api_key.strip(),
+        model.strip(),
+        timeout_seconds,
+        min(max_tokens, 4096),
     )
 
 
@@ -1487,4 +1592,21 @@ def _cached_openai_compatible_translator(
         max_tokens=max_tokens,
         reasoning_effort=reasoning_effort,
         production=production,
+    )
+
+
+@lru_cache(maxsize=4)
+def _cached_tencent_tokenhub_translator(
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout_seconds: float,
+    max_tokens: int,
+) -> TencentTokenHubTranslator:
+    return TencentTokenHubTranslator(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        timeout_seconds=timeout_seconds,
+        max_tokens=max_tokens,
     )

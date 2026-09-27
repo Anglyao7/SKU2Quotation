@@ -16,6 +16,7 @@ TranslationProviderKind = Literal[
     "openai-compatible",
     "deeplx",
     "aliyun-alimt",
+    "tencent-tokenhub",
 ]
 CatalogTranslationExecutionMode = Literal["REALTIME", "QWEN_BATCH"]
 

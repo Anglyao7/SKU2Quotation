@@ -6,6 +6,7 @@ from app.product_center_models import AttributeDefinitionRow
 from app.product_supplier_models import ProductAttributeRow, ProductRow
 from app.services.product_description_attributes import (
     ProductDescriptionAttributeSynchronizer,
+    description_attribute_definition_key,
     extract_description_attributes,
 )
 
@@ -25,6 +26,39 @@ https://example.com/image.jpg
         ("单餐容量", "200ml"),
         ("适用对象", "2 月龄以上猫"),
         ("产品尺寸", "12.6×10.5×8.3in"),
+    )
+
+
+def test_extract_description_attributes_splits_inline_fields_without_line_breaks() -> None:
+    description = (
+        "材质:ABS 支持系统:适用于IOS 11.0版本和Android 14版本 "
+        "证书:符合CE&ROHS&FCC要求蓝牙版本:蓝牙4.0无线距离:10-15米"
+    )
+
+    assert extract_description_attributes(description) == (
+        ("材质", "ABS"),
+        ("支持系统", "适用于IOS 11.0版本和Android 14版本"),
+        ("证书", "符合CE&ROHS&FCC要求"),
+        ("蓝牙版本", "蓝牙4.0"),
+        ("无线距离", "10-15米"),
+    )
+
+
+def test_extract_description_attributes_keeps_urls_and_times_in_values() -> None:
+    description = "链接：https://example.com/a 颜色：白色 时间：12:30"
+
+    assert extract_description_attributes(description) == (
+        ("链接", "https://example.com/a"),
+        ("颜色", "白色"),
+        ("时间", "12:30"),
+    )
+
+
+def test_extract_description_attributes_keeps_full_inline_label_after_number() -> None:
+    assert extract_description_attributes("输入电压:12V输出功率:5W 13位编码:1234567890123") == (
+        ("输入电压", "12V"),
+        ("输出功率", "5W"),
+        ("13位编码", "1234567890123"),
     )
 
 
@@ -113,3 +147,41 @@ def test_sync_reuses_definitions_and_preserves_confirmed_values() -> None:
 
     assert synchronizer.sync(second, "")
     assert second_material in session.deleted
+
+
+def test_sync_repairs_previous_inline_value_without_creating_duplicate_material() -> None:
+    tenant_id = uuid4()
+    product = ProductRow(id=uuid4(), tenant_id=tenant_id, name="蓝牙商品", status="ACTIVE")
+    description = "材质:ABS 支持系统:IOS 11.0 证书:CE蓝牙版本:蓝牙4.0无线距离:10米"
+    material_definition = AttributeDefinitionRow(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        category_id=None,
+        attribute_key=description_attribute_definition_key("材质"),
+        display_name="材质",
+        data_type="TEXT",
+        status="ACTIVE",
+    )
+    material = ProductAttributeRow(
+        id=uuid4(),
+        tenant_id=tenant_id,
+        product_id=product.id,
+        attribute_definition_id=material_definition.id,
+        attribute_key=material_definition.attribute_key,
+        value_text=description.removeprefix("材质:"),
+        review_status="AI_SUGGESTED",
+    )
+    session = _AttributeSession([material_definition], [material])
+    synchronizer = ProductDescriptionAttributeSynchronizer(
+        session,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        product_ids={product.id},
+    )
+
+    assert synchronizer.sync(product, description)
+    assert material.value_text == "ABS"
+    attributes = [
+        row for row in session.added if isinstance(row, ProductAttributeRow)
+    ]
+    assert len(attributes) == 4
+    assert synchronizer.sync(product, description) is False

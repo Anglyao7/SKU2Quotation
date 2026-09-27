@@ -97,6 +97,7 @@ from ..services.public_catalog_privacy import (
     public_sku_option_values,
     public_specification,
 )
+from ..services.product_description_attributes import description_attribute_key
 from ..services.auth.tokens import hash_secret, new_secret
 from ..services.auth.service import AuthError, session_from_access_token
 from ..services.embedding import EmbeddingProviderError
@@ -3786,7 +3787,7 @@ def _populate_quote_custom_fields_from_product_attributes(
     )
     normalized_attributes = {
         product_id: {
-            str(key).strip().casefold(): value
+            description_attribute_key(key): value
             for key, value in attributes.items()
         }
         for product_id, attributes in attributes_by_product.items()
@@ -3809,7 +3810,7 @@ def _populate_quote_custom_fields_from_product_attributes(
             if item_key in values:
                 continue
             value = normalized_attributes.get(item.product_id_snapshot, {}).get(
-                label.casefold()
+                description_attribute_key(label)
             )
             values[item_key] = "" if value is None else str(value)
             changed = True
@@ -3894,6 +3895,13 @@ def _purchase_supplier_options(
         sku_ids=sku_ids,
         product_ids=product_ids,
     )
+    exact_by_sku: dict[UUID, list] = {}
+    inherited_by_product: dict[UUID, list] = {}
+    for source, supplier in source_rows:
+        if source.sku_id is not None:
+            exact_by_sku.setdefault(source.sku_id, []).append((source, supplier))
+        else:
+            inherited_by_product.setdefault(source.product_id, []).append((source, supplier))
     source_ids = {source.id for source, _supplier in source_rows}
     prices = list(
         session.scalars(
@@ -3919,12 +3927,10 @@ def _purchase_supplier_options(
     }
     for item in items:
         seen: set[str] = set()
-        exact = [row for row in source_rows if row[0].sku_id == item.sku_id]
-        inherited = [
-            row for row in source_rows
-            if row[0].sku_id is None and row[0].product_id == item.product_id_snapshot
-        ]
-        for source, supplier in [*exact, *inherited]:
+        for source, supplier in (
+            exact_by_sku.get(item.sku_id, [])
+            + inherited_by_product.get(item.product_id_snapshot, [])
+        ):
             if supplier.id in seen:
                 continue
             seen.add(supplier.id)
@@ -4081,6 +4087,10 @@ def _draft_purchase_order(
     return PurchaseOrderSettings(
         purchase_order_number=purchase_order_number,
         issue_date=issue_date,
+        locale=(
+            normalize_storefront_locale(str(raw.get("locale") or ""))
+            if isinstance(raw, dict) else None
+        ) or normalize_storefront_locale(draft.document_locale) or "zh-CN",
         items=result_items,
         custom_fields=custom_fields,
     )
@@ -5973,6 +5983,7 @@ def update_tenant_purchase_order(
     snapshot["purchase_order"] = {
         "purchase_order_number": request.purchase_order_number,
         "issue_date": request.issue_date.isoformat(),
+        "locale": request.locale,
         "items": [
             item.model_dump(
                 mode="json",

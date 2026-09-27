@@ -6,7 +6,7 @@
 .packing-title, .packing-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .packing-title > svg { color: var(--accent-11); }
 .packing-title h1 { margin: 0 0 3px; }
-.packing-studio { display: grid; grid-template-columns: minmax(340px, .88fr) minmax(0, 1.12fr); gap: 22px; align-items: start; }
+.packing-studio { display: grid; grid-template-columns: minmax(0, var(--document-editor-track, 44fr)) minmax(0, var(--document-preview-track, 56fr)); gap: var(--document-studio-gap, 20px); align-items: start; }
 .packing-editor { display: grid; gap: 14px; min-width: 0; max-height: calc(100dvh - 302px); min-height: 420px; overflow: auto; overscroll-behavior: contain; padding: 0 5px 18px 0; scrollbar-gutter: stable; }
 .packing-editor-section { min-width: 0; padding: 20px; border: 1px solid var(--gray-5); border-radius: 10px; background: var(--color-panel-solid); }
 .packing-editor-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 18px; font-size: 15px; font-weight: 600; }

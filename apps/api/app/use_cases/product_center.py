@@ -1256,16 +1256,39 @@ def export_sku_catalog(
         if child_scope
         else set()
     )
+    selected_products: list[ProductRow] = []
+    selected_product_ids = set(request.product_ids)
+    if selected_product_ids:
+        selected_products = list(
+            session.scalars(
+                select(ProductRow).where(
+                    ProductRow.tenant_id == tenant_id,
+                    ProductRow.id.in_(selected_product_ids),
+                    ProductRow.deleted_at.is_(None),
+                    ProductRow.status != "ARCHIVED",
+                )
+            ).all()
+        )
+        if (
+            len(selected_products) != len(selected_product_ids)
+            or selected_product_ids.intersection(hidden_product_ids)
+        ):
+            raise ApplicationError(
+                "PRODUCT_EXPORT_SELECTION_CHANGED",
+                "所选商品已删除或不可访问，请刷新商品列表后重新选择。",
+                kind="conflict",
+            )
     rows, total = repository.list_sku_page_rows(
         session,
         tenant_id=tenant_id,
-        query=request.q,
-        category_id=request.category_id,
-        statuses=list(request.statuses),
-        missing_images_only=request.missing_images_only,
+        query="" if selected_product_ids else request.q,
+        category_id=None if selected_product_ids else request.category_id,
+        statuses=[] if selected_product_ids else list(request.statuses),
+        missing_images_only=False if selected_product_ids else request.missing_images_only,
         page=1,
         page_size=MAX_SKU_EXPORT_ROWS + 1,
         sku_ids=set(request.sku_ids) if request.sku_ids else None,
+        product_ids=selected_product_ids or None,
         hidden_product_ids=hidden_product_ids,
         # The export query already fetches MAX_SKU_EXPORT_ROWS + 1 rows. A
         # second COUNT(*) over the same large join only delays the download;
@@ -1281,6 +1304,31 @@ def export_sku_catalog(
     rows_loaded_at = perf_counter()
 
     product_ids = {row.product.id for row in rows}
+    standalone_products: list[tuple[ProductRow, ProductCategoryRow | None]] = []
+    if selected_products:
+        standalone_product_rows = [
+            product for product in selected_products if product.id not in product_ids
+        ]
+        standalone_category_ids = {
+            product.category_id
+            for product in standalone_product_rows
+            if product.category_id is not None
+        }
+        standalone_categories = {
+            category.id: category
+            for category in session.scalars(
+                select(ProductCategoryRow).where(
+                    ProductCategoryRow.tenant_id == tenant_id,
+                    ProductCategoryRow.id.in_(standalone_category_ids),
+                    ProductCategoryRow.deleted_at.is_(None),
+                )
+            ).all()
+        } if standalone_category_ids else {}
+        standalone_products = [
+            (product, standalone_categories.get(product.category_id))
+            for product in standalone_product_rows
+        ]
+        product_ids.update(product.id for product in standalone_product_rows)
     pricing_context = _child_pricing_context(
         session,
         tenant_id=tenant_id,
@@ -1358,6 +1406,7 @@ def export_sku_catalog(
         images_by_product=images_by_product,
         image_urls=image_urls,
         supplier_names=supplier_names,
+        standalone_products=standalone_products,
         public_price_overrides=public_price_overrides if child_scope else None,
         include_source_sku_codes=not child_scope,
         include_notes=not child_scope,
@@ -1452,6 +1501,15 @@ def get_product(
                 review_status=row.review_status,
             )
             for row in attributes
+            if can_read_owner_data or (
+                row.review_status != "REJECTED"
+                and not is_private_sku_option_key(row.attribute_key)
+                and not is_private_sku_option_key(
+                    definitions_by_id[row.attribute_definition_id].display_name
+                    if row.attribute_definition_id in definitions_by_id
+                    else row.attribute_key
+                )
+            )
         ],
         images=[
             _image_response(row, storefront_slug=storefront_slug)

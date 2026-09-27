@@ -574,6 +574,7 @@ def list_sku_page_rows(
     page: int,
     page_size: int,
     sku_ids: set[UUID] | None = None,
+    product_ids: set[UUID] | None = None,
     known_total: int | None = None,
     count_total: bool = True,
     hidden_product_ids: set[UUID] | None = None,
@@ -593,6 +594,10 @@ def list_sku_page_rows(
         if not sku_ids:
             return [], 0
         conditions.append(SkuRow.id.in_(sku_ids))
+    if product_ids is not None:
+        if not product_ids:
+            return [], 0
+        conditions.append(ProductRow.id.in_(product_ids))
     if hidden_product_ids:
         conditions.append(~ProductRow.id.in_(hidden_product_ids))
     if category_id is not None:

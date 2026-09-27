@@ -40,6 +40,8 @@ def test_public_catalog_removes_supplier_and_cost_option_fields() -> None:
         "supplier_sku": "PRIVATE-001",
         "采购价": "12.00",
         "内部价格": "18.00",
+        "内部备注": "仅商家可见",
+        "internal_ai_note": "private",
     }
 
     assert public_sku_option_values(values) == {"颜色": "蓝"}

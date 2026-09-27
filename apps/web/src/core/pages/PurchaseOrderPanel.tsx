@@ -3,8 +3,29 @@ import { DownloadSimple, Eye, FileXls, FloppyDisk, Plus, Storefront, Trash } fro
 import { useMemo, useState } from "react";
 
 import { useLocale } from "../LocaleContext";
+import { quoteText } from "../quoteLocalization";
+import { STOREFRONT_LANGUAGE_OPTIONS } from "../../lib/storefrontLocale";
 import type { QuotePurchaseOrderItem, QuotePurchaseOrderSettings } from "../types";
+import type { StorefrontLocale } from "../../types";
 import "./PurchaseOrderPanel.css";
+
+const purchaseLabels: Record<StorefrontLocale, [string, string, string, string, string]> = {
+  "zh-CN": ["采购单", "采购单号", "供应商", "供应商货号", "地址"],
+  "en-US": ["PURCHASE ORDER", "Purchase order No.", "Supplier", "Supplier item No.", "Address"],
+  es: ["ORDEN DE COMPRA", "N.º de pedido", "Proveedor", "Ref. proveedor", "Dirección"],
+  tr: ["SATIN ALMA SİPARİŞİ", "Sipariş No.", "Tedarikçi", "Tedarikçi ürün kodu", "Adres"],
+  ar: ["أمر شراء", "رقم أمر الشراء", "المورّد", "رقم صنف المورّد", "العنوان"],
+  ja: ["発注書", "発注番号", "仕入先", "仕入先品番", "住所"],
+  ko: ["구매 주문서", "주문 번호", "공급업체", "공급업체 품번", "주소"],
+  pt: ["PEDIDO DE COMPRA", "N.º do pedido", "Fornecedor", "Ref. do fornecedor", "Endereço"],
+  fr: ["BON DE COMMANDE", "N° de commande", "Fournisseur", "Réf. fournisseur", "Adresse"],
+  fa: ["سفارش خرید", "شماره سفارش", "تأمین‌کننده", "کد کالای تأمین‌کننده", "نشانی"],
+  ru: ["ЗАКАЗ НА ЗАКУПКУ", "Номер заказа", "Поставщик", "Артикул поставщика", "Адрес"],
+};
+
+function purchaseText(locale: StorefrontLocale, key: "title" | "number" | "supplier" | "supplierSku" | "address") {
+  return purchaseLabels[locale][{ title: 0, number: 1, supplier: 2, supplierSku: 3, address: 4 }[key]];
+}
 
 type PurchaseOrderPanelProps = {
   value: QuotePurchaseOrderSettings;
@@ -12,6 +33,7 @@ type PurchaseOrderPanelProps = {
   readOnly: boolean;
   saving: boolean;
   exporting: boolean;
+  exportProgress?: { phase: "saving" | "generating" | "receiving"; receivedBytes?: number; totalBytes?: number };
   dirty: boolean;
   onSave: () => void;
   onExport: () => void;
@@ -33,6 +55,7 @@ export function PurchaseOrderPanel({
   readOnly,
   saving,
   exporting,
+  exportProgress,
   dirty,
   onSave,
   onExport,
@@ -54,8 +77,8 @@ export function PurchaseOrderPanel({
   const selectedSheetIndex = Math.min(activeSheet, Math.max(groups.length - 1, 0));
   const selectedGroup = groups[selectedSheetIndex];
   const visibleCustomFields = value.customFields.filter((field) => field.label.trim());
-  const previewGrid = `34px 84px minmax(120px, 1fr) 80px 100px 100px${visibleCustomFields.map(() => " minmax(90px, .7fr)").join("")}`;
-  const previewMinWidth = 498 + visibleCustomFields.length * 100;
+  const previewGrid = `40px 78px 118px 120px 220px 180px 85px 75px 100px 65px 110px 180px${visibleCustomFields.map(() => " 160px").join("")}`;
+  const previewMinWidth = 1371 + visibleCustomFields.length * 160;
   const hasInvalidCustomFields = value.customFields.some((field) => !field.label.trim())
     || new Set(value.customFields.map((field) => field.label.trim().toLocaleLowerCase()).filter(Boolean)).size
       !== value.customFields.filter((field) => field.label.trim()).length;
@@ -113,7 +136,7 @@ export function PurchaseOrderPanel({
         <div>
           <Text size="1" color="gray">{t("采购单")}</Text>
           <Heading size="5">{t("按供应商制作采购单")}</Heading>
-          <Text size="2" color="gray">{t("每个供应商会导出为一个独立的 Excel 工作表，商品与采购数据均可继续编辑。")}</Text>
+          <Text size="2" color="gray">{t("多供应商将打包为 ZIP")}</Text>
         </div>
         <div className="purchase-order-actions">
           <Button variant="soft" disabled={readOnly || saving || !dirty || hasInvalidCustomFields} loading={saving} onClick={onSave}><FloppyDisk />{t("保存")}</Button>
@@ -121,10 +144,17 @@ export function PurchaseOrderPanel({
         </div>
       </div>
 
+      {exporting && exportProgress ? <div className="purchase-order-export-progress" role="status" aria-live="polite">
+        <span>{exportProgress.phase === "saving" ? t("正在保存…") : exportProgress.phase === "generating" ? t("正在生成 Excel…") : t("导出 Excel")}</span>
+        <progress max={exportProgress.totalBytes || 1} value={exportProgress.totalBytes ? exportProgress.receivedBytes || 0 : undefined} />
+        {exportProgress.totalBytes ? <small>{Math.round(100 * (exportProgress.receivedBytes || 0) / exportProgress.totalBytes)}%</small> : null}
+      </div> : null}
+
       <Card className="purchase-order-meta">
         <label><Text size="1" color="gray">{t("采购单号")}</Text><TextField.Root value={value.purchaseOrderNumber} disabled={readOnly} onChange={(event) => onChange({ ...value, purchaseOrderNumber: event.target.value })} /></label>
         <label><Text size="1" color="gray">{t("日期")}</Text><TextField.Root type="date" value={value.issueDate} disabled={readOnly} onChange={(event) => onChange({ ...value, issueDate: event.target.value })} /></label>
-        <div className="purchase-order-sheet-summary"><Storefront /><div><strong>{groups.length}</strong><span>{t("供应商 / Excel 工作表")}</span></div></div>
+        <label><Text size="1" color="gray">{t("语言")}</Text><Select.Root value={value.locale} disabled={readOnly} onValueChange={(locale) => onChange({ ...value, locale: locale as StorefrontLocale })}><Select.Trigger aria-label={t("语言")} /><Select.Content position="popper">{STOREFRONT_LANGUAGE_OPTIONS.map((language) => <Select.Item value={language.code} key={language.code}>{language.flag} {language.label}</Select.Item>)}</Select.Content></Select.Root></label>
+        <div className="purchase-order-sheet-summary"><Storefront /><div><strong>{groups.length}</strong><span>{t("供应商")}</span></div></div>
       </Card>
 
       <Card className="purchase-order-custom-fields">
@@ -134,7 +164,7 @@ export function PurchaseOrderPanel({
 
       <div className="purchase-order-groups">
         {groups.map((group, groupIndex) => <Card className="purchase-order-group" key={`${group.name}-${groupIndex}`}>
-          <div className="purchase-order-group-heading"><div><Text size="1" color="gray">Sheet {groupIndex + 1}</Text><Heading size="3">{group.name}</Heading></div><Text size="2" color="gray">{t("{count} 个商品", { count: group.items.length })}</Text></div>
+          <div className="purchase-order-group-heading"><div><Text size="1" color="gray">Excel {groupIndex + 1}</Text><Heading size="3">{group.name}</Heading></div><Text size="2" color="gray">{t("{count} 个商品", { count: group.items.length })}</Text></div>
           <div className="purchase-order-lines">
             {group.items.map((item) => {
               const option = item.supplierOptions.find((candidate) => candidate.supplierId === item.supplierId);
@@ -172,12 +202,13 @@ export function PurchaseOrderPanel({
     <aside className="purchase-order-preview">
       <div className="purchase-order-preview-heading"><div><Text size="1" color="gray">{t("Excel 预览")}</Text><Heading size="3">{selectedGroup?.name || t("未指定供应商")}</Heading></div><DownloadSimple /></div>
       <div className="purchase-order-sheet">
-        <div className="purchase-order-sheet-title">{t("采购单")} / PURCHASE ORDER</div>
-        <div className="purchase-order-sheet-meta"><span>{value.purchaseOrderNumber}</span><span>{value.issueDate}</span></div>
-        <div className="purchase-order-sheet-supplier">{t("供应商")}: <strong>{selectedGroup?.name || t("未指定供应商")}</strong></div>
+        <div className="purchase-order-sheet-title">{purchaseText(value.locale, "title")}</div>
+        <div className="purchase-order-sheet-meta"><span>{purchaseText(value.locale, "number")}: {value.purchaseOrderNumber}</span><span>{quoteText(value.locale, "date")}: {value.issueDate}</span></div>
+        <div className="purchase-order-sheet-supplier">{purchaseText(value.locale, "supplier")}: <strong>{selectedGroup?.name || t("未指定供应商")}</strong></div>
+        <Text size="1" color="gray" className="purchase-order-scroll-hint">{t("左右滚动查看全部列")}</Text>
         <div className="purchase-order-preview-table">
-          <div className="purchase-order-preview-row is-head" style={{ gridTemplateColumns: previewGrid, minWidth: previewMinWidth }}><span>#</span><span>SKU</span><span>{t("商品")}</span><span>{t("数量")}</span><span>{t("采购单价")}</span><span>{t("金额")}</span>{visibleCustomFields.map((field) => <span key={field.id}>{field.label}</span>)}</div>
-          {(selectedGroup?.items ?? []).map((item, index) => <div className="purchase-order-preview-row" style={{ gridTemplateColumns: previewGrid, minWidth: previewMinWidth }} key={item.itemId}><span>{index + 1}</span><span>{item.skuCode}</span><span>{item.name}</span><span>{item.quantity} {item.unitCode}</span><span>{money(item.unitPrice, item.currency)}</span><span>{money(amount(item), item.currency)}</span>{visibleCustomFields.map((field) => <span key={field.id}>{field.values[item.itemId] || "—"}</span>)}</div>)}
+          <div className="purchase-order-preview-row is-head" style={{ gridTemplateColumns: previewGrid, minWidth: previewMinWidth }}><span>{quoteText(value.locale, "serial_number")}</span><span>{quoteText(value.locale, "image")}</span><span>SKU</span><span>{purchaseText(value.locale, "supplierSku")}</span><span>{quoteText(value.locale, "product_name")}</span><span>{quoteText(value.locale, "specification")}</span><span>{quoteText(value.locale, "quantity")}</span><span>{quoteText(value.locale, "unit")}</span><span>{quoteText(value.locale, "unit_price")}</span><span>{quoteText(value.locale, "currency")}</span><span>{quoteText(value.locale, "line_total")}</span><span>{quoteText(value.locale, "notes")}</span>{visibleCustomFields.map((field) => <span key={field.id}>{field.label}</span>)}</div>
+          {(selectedGroup?.items ?? []).map((item, index) => <div className="purchase-order-preview-row" style={{ gridTemplateColumns: previewGrid, minWidth: previewMinWidth }} key={item.itemId}><span>{index + 1}</span><span>{item.imageUrl ? <img src={item.imageUrl} alt="" /> : "—"}</span><span>{item.skuCode}</span><span>{item.supplierSku || "—"}</span><span>{item.name}</span><span>{item.specification || "—"}</span><span>{item.quantity}</span><span>{item.unitCode}</span><span>{money(item.unitPrice, item.currency)}</span><span>{item.currency}</span><span>{money(amount(item), item.currency)}</span><span>{item.notes || "—"}</span>{visibleCustomFields.map((field) => <span key={field.id}>{field.values[item.itemId] || "—"}</span>)}</div>)}
         </div>
       </div>
       <div className="purchase-order-sheet-tabs">{groups.map((group, index) => <button type="button" className={index === selectedSheetIndex ? "is-active" : ""} key={`${group.name}-${index}`} onClick={() => setActiveSheet(index)}>{group.name}</button>)}</div>

@@ -153,11 +153,16 @@ class SkuCatalogExportRequest(BaseModel):
     )
     missing_images_only: bool = False
     sku_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    product_ids: list[UUID] = Field(default_factory=list, max_length=500)
 
     @model_validator(mode="after")
-    def unique_sku_ids(self) -> "SkuCatalogExportRequest":
+    def unique_export_ids(self) -> "SkuCatalogExportRequest":
         if len(self.sku_ids) != len(set(self.sku_ids)):
             raise ValueError("sku ids must be unique")
+        if len(self.product_ids) != len(set(self.product_ids)):
+            raise ValueError("product ids must be unique")
+        if self.sku_ids and self.product_ids:
+            raise ValueError("sku ids and product ids cannot be combined")
         return self
 
 

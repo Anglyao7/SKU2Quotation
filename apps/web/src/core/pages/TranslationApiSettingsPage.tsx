@@ -5,6 +5,7 @@ import {
   Heading,
   Select,
   Switch,
+  Tabs,
   Text,
   TextField,
 } from "@radix-ui/themes";
@@ -17,6 +18,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -27,6 +29,18 @@ import {
 } from "../api";
 import { CoreError, CoreLoading, CorePageHeading } from "../CoreUi";
 import { useLocale } from "../LocaleContext";
+import {
+  ALIYUN_ENDPOINT,
+  ALIYUN_REGION,
+  DEEPLX_MODEL,
+  TENCENT_TOKENHUB_BASE_URL,
+  TENCENT_TOKENHUB_MODEL,
+  defaultProviderDraft,
+  isProviderTab,
+  translationSettingsSaveInput,
+  type ProviderDraft,
+  type TranslationSettingsTab,
+} from "../translationSettingsTabs";
 import type {
   CatalogTranslationExecutionMode,
   TranslationApiSettings,
@@ -43,16 +57,11 @@ const reasoningOptions: TranslationReasoningEffort[] = [
   "high",
 ];
 
-const ALIYUN_ENDPOINT = "mt.cn-hangzhou.aliyuncs.com";
-const ALIYUN_REGION = "cn-hangzhou";
-const ALIYUN_EDITION = "translate_standard";
-const DEEPLX_MODEL = "DeepLX";
 const QWEN_BATCH_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 const QWEN_BATCH_MODEL = "qwen3.7-flash-2026-07-15";
 const BAIDU_SEARCH_TRANSLATION_ENDPOINT =
   "https://fanyi-api.baidu.com/ait/api/aiTextTranslate";
 const MAX_TRANSLATION_TIMEOUT_SECONDS = 600;
-
 
 export function TranslationApiSettingsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { t } = useLocale();
@@ -63,6 +72,8 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   const [message, setMessage] = useState("");
   const [provider, setProvider] =
     useState<TranslationProviderKind>("openai-compatible");
+  const [activeTab, setActiveTab] = useState<TranslationSettingsTab>("runtime");
+  const providerDrafts = useRef<Partial<Record<TranslationProviderKind, ProviderDraft>>>({});
   const [catalogExecutionMode, setCatalogExecutionMode] =
     useState<CatalogTranslationExecutionMode>("REALTIME");
   const [enabled, setEnabled] = useState(true);
@@ -96,6 +107,14 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     useState("86400");
 
   const applySettings = useCallback((next: TranslationApiSettings) => {
+    providerDrafts.current[next.provider] = {
+      ...defaultProviderDraft(next.provider),
+      baseUrl: next.baseUrl ?? "",
+      modelName: next.modelName ?? "",
+      regionId: next.regionId ?? ALIYUN_REGION,
+      maxTokens: String(next.maxTokens),
+      reasoningEffort: next.reasoningEffort,
+    };
     setSettings(next);
     setProvider(next.provider);
     setCatalogExecutionMode(next.catalogExecutionMode);
@@ -207,81 +226,102 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     timeoutSeconds,
   ]);
 
+  const saveInput = useMemo(
+    () => settings ? translationSettingsSaveInput(activeTab, input, settings) : input,
+    [activeTab, input, settings],
+  );
+  const saveEnabled = activeTab === "runtime" ? enabled : settings?.enabled ?? enabled;
+
   const isAliyun = provider === "aliyun-alimt";
   const isDeepLX = provider === "deeplx";
+  const isTencent = provider === "tencent-tokenhub";
   const isOpenAICompatible = provider === "openai-compatible";
   const storedCredentialsMatch = settings?.provider === provider;
+  const saveIsAliyun = saveInput.provider === "aliyun-alimt";
+  const saveIsDeepLX = saveInput.provider === "deeplx";
+  const saveIsTencent = saveInput.provider === "tencent-tokenhub";
+  const saveIsOpenAICompatible = saveInput.provider === "openai-compatible";
+  const savedCredentialsMatch = settings?.provider === saveInput.provider;
   const hasApiSecret = Boolean(
-    input.apiKey
-      || (storedCredentialsMatch && settings?.apiKeyConfigured)
-      || !enabled,
+    saveInput.apiKey
+      || (savedCredentialsMatch && settings?.apiKeyConfigured)
+      || !saveEnabled,
   );
   const hasDeepLXEndpoint = Boolean(
-    input.baseUrl
-      || (storedCredentialsMatch && settings?.apiKeyConfigured),
+    saveInput.baseUrl
+      || (savedCredentialsMatch && settings?.apiKeyConfigured),
   );
   const hasAccessKeyId = Boolean(
-    input.accessKeyId
-      || (storedCredentialsMatch && settings?.accessKeyIdConfigured)
-      || !enabled,
+    saveInput.accessKeyId
+      || (savedCredentialsMatch && settings?.accessKeyIdConfigured)
+      || !saveEnabled,
   );
   const hasBatchApiSecret = Boolean(
-    input.batchApiKey
+    saveInput.batchApiKey
       || settings?.batchApiKeyConfigured,
   );
   const hasSearchApiSecret = Boolean(
-    input.searchTranslationApiKey || settings?.searchTranslationApiKeyConfigured,
+    saveInput.searchTranslationApiKey || settings?.searchTranslationApiKeyConfigured,
   );
   const hasSearchAppId = Boolean(
-    input.searchTranslationAppId || settings?.searchTranslationAppIdConfigured,
+    saveInput.searchTranslationAppId || settings?.searchTranslationAppIdConfigured,
   );
-  const validRpm = Number.isInteger(input.requestsPerMinute)
-    && input.requestsPerMinute >= 1
-    && input.requestsPerMinute <= 10_000;
-  const validRetryCount = Number.isInteger(input.maxRetryCount)
-    && input.maxRetryCount >= 0
-    && input.maxRetryCount <= 10;
-  const validBatchSize = Number.isInteger(input.catalogBatchSize)
-    && input.catalogBatchSize >= 1
-    && input.catalogBatchSize <= 200;
-  const validBatchCharacters = Number.isInteger(input.catalogBatchCharacters)
-    && input.catalogBatchCharacters >= 1_000
-    && input.catalogBatchCharacters <= 100_000;
-  const validConcurrency = Number.isInteger(input.catalogConcurrency)
-    && input.catalogConcurrency >= 1
-    && input.catalogConcurrency <= 10;
-  const validSearchTimeout = Number.isInteger(input.searchTranslationTimeoutSeconds)
-    && input.searchTranslationTimeoutSeconds >= 1
-    && input.searchTranslationTimeoutSeconds <= 120;
-  const validSearchCacheTtl = Number.isInteger(input.searchTranslationCacheTtlSeconds)
-    && input.searchTranslationCacheTtlSeconds >= 60
-    && input.searchTranslationCacheTtlSeconds <= 2_592_000;
+  const validRpm = Number.isInteger(saveInput.requestsPerMinute)
+    && saveInput.requestsPerMinute >= 1
+    && saveInput.requestsPerMinute <= 10_000;
+  const validRetryCount = Number.isInteger(saveInput.maxRetryCount)
+    && saveInput.maxRetryCount >= 0
+    && saveInput.maxRetryCount <= 10;
+  const validBatchSize = Number.isInteger(saveInput.catalogBatchSize)
+    && saveInput.catalogBatchSize >= 1
+    && saveInput.catalogBatchSize <= 200;
+  const validBatchCharacters = Number.isInteger(saveInput.catalogBatchCharacters)
+    && saveInput.catalogBatchCharacters >= 1_000
+    && saveInput.catalogBatchCharacters <= 100_000;
+  const validConcurrency = Number.isInteger(saveInput.catalogConcurrency)
+    && saveInput.catalogConcurrency >= 1
+    && saveInput.catalogConcurrency <= 10;
+  const validSearchTimeout = Number.isInteger(saveInput.searchTranslationTimeoutSeconds)
+    && saveInput.searchTranslationTimeoutSeconds >= 1
+    && saveInput.searchTranslationTimeoutSeconds <= 120;
+  const validSearchCacheTtl = Number.isInteger(saveInput.searchTranslationCacheTtlSeconds)
+    && saveInput.searchTranslationCacheTtlSeconds >= 60
+    && saveInput.searchTranslationCacheTtlSeconds <= 2_592_000;
 
   const formValid = Boolean(
-    (isDeepLX ? hasDeepLXEndpoint : input.baseUrl)
-      && (isAliyun ? input.regionId : (isDeepLX || input.modelName))
-      && Number.isInteger(input.timeoutSeconds)
-      && input.timeoutSeconds >= 1
-      && input.timeoutSeconds <= MAX_TRANSLATION_TIMEOUT_SECONDS
+    (saveIsDeepLX ? hasDeepLXEndpoint : saveInput.baseUrl)
+      && (saveIsAliyun ? saveInput.regionId : (saveIsDeepLX || saveInput.modelName))
+      && Number.isInteger(saveInput.timeoutSeconds)
+      && saveInput.timeoutSeconds >= 1
+      && saveInput.timeoutSeconds <= MAX_TRANSLATION_TIMEOUT_SECONDS
       && validRpm
       && validRetryCount
       && validBatchSize
       && validBatchCharacters
       && validConcurrency
-      && (!isOpenAICompatible || (
-        Number.isInteger(input.maxTokens)
-        && input.maxTokens >= 512
-        && input.maxTokens <= 32768
+      && (!saveIsOpenAICompatible || (
+        Number.isInteger(saveInput.maxTokens)
+        && saveInput.maxTokens >= 512
+        && saveInput.maxTokens <= 32768
       ))
-      && (isDeepLX ? hasDeepLXEndpoint : hasApiSecret)
-      && (!isAliyun || hasAccessKeyId)
-      && (input.catalogExecutionMode !== "QWEN_BATCH" || (
-        input.batchBaseUrl
-        && input.batchModelName
+      && (saveIsDeepLX ? hasDeepLXEndpoint : hasApiSecret)
+      && (!saveIsAliyun || hasAccessKeyId)
+      && (!saveIsTencent || (
+        ["hy-mt2-lite", "hy-mt2-plus", "hy-mt2-pro"].includes(saveInput.modelName)
+        && [
+          "https://tokenhub.tencentmaas.com/v1",
+          "https://tokenhub.tencentmaas.cn/v1",
+          "https://tokenhub-intl.tencentcloudmaas.com/v1",
+          "https://tokenhub-intl.tencentcloudmaas.cn/v1",
+        ].includes(saveInput.baseUrl)
+      ))
+      && (saveInput.catalogExecutionMode !== "QWEN_BATCH" || (
+        saveInput.batchBaseUrl
+        && saveInput.batchModelName
         && hasBatchApiSecret
       ))
-    && (!searchTranslationEnabled || (
-      input.searchTranslationEndpoint.startsWith("https://")
+    && (!saveInput.searchTranslationEnabled || (
+      saveInput.searchTranslationEndpoint.startsWith("https://")
       && validSearchTimeout
       && validSearchCacheTtl
       && hasSearchApiSecret
@@ -295,7 +335,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
     setError("");
     setMessage("");
     try {
-      const next = await updateTranslationSettings({ ...input, enabled });
+      const next = await updateTranslationSettings({ ...saveInput, enabled: saveEnabled });
       applySettings(next);
       setMessage(t("翻译 API 配置已保存并立即生效。"));
     } catch (reason) {
@@ -310,32 +350,44 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
   };
 
   const changeProvider = (next: TranslationProviderKind) => {
+    if (next === provider) return;
     clearResult();
+    providerDrafts.current[provider] = {
+      baseUrl,
+      modelName,
+      regionId,
+      apiKey,
+      accessKeyId,
+      maxTokens,
+      reasoningEffort,
+    };
+    const draft = providerDrafts.current[next] ?? defaultProviderDraft(next);
     setProvider(next);
-    setApiKey("");
-    setAccessKeyId("");
-    if (next === "aliyun-alimt") {
-      setBaseUrl(ALIYUN_ENDPOINT);
-      setModelName(ALIYUN_EDITION);
-      setRegionId(ALIYUN_REGION);
-      setReasoningEffort("none");
-      setMaxTokens("16384");
-      return;
+    setBaseUrl(draft.baseUrl);
+    setModelName(draft.modelName);
+    setRegionId(draft.regionId);
+    setApiKey(draft.apiKey);
+    setAccessKeyId(draft.accessKeyId);
+    setMaxTokens(draft.maxTokens);
+    setReasoningEffort(draft.reasoningEffort);
+  };
+
+  const changeTab = (value: string) => {
+    const next = value as TranslationSettingsTab;
+    clearResult();
+    if (isProviderTab(activeTab) && !isProviderTab(next)) {
+      providerDrafts.current[provider] = {
+        baseUrl,
+        modelName,
+        regionId,
+        apiKey,
+        accessKeyId,
+        maxTokens,
+        reasoningEffort,
+      };
     }
-    if (next === "deeplx") {
-      setBaseUrl("");
-      setModelName(DEEPLX_MODEL);
-      setRegionId(ALIYUN_REGION);
-      setReasoningEffort("none");
-      setMaxTokens("16384");
-      return;
-    }
-    if (provider !== "openai-compatible") {
-      setBaseUrl("");
-      setModelName("");
-      setRegionId(ALIYUN_REGION);
-      setReasoningEffort("low");
-    }
+    if (isProviderTab(next)) changeProvider(next);
+    setActiveTab(next);
   };
 
   return (
@@ -375,11 +427,13 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
               </span>
               <div>
                 <Text size="1" color="gray" as="div">
-                  {t(catalogExecutionMode === "QWEN_BATCH"
+                  {t(settings.catalogExecutionMode === "QWEN_BATCH"
                     ? "Qwen Batch 文件翻译"
-                    : isAliyun
+                    : settings.provider === "aliyun-alimt"
                     ? "阿里云机器翻译"
-                    : (isDeepLX ? "DeepLX 翻译" : "OpenAI 兼容接口"))}
+                    : settings.provider === "tencent-tokenhub"
+                    ? "腾讯云 TokenHub 翻译"
+                    : (settings.provider === "deeplx" ? "DeepLX 翻译" : "OpenAI 兼容接口"))}
                 </Text>
                 <Heading size="5">{t("全局翻译服务")}</Heading>
                 <Text size="2" color="gray">
@@ -393,34 +447,59 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
               </div>
             </div>
 
-            <form className="core-translation-api-form" onSubmit={(event) => void saveSettings(event)}>
-              <label className="core-translation-api-wide">
-                <Text size="1" color="gray">{t("商品翻译执行方式")}</Text>
-                <Select.Root
-                  value={catalogExecutionMode}
-                  onValueChange={(value) => {
+            <Tabs.Root value={activeTab} onValueChange={changeTab}>
+              <Tabs.List className="core-translation-provider-tabs" aria-label={t("翻译 API")}>
+                <Tabs.Trigger value="runtime">{t("商品翻译执行方式")}</Tabs.Trigger>
+                <Tabs.Trigger value="openai-compatible">{t("大模型兼容接口")}{settings.provider === "openai-compatible" && settings.enabled ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+                <Tabs.Trigger value="deeplx">{t("DeepLX 翻译")}{settings.provider === "deeplx" && settings.enabled ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+                <Tabs.Trigger value="aliyun-alimt">{t("阿里云机器翻译")}{settings.provider === "aliyun-alimt" && settings.enabled ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+                <Tabs.Trigger value="tencent-tokenhub">{t("腾讯云 TokenHub 翻译")}{settings.provider === "tencent-tokenhub" && settings.enabled ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+                <Tabs.Trigger value="qwen-batch">{t("Qwen Batch 配置")}{settings.catalogExecutionMode === "QWEN_BATCH" ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+                <Tabs.Trigger value="baidu-search">Baidu · {t("前台搜索设置")}{settings.searchTranslationEnabled ? <span className="core-translation-tab-active" aria-hidden="true" /> : null}</Tabs.Trigger>
+              </Tabs.List>
+              <Tabs.Content value={activeTab} className="core-translation-provider-panel">
+              <form className="core-translation-api-form" onSubmit={(event) => void saveSettings(event)}>
+              {activeTab === "runtime" ? <div className="core-translation-api-wide core-translation-methods">
+                <Text size="2" weight="bold">{t("商品翻译执行方式")}</Text>
+                <button
+                  type="button"
+                  className="core-translation-method"
+                  data-selected={catalogExecutionMode === "QWEN_BATCH"}
+                  onClick={() => {
                     clearResult();
-                    setCatalogExecutionMode(value as CatalogTranslationExecutionMode);
+                    setCatalogExecutionMode("QWEN_BATCH");
                   }}
                 >
-                  <Select.Trigger />
-                  <Select.Content>
-                    <Select.Item value="QWEN_BATCH">
-                      {t("Qwen Batch 文件翻译")}
-                    </Select.Item>
-                    <Select.Item value="REALTIME">
-                      {t("实时大模型 / 机器翻译")}
-                    </Select.Item>
-                  </Select.Content>
-                </Select.Root>
-                <Text size="1" color="gray">
-                  {t(catalogExecutionMode === "QWEN_BATCH"
-                    ? "全量目录异步提交到百炼 Batch，按文本去重并复用历史译文；新增少量商品时可切回实时翻译。"
-                    : "商品任务按当前实时服务商执行；客服与前台即时翻译也继续使用此配置。")}
-                </Text>
-              </label>
+                  <span><strong>{t("Qwen Batch 文件翻译")}</strong><small>{t("全量目录异步提交到百炼 Batch，按文本去重并复用历史译文；新增少量商品时可切回实时翻译。")}</small></span>
+                  <Badge color={catalogExecutionMode === "QWEN_BATCH" ? "jade" : "gray"} variant="soft">{t(catalogExecutionMode === "QWEN_BATCH" ? "已选择" : "选择")}</Badge>
+                </button>
+                <Text size="2" weight="bold">{t("实时大模型 / 机器翻译")}</Text>
+                <Text size="1" color="gray">{t("选择服务商后配置密钥并保存，即启用该实时翻译方式。")}</Text>
+                <div className="core-translation-method-grid">
+                  {([
+                    ["openai-compatible", "大模型兼容接口"],
+                    ["deeplx", "DeepLX 翻译"],
+                    ["aliyun-alimt", "阿里云机器翻译"],
+                    ["tencent-tokenhub", "腾讯云 TokenHub 翻译"],
+                  ] as const).map(([kind, label]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      className="core-translation-method"
+                      data-selected={catalogExecutionMode === "REALTIME" && settings.provider === kind}
+                      onClick={() => {
+                        changeProvider(kind);
+                        setCatalogExecutionMode("REALTIME");
+                        setActiveTab(kind);
+                      }}
+                    >
+                      <span><strong>{t(label)}</strong><small>{t(catalogExecutionMode === "REALTIME" && settings.provider === kind ? "当前实时翻译服务" : "配置并启用")}</small></span>
+                    </button>
+                  ))}
+                </div>
+              </div> : null}
 
-              {catalogExecutionMode === "QWEN_BATCH" ? (
+              {activeTab === "qwen-batch" ? (
                 <div className="core-translation-batch-settings core-translation-api-wide">
                   <div className="core-translation-batch-heading">
                     <div>
@@ -472,48 +551,18 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                           setBatchApiKey(event.target.value);
                         }}
                         placeholder={hasBatchApiSecret
-                          ? t("已从 Qwen 配置复制 {hint}，留空则保持不变", {
-                              hint: settings.batchApiKeyHint ?? settings.apiKeyHint ?? "",
+                          ? t("已配置 {hint}，留空则保持不变", {
+                              hint: settings.batchApiKeyHint ?? "",
                             })
                           : t("请输入百炼 API Key")}
-                        required={!hasBatchApiSecret}
+                        required={catalogExecutionMode === "QWEN_BATCH" && !hasBatchApiSecret}
                       />
                     </label>
                   </div>
                 </div>
               ) : null}
 
-              <label className="core-translation-api-wide">
-                <Text size="1" color="gray">{t("实时翻译服务商")}</Text>
-                <Select.Root
-                  value={provider}
-                  onValueChange={(value) => {
-                    changeProvider(value as TranslationProviderKind);
-                  }}
-                >
-                  <Select.Trigger />
-                  <Select.Content>
-                    <Select.Item value="deeplx">
-                      {t("DeepLX 翻译")}
-                    </Select.Item>
-                    <Select.Item value="aliyun-alimt">
-                      {t("阿里云机器翻译（通用版）")}
-                    </Select.Item>
-                    <Select.Item value="openai-compatible">
-                      {t("大模型兼容接口")}
-                    </Select.Item>
-                  </Select.Content>
-                </Select.Root>
-                <Text size="1" color="gray">
-                  {t(isAliyun
-                    ? "适合大批量商品内容翻译。"
-                    : (isDeepLX
-                      ? "使用 DeepLX 接口进行低成本机器翻译。"
-                      : "适合需要上下文理解的翻译内容。"))}
-                </Text>
-              </label>
-
-              <div className="core-translation-api-switch">
+              {activeTab === "runtime" ? <div className="core-translation-api-switch">
                 <span>
                   <Text size="2" weight="bold" as="div">{t("启用翻译服务")}</Text>
                   <Text size="1" color="gray">
@@ -527,9 +576,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     setEnabled(checked);
                   }}
                 />
-              </div>
+              </div> : null}
 
-              {isAliyun ? (
+              {activeTab === provider ? (isAliyun ? (
                 <>
                   <label>
                     <Text size="1" color="gray">{t("地域")}</Text>
@@ -629,6 +678,48 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     {t("请填写以 /translate 结尾的完整地址；地址中的 Token 会加密保存。")}
                   </Text>
                 </label>
+              ) : isTencent ? (
+                <>
+                  <div className="core-translation-api-wide">
+                    <Text size="1" color="gray">{t("腾讯云旧版文本翻译已停止面向新用户开放；此处使用 TokenHub 的 Hy-MT2 模型。")}</Text>
+                  </div>
+                  <label>
+                    <Text size="1" color="gray">{t("TokenHub 地域")}</Text>
+                    <Select.Root value={baseUrl || TENCENT_TOKENHUB_BASE_URL} onValueChange={(value) => { clearResult(); setBaseUrl(value); }}>
+                      <Select.Trigger />
+                      <Select.Content>
+                        <Select.Item value={TENCENT_TOKENHUB_BASE_URL}>{t("中国大陆（广州）")}</Select.Item>
+                        <Select.Item value="https://tokenhub.tencentmaas.cn/v1">{t("中国大陆（广州）")} · .cn</Select.Item>
+                        <Select.Item value="https://tokenhub-intl.tencentcloudmaas.com/v1">{t("国际站（新加坡）")}</Select.Item>
+                        <Select.Item value="https://tokenhub-intl.tencentcloudmaas.cn/v1">{t("国际站（新加坡）")} · .cn</Select.Item>
+                      </Select.Content>
+                    </Select.Root>
+                  </label>
+                  <label>
+                    <Text size="1" color="gray">{t("模型")}</Text>
+                    <Select.Root value={modelName || TENCENT_TOKENHUB_MODEL} onValueChange={(value) => { clearResult(); setModelName(value); }}>
+                      <Select.Trigger />
+                      <Select.Content>
+                        <Select.Item value="hy-mt2-lite">Hy-MT2 Lite</Select.Item>
+                        <Select.Item value="hy-mt2-plus">Hy-MT2 Plus</Select.Item>
+                        <Select.Item value="hy-mt2-pro">Hy-MT2 Pro</Select.Item>
+                      </Select.Content>
+                    </Select.Root>
+                  </label>
+                  <label className="core-translation-api-wide">
+                    <Text size="1" color="gray">TokenHub API Key</Text>
+                    <TextField.Root
+                      type="password"
+                      autoComplete="new-password"
+                      value={apiKey}
+                      onChange={(event) => { clearResult(); setApiKey(event.target.value); }}
+                      placeholder={storedCredentialsMatch && settings.apiKeyConfigured
+                        ? t("已配置 {hint}，留空则保持不变", { hint: settings.apiKeyHint ?? "" })
+                        : t("请输入 API Key")}
+                      required={enabled && !(storedCredentialsMatch && settings.apiKeyConfigured)}
+                    />
+                  </label>
+                </>
               ) : (
                 <>
                   <label className="core-translation-api-wide">
@@ -684,8 +775,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     />
                   </label>
                 </>
-              )}
+              )) : null}
 
+              {activeTab === "runtime" ? <>
               <label>
                 <Text size="1" color="gray">{t("请求超时（秒）")}</Text>
                 <TextField.Root
@@ -723,8 +815,9 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   {t("达到上限后请求会排队等待，已完成的翻译和断点不会丢失。")}
                 </Text>
               </label>
+              </> : null}
 
-              {catalogExecutionMode === "REALTIME" ? (
+              {activeTab === "runtime" && catalogExecutionMode === "REALTIME" ? (
               <div className="core-translation-batch-settings core-translation-api-wide">
                 <div className="core-translation-batch-heading">
                   <div>
@@ -821,7 +914,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
               </div>
               ) : null}
 
-              {isOpenAICompatible ? (
+              {activeTab === "openai-compatible" && isOpenAICompatible ? (
                 <>
                   <label>
                     <Text size="1" color="gray">{t("最大输出 Tokens")}</Text>
@@ -861,11 +954,11 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                 </>
               ) : null}
 
-              <div className="core-translation-batch-settings core-translation-api-wide">
+              {activeTab === "baidu-search" ? <div className="core-translation-batch-settings core-translation-api-wide">
                 <div className="core-translation-batch-heading">
                   <div>
                     <Text size="2" weight="bold" as="div">
-                      {t("前台搜索设置")}
+                      Baidu · {t("前台搜索设置")}
                     </Text>
                     <Text size="1" color="gray">
                       百度 AI 只负责把访客的外语搜索词转换为商品源语言，不参与商品语言包翻译。
@@ -976,7 +1069,7 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                     />
                   </label>
                 </div>
-              </div>
+              </div> : null}
 
               <div className="core-translation-api-actions">
                 <Button
@@ -985,10 +1078,12 @@ export function TranslationApiSettingsPage({ embedded = false }: { embedded?: bo
                   disabled={!formValid || saving}
                 >
                   <FloppyDisk />
-                  {t(saving ? "保存中…" : "保存并生效")}
+                  {t(saving ? "保存中…" : isProviderTab(activeTab) ? "保存并设为实时翻译" : "保存并生效")}
                 </Button>
               </div>
             </form>
+              </Tabs.Content>
+            </Tabs.Root>
 
             {message ? <Text size="2" color="green">{message}</Text> : null}
             {error && settings ? <Text size="2" color="red">{error}</Text> : null}

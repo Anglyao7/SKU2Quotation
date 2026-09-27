@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from openpyxl import Workbook, load_workbook
@@ -15,6 +15,7 @@ from pypdf import PdfReader
 from app.domain.errors import ApplicationError
 from app.public_catalog_schemas import (
     PublicQuoteDocument,
+    PublicQuoteCustomField,
     PublicQuoteDraftItemResponse,
     PublicQuoteDraftResponse,
     PublicQuoteDraftSettingsUpdate,
@@ -425,7 +426,7 @@ def test_quote_pdf_settings_limit_visible_columns_to_five() -> None:
         visible_columns=[
             "product_image",
             "product_name",
-            "quantity",
+            "product_attribute",
             "unit_price",
             "line_total",
         ],
@@ -443,6 +444,34 @@ def test_quote_pdf_settings_limit_visible_columns_to_five() -> None:
                 "line_total",
             ],
         )
+
+
+def test_product_attribute_uses_one_pdf_table_column_and_keeps_manual_values() -> None:
+    from app.services.public_quote_documents import _public_quote_table_fields
+
+    document = _document()
+    first = document.quote.items[0]
+    second = first.model_copy(update={"id": uuid4(), "position": 2, "name_snapshot": "第二件商品"})
+    document.quote.items.append(second)
+    document.quote.visible_columns = [
+        "serial_number", "product_name", "product_attribute", "quantity", "line_total"
+    ]
+    document.quote.custom_fields = [PublicQuoteCustomField(
+        id=UUID("00000000-0000-4000-8000-000000000001"),
+        label="材质",
+        values={first.id: "ABS", second.id: "手填材质"},
+    )]
+
+    assert len(_public_quote_table_fields(document)) == 5
+    pdf_text = "\n".join(page.extract_text() or "" for page in PdfReader(BytesIO(render_public_quote_draft_pdf(document))).pages)
+    assert pdf_text.count("材质") == 2  # one header, one manually entered value
+    assert "ABS" in pdf_text
+    assert "手填材质" in pdf_text
+    sheet = load_workbook(BytesIO(render_public_quote_draft_xlsx(document)), data_only=True).active
+    header_row = next(row for row in sheet if any(cell.value == "材质" for cell in row))
+    attribute_column = next(cell.column for cell in header_row if cell.value == "材质")
+    assert sheet.cell(header_row[0].row + 1, attribute_column).value == "ABS"
+    assert sheet.cell(header_row[0].row + 2, attribute_column).value == "手填材质"
 
 
 def test_proforma_invoice_pdf_contains_trade_and_banking_details() -> None:

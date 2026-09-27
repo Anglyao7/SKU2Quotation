@@ -89,7 +89,7 @@ class CatalogSkuTranslationRow(AuditTimestampMixin, Base):
 
 
 class CatalogTextTranslationRow(AuditTimestampMixin, Base):
-    """On-demand translation memory shared by catalog fields with equal text."""
+    """Durable translation memory shared by matching catalog text fields."""
 
     __tablename__ = "catalog_text_translations"
     __table_args__ = (
@@ -115,6 +115,27 @@ class CatalogTextTranslationRow(AuditTimestampMixin, Base):
             "tenant_id",
             "last_accessed_at",
         ),
+        Index(
+            "ix_catalog_text_translations_exact_lookup",
+            "tenant_id",
+            "source_locale",
+            "target_locale",
+            "source_hash",
+        ),
+        Index(
+            "ix_catalog_text_translations_normalized_lookup",
+            "tenant_id",
+            "source_locale",
+            "target_locale",
+            "normalized_source_hash",
+        ),
+        Index(
+            "ix_catalog_text_translations_numeric_lookup",
+            "tenant_id",
+            "source_locale",
+            "target_locale",
+            "numeric_template_hash",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -124,6 +145,12 @@ class CatalogTextTranslationRow(AuditTimestampMixin, Base):
     source_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     target_locale: Mapped[str] = mapped_column(String(20), nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_source_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    numeric_template_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     source_text: Mapped[str] = mapped_column(Text, nullable=False)
     translated_text: Mapped[str] = mapped_column(Text, nullable=False)
     provider: Mapped[str] = mapped_column(String(60), nullable=False)

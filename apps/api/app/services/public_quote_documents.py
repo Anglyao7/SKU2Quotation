@@ -108,10 +108,22 @@ def _proforma_freight(document: PublicQuoteDocument) -> Decimal:
         return Decimal("0")
 
 
-def _quote_custom_fields(document: PublicQuoteDocument) -> list[object]:
+_QUOTE_ATTRIBUTE_COLUMN_ID = "00000000-0000-4000-8000-000000000001"
+
+
+def _quote_attribute_column(document: PublicQuoteDocument) -> object | None:
+    return next(
+        (field for field in (getattr(document.quote, "custom_fields", None) or [])
+         if str(getattr(field, "id", "")) == _QUOTE_ATTRIBUTE_COLUMN_ID),
+        None,
+    )
+
+
+def _quote_custom_fields(document: PublicQuoteDocument, *, include_attribute: bool = True) -> list[object]:
     return [
         field for field in (getattr(document.quote, "custom_fields", None) or [])
         if str(getattr(field, "label", "")).strip()
+        and (include_attribute or str(getattr(field, "id", "")) != _QUOTE_ATTRIBUTE_COLUMN_ID)
     ]
 
 
@@ -991,6 +1003,7 @@ def _pdf_localized_text(value: object | None, locale: str) -> str:
 _PUBLIC_QUOTE_TABLE_FIELDS = frozenset(
     {
         "serial_number",
+        "product_attribute",
         "sku_code",
         "product_name",
         "description",
@@ -1023,6 +1036,7 @@ _PUBLIC_QUOTE_DEFAULT_FIELDS = (
 )
 _PUBLIC_QUOTE_COLUMN_WIDTHS_MM = {
     "serial_number": 10,
+    "product_attribute": 28,
     "sku_code": 32,
     "product_name": 42,
     "description": 38,
@@ -1090,6 +1104,10 @@ def _public_quote_table_headers(
                 custom_headers[str(field)] = header
     headers: list[str] = []
     for field in fields:
+        if field == "product_attribute":
+            attribute_column = _quote_attribute_column(document)
+            headers.append(str(getattr(attribute_column, "label", "") or "属性列"))
+            continue
         # System fields have one canonical translation dictionary.  Keeping a
         # merchant's source-language header here would make a PDF disagree
         # with the workbench and the generated/custom Excel document after the
@@ -1299,7 +1317,7 @@ def render_public_quote_draft_pdf(
     else:
         story.extend([meta_table, Spacer(1, 7 * mm)])
 
-    custom_fields = _quote_custom_fields(document)
+    custom_fields = _quote_custom_fields(document, include_attribute=is_proforma)
     table_fields = ["serial_number", "product_name", "quantity", "unit_price", "line_total"] if is_proforma else _public_quote_table_fields(document)
     table_fields = [*table_fields, *[f"custom:{field.id}" for field in custom_fields]]
     table_body_style = ParagraphStyle(
@@ -1354,6 +1372,9 @@ def render_public_quote_draft_pdf(
                         max_height=18 * mm,
                     )
                 )
+            elif field == "product_attribute":
+                attribute_column = _quote_attribute_column(document)
+                row.append(Paragraph(_pdf_localized_text(_quote_custom_value(attribute_column, item) if attribute_column else "", locale), table_body_style))
             elif field.startswith("custom:"):
                 custom_field = next((entry for entry in custom_fields if f"custom:{entry.id}" == field), None)
                 row.append(Paragraph(_pdf_localized_text(_quote_custom_value(custom_field, item) if custom_field else "", locale), table_body_style))

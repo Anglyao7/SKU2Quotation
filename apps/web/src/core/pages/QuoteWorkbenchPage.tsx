@@ -29,6 +29,7 @@ import {
   FloppyDisk,
   ImageSquare,
   Info,
+  MagnifyingGlass,
   MagnifyingGlassPlus,
   BookOpen,
   LockKey,
@@ -60,7 +61,6 @@ import {
   getMerchantSettings,
   getPublicQuoteDraft,
   getPublicQuoteDraftPurchaseOrder,
-  listAttributeDefinitions,
   listQuoteExcelTemplates,
   listSkus,
   syncPublicQuoteDraftItemPrice,
@@ -85,7 +85,6 @@ import {
 } from "../quoteLocalization";
 import type {
   MerchantSettings,
-  AttributeDefinition,
   ProductDetail,
   ProformaInvoiceSettings,
   PublicQuoteDraft,
@@ -100,6 +99,15 @@ import type {
 } from "../types";
 import type { StorefrontLocale } from "../../types";
 import type { PackingListSettings } from "../types";
+import {
+  QUOTE_ATTRIBUTE_COLUMN_ID,
+  isPrivateQuoteAttribute,
+  mergeCustomFieldsWithProductAttributes,
+  normalizedQuoteAttributeLabel,
+  productAttributeValue,
+  quoteAttributeOptions,
+  quoteAttributeText,
+} from "../quoteProductAttributes";
 import { packingErrors } from "../packingList";
 import { PackingListPanel } from "./PackingListPanel";
 import { ProformaInvoicePanel } from "./ProformaInvoicePanel";
@@ -181,44 +189,6 @@ function quoteSettingsEqual(left: QuoteSettingsPayload | undefined, right: Quote
     && JSON.stringify(left.packingList) === JSON.stringify(right.packingList));
 }
 
-function productAttributeValue(
-  item: PublicQuoteDraft["items"][number],
-  label: string,
-  attributeKey?: string,
-) {
-  const candidates = new Set(
-    [label, attributeKey]
-      .filter((value): value is string => Boolean(value?.trim()))
-      .map((value) => value.trim().toLocaleLowerCase()),
-  );
-  const entry = Object.entries(item.productAttributes ?? {}).find(([key]) => (
-    candidates.has(key.trim().toLocaleLowerCase())
-  ));
-  return displayOptionValue(entry?.[1]);
-}
-
-function mergeCustomFieldsWithProductAttributes(
-  fields: QuoteCustomField[],
-  items: PublicQuoteDraft["items"],
-  definitions: AttributeDefinition[],
-) {
-  const definitionsByLabel = new Map(
-    definitions.map((definition) => [definition.displayName.trim().toLocaleLowerCase(), definition]),
-  );
-  const validItemIds = new Set(items.map((item) => item.id));
-  return fields.map((field) => {
-    const definition = definitionsByLabel.get(field.label.trim().toLocaleLowerCase());
-    return {
-      ...field,
-      values: Object.fromEntries(items.map((item) => {
-        const stored = field.values[item.id];
-        if (stored !== undefined) return [item.id, stored];
-        return [item.id, productAttributeValue(item, field.label, definition?.attributeKey)];
-      }).filter(([itemId]) => validItemIds.has(itemId))),
-    };
-  });
-}
-
 const locales: Array<{ value: StorefrontLocale; label: string; flag: string }> = [
   { value: "zh-CN", label: "简体中文", flag: "🇨🇳" },
   { value: "en-US", label: "English", flag: "🇺🇸" },
@@ -243,6 +213,7 @@ const styles: Array<{ value: QuoteDocumentStyle; label: string; color: string }>
 
 const tableFieldMeta: Array<{ value: QuoteTemplateField; label: string }> = [
   { value: "serial_number", label: "序号" },
+  { value: "product_attribute", label: "属性列" },
   { value: "sku_code", label: "SKU 编码" },
   { value: "product_name", label: "商品名称" },
   { value: "description", label: "商品描述" },
@@ -322,6 +293,7 @@ const defaultExcelTableFields: QuoteTemplateField[] = [
 
 const previewColumnWeights: Partial<Record<QuoteTemplateField, number>> = {
   serial_number: 0.55,
+  product_attribute: 1.3,
   sku_code: 1.25,
   product_name: 1.8,
   description: 2,
@@ -379,13 +351,13 @@ function localeLabel(value: StorefrontLocale) {
 }
 
 function templateTableFields(template?: QuoteExcelTemplate): QuoteTemplateField[] {
-  if (!template) return [...defaultTableFields];
+  if (!template) return [...defaultTableFields, "product_attribute"];
   const mapped = template.columns
     .map((column) => template.columnMappings[column.key])
     .filter((field): field is QuoteTemplateField => Boolean(field))
     .filter((field) => tableFieldMeta.some((option) => option.value === field));
   const unique = [...new Set(mapped)];
-  return unique.length ? unique : [...defaultTableFields];
+  return [...(unique.length ? unique : defaultTableFields), "product_attribute"];
 }
 
 function fieldLabel(
@@ -563,6 +535,7 @@ export function QuoteWorkbenchPage() {
   const [packingList, setPackingList] = useState<PackingListSettings>();
   const [purchaseOrder, setPurchaseOrder] = useState<QuotePurchaseOrderSettings>();
   const [purchaseOrderLoading, setPurchaseOrderLoading] = useState(false);
+  const [purchaseOrderExportProgress, setPurchaseOrderExportProgress] = useState<{ phase: "saving" | "generating" | "receiving"; receivedBytes?: number; totalBytes?: number }>();
   const [purchaseOrderSaving, setPurchaseOrderSaving] = useState(false);
   const [proformaInvoice, setProformaInvoice] = useState<ProformaInvoiceSettings>({
     invoiceNumber: "",
@@ -589,7 +562,8 @@ export function QuoteWorkbenchPage() {
   const [visibleColumns, setVisibleColumns] = useState<QuoteTemplateField[]>(defaultVisibleTableFields);
   const [extraInformation, setExtraInformation] = useState<QuoteExtraInformation[]>([]);
   const [customFields, setCustomFields] = useState<QuoteCustomField[]>([]);
-  const [attributeDefinitions, setAttributeDefinitions] = useState<AttributeDefinition[]>([]);
+  const [attributePickerOpen, setAttributePickerOpen] = useState(false);
+  const [attributeQuery, setAttributeQuery] = useState("");
   const [collapsedExtraRows, setCollapsedExtraRows] = useState<Record<number, boolean>>({});
   const [manualOpen, setManualOpen] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -694,6 +668,11 @@ export function QuoteWorkbenchPage() {
       .slice(0, MAX_PDF_COLUMNS);
     return filtered.length ? filtered : preferredVisibleColumns(availableColumns);
   }, [availableColumns, visibleColumns]);
+  const attributeColumn = customFields.find((field) => field.id === QUOTE_ATTRIBUTE_COLUMN_ID);
+  const regularCustomFields = customFields.filter((field) => field.id !== QUOTE_ATTRIBUTE_COLUMN_ID);
+  const productColumnLabel = (field: QuoteTemplateField) => field === "product_attribute"
+    ? attributeColumn?.label || t("属性列")
+    : fieldLabel(field, t, selectedTemplate, locale);
   const currentSettings = useMemo<QuoteSettingsPayload>(() => ({
     locale,
     style,
@@ -950,11 +929,10 @@ export function QuoteWorkbenchPage() {
     purchaseOrderDraftIdRef.current = undefined;
     savedPurchaseOrderRef.current = "";
     try {
-      const [nextDraft, nextTemplates, merchantSettings, nextAttributeDefinitions] = await Promise.all([
+      const [nextDraft, nextTemplates, merchantSettings] = await Promise.all([
         getPublicQuoteDraft(quoteDraftId),
         listQuoteExcelTemplates().catch(() => []),
         getMerchantSettings().catch(() => undefined),
-        listAttributeDefinitions().catch(() => []),
       ]);
       const nextReadyTemplates = nextTemplates.filter((template) => template.isReady);
       const nextTemplate = nextReadyTemplates.find((template) => template.id === (nextDraft.quoteTemplateId ?? "")) ?? nextReadyTemplates.find((template) => template.isDefault);
@@ -963,16 +941,13 @@ export function QuoteWorkbenchPage() {
         .filter((field) => nextAvailable.includes(field))
         .slice(0, MAX_PDF_COLUMNS);
       const nextActiveColumns = nextVisible.length ? nextVisible : preferredVisibleColumns(nextAvailable);
-      const nextDefinitions = nextAttributeDefinitions.filter((definition) => definition.status === "ACTIVE" && !definition.isVariant);
       const nextCustomFields = mergeCustomFieldsWithProductAttributes(
         nextDraft.customFields ?? [],
         nextDraft.items,
-        nextDefinitions,
       );
       setDraft(nextDraft);
       setTemplates(nextTemplates);
       setSettings(merchantSettings);
-      setAttributeDefinitions(nextDefinitions);
       setLocale(nextDraft.locale);
       setStyle(nextDraft.documentStyle);
       setTemplateId(nextDraft.quoteTemplateId ?? "");
@@ -1299,7 +1274,6 @@ export function QuoteWorkbenchPage() {
     const nextCustomFields = mergeCustomFieldsWithProductAttributes(
       next.customFields ?? [],
       next.items,
-      attributeDefinitions,
     );
     setDraft(next);
     setPriceDrafts(Object.fromEntries(next.items.map((item) => [item.id, item.unitPrice.toFixed(2)])));
@@ -1325,7 +1299,7 @@ export function QuoteWorkbenchPage() {
     };
     failedItemsRef.current = undefined;
     setSaveFailed(false);
-  }, [activeColumns, attributeDefinitions, selectedItemId]);
+  }, [activeColumns, selectedItemId]);
 
   const addQuoteItem = useCallback(async (candidate: SkuListItem) => {
     if (!draft || !canEditPrices || itemMutationId) return;
@@ -1463,20 +1437,26 @@ export function QuoteWorkbenchPage() {
   const exportPurchaseOrder = async () => {
     if (!draft || !purchaseOrder || downloading) return;
     setDownloading("xlsx");
+    setPurchaseOrderExportProgress({ phase: "saving" });
     setError("");
     try {
-      const saved = isReadOnly ? purchaseOrder : await savePurchaseOrder();
+      const saved = isReadOnly || !purchaseOrderDirty
+        ? purchaseOrder
+        : await savePurchaseOrder();
       if (!saved) return;
+      setPurchaseOrderExportProgress({ phase: "generating" });
       await downloadPublicQuoteDraftDocument(
         draft.id,
         saved.purchaseOrderNumber,
         "xlsx",
         "purchase_order",
+        (receivedBytes, totalBytes) => setPurchaseOrderExportProgress({ phase: "receiving", receivedBytes, totalBytes }),
       );
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("采购单下载失败"));
     } finally {
       setDownloading(null);
+      setPurchaseOrderExportProgress(undefined);
     }
   };
 
@@ -1529,7 +1509,10 @@ export function QuoteWorkbenchPage() {
     const nextId = value === "default" ? "" : value;
     const nextTemplate = readyTemplates.find((template) => template.id === nextId) ?? readyTemplates.find((template) => template.isDefault);
     setTemplateId(nextId);
-    setVisibleColumns(preferredVisibleColumns(templateTableFields(nextTemplate)));
+    const nextColumns = preferredVisibleColumns(templateTableFields(nextTemplate));
+    setVisibleColumns(attributeColumn && visibleColumns.includes("product_attribute")
+      ? [...nextColumns.filter((field) => field !== "product_attribute").slice(0, MAX_PDF_COLUMNS - 1), "product_attribute" as QuoteTemplateField]
+      : nextColumns);
   };
 
   const effectiveItem = useCallback((item: PublicQuoteDraftItem): PublicQuoteDraftItem => {
@@ -1734,22 +1717,33 @@ export function QuoteWorkbenchPage() {
     }]);
   };
 
-  const addProductAttributeField = (definition: AttributeDefinition) => {
-    if (!draft || isReadOnly || customFields.length >= 12) return;
-    const label = definition.displayName.trim();
-    if (!label || customFields.some((field) => field.label.trim().toLocaleLowerCase() === label.toLocaleLowerCase())) return;
-    setCustomFields((current) => [...current, {
-      id: crypto.randomUUID(),
-      label,
-      values: Object.fromEntries(draft.items.map((item) => {
-        return [item.id, productAttributeValue(item, label, definition.attributeKey)];
-      })),
-    }]);
+  const addProductAttributeField = (label: string) => {
+    const reusableField = customFields.find((field) => field.id !== QUOTE_ATTRIBUTE_COLUMN_ID && normalizedQuoteAttributeLabel(field.label) === normalizedQuoteAttributeLabel(label));
+    if (!draft || isReadOnly || !label || (!attributeColumn && !reusableField && customFields.length >= 12)) return;
+    if (!activeColumns.includes("product_attribute") && activeColumns.length >= MAX_PDF_COLUMNS) {
+      notify(t("PDF 最多显示 {count} 列。", { count: MAX_PDF_COLUMNS }), { kind: "info" });
+      return;
+    }
+    setCustomFields((current) => [
+      ...current.filter((field) => field.id !== QUOTE_ATTRIBUTE_COLUMN_ID && field.id !== reusableField?.id),
+      {
+        id: QUOTE_ATTRIBUTE_COLUMN_ID,
+        label,
+        values: Object.fromEntries(draft.items.map((item) => [item.id, reusableField?.values[item.id] ?? productAttributeValue(item, label)])),
+      },
+    ]);
+    setVisibleColumns((current) => current.includes("product_attribute") ? current : [...current, "product_attribute" as QuoteTemplateField].slice(0, MAX_PDF_COLUMNS));
+    setAttributePickerOpen(false);
+    setAttributeQuery("");
   };
 
-  const availableAttributeDefinitions = attributeDefinitions.filter((definition) => (
-    !customFields.some((field) => field.label.trim().toLocaleLowerCase() === definition.displayName.trim().toLocaleLowerCase())
-  ));
+  const availableAttributeOptions = useMemo(() => quoteAttributeOptions(draft?.items ?? []), [draft?.items]);
+  const matchingAttributeOptions = useMemo(() => (
+    availableAttributeOptions
+      .filter((option) => attributeColumn || customFields.length < 12 || regularCustomFields.some((field) => normalizedQuoteAttributeLabel(field.label) === normalizedQuoteAttributeLabel(option.label)))
+      .filter((option) => normalizedQuoteAttributeLabel(option.label).includes(normalizedQuoteAttributeLabel(attributeQuery)))
+      .slice(0, 40)
+  ), [attributeColumn, attributeQuery, availableAttributeOptions, customFields.length, regularCustomFields]);
 
   const renameCustomField = (fieldId: string, label: string) => {
     setCustomFields((current) => current.map((field) => field.id === fieldId ? { ...field, label } : field));
@@ -1771,24 +1765,10 @@ export function QuoteWorkbenchPage() {
       <div className="quote-custom-field-manager-heading">
         <div><Text size="2" weight="medium">{t("自定义商品字段")}</Text><Text size="1" color="gray">{t("字段仅用于当前单据，可自由命名并逐项填写。")}</Text></div>
         <div className="quote-custom-field-actions">
-          <DropdownMenu.Root>
-            <DropdownMenu.Trigger>
-              <Button size="1" variant="soft" color="gray" disabled={isReadOnly || customFields.length >= 12 || !availableAttributeDefinitions.length}>
-                <Plus />{t("从商品属性添加")}<CaretDown />
-              </Button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Content align="end" className="quote-product-attribute-menu">
-              {availableAttributeDefinitions.map((definition) => (
-                <DropdownMenu.Item key={definition.id} onSelect={() => addProductAttributeField(definition)}>
-                  {definition.displayName}
-                </DropdownMenu.Item>
-              ))}
-            </DropdownMenu.Content>
-          </DropdownMenu.Root>
-          <Button size="1" variant="soft" color="blue" disabled={isReadOnly || customFields.length >= 12} onClick={addCustomField}><Plus />{t("新增空白字段")}</Button>
+          <Button size="1" variant="soft" color="gray" disabled={isReadOnly || customFields.length >= 12} onClick={addCustomField}><Plus />{t("新增空白字段")}</Button>
         </div>
       </div>
-      {customFields.length ? <div className="quote-custom-field-list">{customFields.map((field, index) => (
+      {regularCustomFields.length ? <div className="quote-custom-field-list">{regularCustomFields.map((field, index) => (
         <div className="quote-custom-field-definition" key={field.id}>
           <span>{index + 1}</span>
           <TextField.Root value={field.label} maxLength={80} placeholder={t("输入字段名")} disabled={isReadOnly} aria-label={t("自定义字段名称")} onChange={(event) => renameCustomField(field.id, event.target.value)} />
@@ -1875,6 +1855,14 @@ export function QuoteWorkbenchPage() {
   const selectedProductDetail = selectedDrawerItem
     ? productDetails[selectedDrawerItem.productId]
     : undefined;
+  const selectedProductAttributes = selectedProductDetail
+    ? selectedProductDetail.attributes
+      .filter((attribute) => attribute.reviewStatus !== "REJECTED")
+      .map((attribute) => ({ id: attribute.id, label: attribute.displayName?.trim() || attribute.key, value: quoteAttributeText(attribute.value).trim() }))
+      .filter((attribute) => attribute.label && attribute.value && (canViewSupplierData || !isPrivateQuoteAttribute(attribute.label)))
+    : Object.entries(selectedDrawerItem?.productAttributes ?? {})
+      .map(([label, value]) => ({ id: label, label, value: quoteAttributeText(value).trim() }))
+      .filter((attribute) => attribute.label && attribute.value && (canViewSupplierData || !isPrivateQuoteAttribute(attribute.label)));
   const selectedLiveProductImage = selectedProductDetail?.images.find((image) => image.id === managedImageId)
     ?? selectedProductDetail?.images.find((image) => image.imageRole === "MAIN")
     ?? selectedProductDetail?.images[0];
@@ -1905,6 +1893,10 @@ export function QuoteWorkbenchPage() {
 
   const renderPreviewCell = (item: PublicQuoteDraftItem, field: QuoteTemplateField) => {
     const effective = effectiveItem(item);
+    if (field === "product_attribute") {
+      const value = attributeColumn?.values[item.id] ?? (attributeColumn ? productAttributeValue(item, attributeColumn.label) : "");
+      return <span className="quote-preview-cell quote-preview-cell--multiline" title={value}>{value || "—"}</span>;
+    }
     if (field === "product_image") {
       return effective.imageUrl
         ? <img className="quote-preview-product-image" src={effective.imageUrl} alt={effective.name} loading="lazy" />
@@ -2094,8 +2086,12 @@ export function QuoteWorkbenchPage() {
                     <Text size="1" color="gray">{t("商品分类")}</Text>
                     <TextField.Root value={category} disabled={!canEditPrices} aria-label={t("商品分类")} onChange={(event) => updateItemEdit(item.id, "category", event.target.value)} />
                   </label>
-                  {customFields.map((field) => <label className="quote-editor-item-field" key={field.id}>
-                    <Text size="1" color="gray">{field.label || t("未命名字段")}</Text>
+                  {attributeColumn && activeColumns.includes("product_attribute") ? <label className="quote-editor-item-field" key={attributeColumn.id}>
+                    <Text size="1" color="gray" title={`${t("属性列")} · ${attributeColumn.label}`}>{t("属性列")} · {attributeColumn.label}</Text>
+                    <TextField.Root value={attributeColumn.values[item.id] ?? productAttributeValue(item, attributeColumn.label)} maxLength={2000} disabled={!canEditPrices} aria-label={`${t("属性列")} · ${attributeColumn.label}`} onChange={(event) => updateCustomFieldValue(attributeColumn.id, item.id, event.target.value)} />
+                  </label> : null}
+                  {regularCustomFields.map((field) => <label className="quote-editor-item-field" key={field.id}>
+                    <Text size="1" color="gray" title={field.label || t("未命名字段")}>{field.label || t("未命名字段")}</Text>
                     <TextField.Root value={field.values[item.id] ?? ""} maxLength={2000} disabled={!canEditPrices} aria-label={field.label || t("未命名字段")} onChange={(event) => updateCustomFieldValue(field.id, item.id, event.target.value)} />
                   </label>)}
                   <div className="quote-editor-item-actions">
@@ -2155,10 +2151,17 @@ export function QuoteWorkbenchPage() {
               <DropdownMenu.Label>{t("选择 PDF 显示列，最多 {count} 列", { count: MAX_PDF_COLUMNS })}</DropdownMenu.Label>
               {availableColumns.map((field) => {
                 const selected = visibleColumns.includes(field);
-                return <DropdownMenu.CheckboxItem key={field} checked={selected} disabled={!selected && activeColumns.length >= MAX_PDF_COLUMNS} onCheckedChange={(checked) => toggleColumn(field, checked)} onSelect={(event) => event.preventDefault()}><span>{fieldLabel(field, t, selectedTemplate, locale)}</span>{selected ? <Check /> : null}</DropdownMenu.CheckboxItem>;
+                const canReuseExistingAttribute = field === "product_attribute" && availableAttributeOptions.some((option) => regularCustomFields.some((entry) => normalizedQuoteAttributeLabel(entry.label) === normalizedQuoteAttributeLabel(option.label)));
+                return <DropdownMenu.CheckboxItem key={field} checked={selected} disabled={!selected && (activeColumns.length >= MAX_PDF_COLUMNS || (field === "product_attribute" && customFields.length >= 12 && !canReuseExistingAttribute))} onCheckedChange={(checked) => {
+                  if (field === "product_attribute") {
+                    if (checked) { setAttributeQuery(""); setAttributePickerOpen(true); }
+                    else { toggleColumn(field, false); setCustomFields((current) => current.filter((entry) => entry.id !== QUOTE_ATTRIBUTE_COLUMN_ID)); }
+                  } else toggleColumn(field, checked);
+                }} onSelect={(event) => { if (field !== "product_attribute") event.preventDefault(); }}><span>{field === "product_attribute" && attributeColumn ? `${t("属性列")} · ${attributeColumn.label}` : fieldLabel(field, t, selectedTemplate, locale)}</span>{selected ? <Check /> : null}</DropdownMenu.CheckboxItem>;
               })}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
+          {attributeColumn && activeColumns.includes("product_attribute") ? <Button size="1" variant="ghost" disabled={isReadOnly} onClick={() => { setAttributeQuery(""); setAttributePickerOpen(true); }}>{t("更换属性")}：{attributeColumn.label}</Button> : null}
         </div>
         <label className="quote-workbench-select"><Text size="1" color="gray"><Palette />{t("PDF 样式")}</Text><Select.Root value={style} onValueChange={(value) => setStyle(value as QuoteDocumentStyle)} disabled={isReadOnly}><Select.Trigger /><Select.Content position="popper">{styles.map((option) => <Select.Item key={option.value} value={option.value}><span className="quote-style-swatch" style={{ backgroundColor: option.color }} aria-hidden="true" />{t(option.label)}</Select.Item>)}</Select.Content></Select.Root></label>
         <label className="quote-workbench-select"><Text size="1" color="gray">{t("报价语言")}</Text><Select.Root value={locale} onValueChange={(value) => void changeDocumentLocale(value)} disabled={localeSelectionDisabled}><Select.Trigger>{localeLabel(locale)}</Select.Trigger><Select.Content position="popper">{localeOptions.map((option) => <Select.Item key={option.value} value={option.value}>{localeLabel(option.value)}</Select.Item>)}</Select.Content></Select.Root></label>
@@ -2414,6 +2417,22 @@ export function QuoteWorkbenchPage() {
       </Dialog.Content>
     </Dialog.Root>
 
+    <Dialog.Root open={attributePickerOpen} onOpenChange={(open) => { setAttributePickerOpen(open); if (!open) setAttributeQuery(""); }}>
+      <Dialog.Content className="quote-attribute-picker-dialog" maxWidth="520px">
+        <Dialog.Title>{t("选择商品属性列")}</Dialog.Title>
+        <Dialog.Description>{t("属性列占用商品表格的一个位置；无值的商品可在下方逐项填写。")}</Dialog.Description>
+        <TextField.Root value={attributeQuery} placeholder={t("搜索属性名称")} aria-label={t("搜索属性名称")} autoFocus onChange={(event) => setAttributeQuery(event.target.value)}>
+          <TextField.Slot><MagnifyingGlass /></TextField.Slot>
+        </TextField.Root>
+        <div className="quote-attribute-picker-list">
+          {matchingAttributeOptions.map((option) => <button type="button" className="quote-attribute-picker-option" key={option.label} onClick={() => addProductAttributeField(option.label)}>
+            <span>{option.label}</span><small>{t("{count} 个商品有值", { count: option.count })}</small><Plus size={16} aria-hidden="true" />
+          </button>)}
+          {!matchingAttributeOptions.length ? <Text size="2" color="gray">{t("暂无商品属性")}</Text> : null}
+        </div>
+      </Dialog.Content>
+    </Dialog.Root>
+
     <AlertDialog.Root open={Boolean(removeItem)} onOpenChange={(open) => { if (!open && !itemMutationId) setRemoveItem(undefined); }}>
       <AlertDialog.Content maxWidth="460px">
         <AlertDialog.Title>{t("从报价单移除商品")}</AlertDialog.Title>
@@ -2478,6 +2497,7 @@ export function QuoteWorkbenchPage() {
             {selectedDrawerItem.specification ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品规格")}</Text><Text as="p">{selectedDrawerItem.specification}</Text></div> : null}
             {selectedDrawerItem.tags.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品标签")}</Text><div className="quote-item-tags">{selectedDrawerItem.tags.map((tag) => <Badge key={tag} color="gray">{tag}</Badge>)}</div></div> : null}
             {Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("规格参数")}</Text><div className="quote-item-options">{Object.entries(selectedDrawerItem.optionValues).filter(([key]) => !key.startsWith("_")).map(([key, value]) => <div key={key}><span>{key}</span><strong>{displayOptionValue(value, quoteSeparator(locale))}</strong></div>)}</div></div> : null}
+            {selectedProductAttributes.length ? <div className="quote-item-detail-section"><Text size="1" color="gray">{t("商品属性")}</Text><div className="quote-item-options quote-item-attributes">{selectedProductAttributes.map((attribute) => <div key={attribute.id}><span>{attribute.label}</span><strong>{attribute.value}</strong></div>)}</div></div> : null}
             {detailLoadingId === selectedDrawerItem.productId ? <Text size="1" color="gray">{t("正在读取商品详情…")}</Text> : null}
             {selectedProductDetail ? (
               <Card className="quote-live-product-card">
@@ -2519,6 +2539,7 @@ export function QuoteWorkbenchPage() {
                   <div><Text size="1" color="gray">{t("商品分类")}</Text><strong>{selectedProductDetail.category || "—"}</strong></div>
                   <div><Text size="1" color="gray">{t("SKU 数量")}</Text><strong>{selectedProductDetail.skuCount}</strong></div>
                 </div>
+                {canViewSupplierData && hasPermission("product.edit") ? <Button asChild size="1" variant="soft"><Link to={`/console/products?product=${encodeURIComponent(selectedProductDetail.id)}`}>{t("去商品库修改")}</Link></Button> : null}
                 {selectedProductDetail.description ? <Text size="2">{selectedProductDetail.description}</Text> : null}
                 {selectedLiveSku || selectedSkuNote ? (
                   <div className="quote-live-sku-card">
@@ -2601,13 +2622,13 @@ export function QuoteWorkbenchPage() {
                 <div className="quote-preview-header"><div><Heading size="7">{quoteText(locale, "document_title")}</Heading><Text size="2" color="gray">{quoteNumber} · {coreDate(draft.createdAt)}</Text></div></div>
                 <div className="quote-preview-meta"><div><span>{quoteText(locale, "customer")}</span><strong>{draft.customerCompany || draft.customerName}</strong></div><div><span>{quoteText(locale, "contact")}</span><strong>{draft.customerName}</strong></div><div><span>{quoteText(locale, "date")}</span><strong>{quoteDateOnly(draft.createdAt)}</strong></div><div><span>{quoteText(locale, "currency")}</span><strong>{draft.currency}</strong></div></div>
                 <div className="quote-preview-table">
-                  <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{fieldLabel(field, t, selectedTemplate, locale)}</span>)}</div>
+                  <div className="quote-preview-row quote-preview-head" style={{ gridTemplateColumns: previewGrid }}>{activeColumns.map((field) => <span className="quote-preview-cell" key={field}>{productColumnLabel(field)}</span>)}</div>
                   {draft.items.map((item) => <div className="quote-preview-row" style={{ gridTemplateColumns: previewGrid }} key={item.id}>{activeColumns.map((field) => <span className="quote-preview-cell" key={`${item.id}-${field}`}>{renderPreviewCell(item, field)}</span>)}</div>)}
                   <div className="quote-preview-total"><span>{quoteText(locale, "total")}</span><strong>{money(previewTotal, draft.currency)}</strong></div>
                 </div>
-                {customFields.some((field) => field.label.trim()) ? <div className="quote-preview-custom-table">
-                  <div className="quote-preview-custom-row quote-preview-custom-head"><strong>{quoteText(locale, "product_name")}</strong>{customFields.filter((field) => field.label.trim()).map((field) => <strong key={field.id}>{field.label}</strong>)}</div>
-                  {draft.items.map((item) => <div className="quote-preview-custom-row" key={`custom-${item.id}`}><span>{effectiveItem(item).name}</span>{customFields.filter((field) => field.label.trim()).map((field) => <span key={field.id}>{field.values[item.id] || "—"}</span>)}</div>)}
+                {regularCustomFields.some((field) => field.label.trim()) ? <div className="quote-preview-custom-table">
+                  <div className="quote-preview-custom-row quote-preview-custom-head"><strong>{quoteText(locale, "product_name")}</strong>{regularCustomFields.filter((field) => field.label.trim()).map((field) => <strong key={field.id}>{field.label}</strong>)}</div>
+                  {draft.items.map((item) => <div className="quote-preview-custom-row" key={`custom-${item.id}`}><span>{effectiveItem(item).name}</span>{regularCustomFields.filter((field) => field.label.trim()).map((field) => <span key={field.id}>{field.values[item.id] || "—"}</span>)}</div>)}
                 </div> : null}
                 {extraInformation.filter((entry) => entry.title.trim() && entry.content.trim()).length ? (
                   <div className="quote-preview-extra-info">
@@ -2649,6 +2670,7 @@ export function QuoteWorkbenchPage() {
           readOnly={isReadOnly}
           saving={purchaseOrderSaving}
           exporting={downloading === "xlsx"}
+          exportProgress={purchaseOrderExportProgress}
           dirty={purchaseOrderDirty}
           onSave={() => void savePurchaseOrder()}
           onExport={() => void exportPurchaseOrder()}

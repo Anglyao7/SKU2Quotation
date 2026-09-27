@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import OrderedDict
 from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -19,6 +20,7 @@ from .public_quote_documents import (
     _place_quote_image,
     _xlsx_text,
 )
+from .quote_localization import quote_text
 
 
 _INVALID_SHEET_TITLE = re.compile(r"[\\/*?:\[\]]")
@@ -33,6 +35,27 @@ _TABLE_BORDER = Border(
     top=_THIN_SIDE,
     bottom=_THIN_SIDE,
 )
+
+_PURCHASE_LABELS = {
+    "zh-CN": ("采购单", "采购单号", "供应商", "供应商货号", "地址"),
+    "en-US": ("PURCHASE ORDER", "Purchase order No.", "Supplier", "Supplier item No.", "Address"),
+    "es": ("ORDEN DE COMPRA", "N.º de pedido", "Proveedor", "Ref. proveedor", "Dirección"),
+    "tr": ("SATIN ALMA SİPARİŞİ", "Sipariş No.", "Tedarikçi", "Tedarikçi ürün kodu", "Adres"),
+    "ar": ("أمر شراء", "رقم أمر الشراء", "المورّد", "رقم صنف المورّد", "العنوان"),
+    "ja": ("発注書", "発注番号", "仕入先", "仕入先品番", "住所"),
+    "ko": ("구매 주문서", "주문 번호", "공급업체", "공급업체 품번", "주소"),
+    "pt": ("PEDIDO DE COMPRA", "N.º do pedido", "Fornecedor", "Ref. do fornecedor", "Endereço"),
+    "fr": ("BON DE COMMANDE", "N° de commande", "Fournisseur", "Réf. fournisseur", "Adresse"),
+    "fa": ("سفارش خرید", "شماره سفارش", "تأمین‌کننده", "کد کالای تأمین‌کننده", "نشانی"),
+    "ru": ("ЗАКАЗ НА ЗАКУПКУ", "Номер заказа", "Поставщик", "Артикул поставщика", "Адрес"),
+}
+
+
+def purchase_label(locale: str, key: str) -> str:
+    labels = _PURCHASE_LABELS.get(locale, _PURCHASE_LABELS["en-US"])
+    if key in {"title", "number", "supplier", "supplier_sku", "address"}:
+        return labels[{"title": 0, "number": 1, "supplier": 2, "supplier_sku": 3, "address": 4}[key]]
+    return quote_text(locale, key)
 
 
 def _safe_sheet_title(value: str, occupied: set[str]) -> str:
@@ -96,6 +119,7 @@ def render_purchase_order_xlsx(
     settings: PurchaseOrderSettings,
     *,
     image_loader: QuoteImageLoader | None = None,
+    groups: list[tuple[str, list[PurchaseOrderItem]]] | None = None,
 ) -> bytes:
     """Render one editable worksheet per selected supplier."""
 
@@ -108,7 +132,7 @@ def render_purchase_order_xlsx(
     except AttributeError:
         pass
 
-    groups = _supplier_groups(settings)
+    groups = _supplier_groups(settings) if groups is None else groups
     if not groups:
         groups = [("未指定供应商", [])]
     occupied: set[str] = set()
@@ -123,16 +147,16 @@ def render_purchase_order_xlsx(
         sheet.freeze_panes = "A8"
         sheet.merge_cells(f"A1:{last_column}1")
         title = sheet["A1"]
-        title.value = "采购单 / PURCHASE ORDER"
+        title.value = purchase_label(settings.locale, "title")
         title.font = Font(size=20, bold=True, color="FFFFFF")
         title.fill = _HEADER_FILL
         title.alignment = Alignment(horizontal="center", vertical="center")
         sheet.row_dimensions[1].height = 38
 
         sheet.merge_cells("A2:F2")
-        sheet["A2"] = _xlsx_text(f"采购单号：{settings.purchase_order_number}")
+        sheet["A2"] = _xlsx_text(f"{purchase_label(settings.locale, 'number')}: {settings.purchase_order_number}")
         sheet.merge_cells(f"G2:{last_column}2")
-        sheet["G2"] = _xlsx_text(f"日期：{settings.issue_date.isoformat()}")
+        sheet["G2"] = _xlsx_text(f"{purchase_label(settings.locale, 'date')}: {settings.issue_date.isoformat()}")
         _style_merged_label(sheet, 2, 1, column_count)
 
         supplier = next(
@@ -142,36 +166,36 @@ def render_purchase_order_xlsx(
         contact_parts = []
         if supplier is not None:
             if supplier.contact_name:
-                contact_parts.append(f"联系人：{supplier.contact_name}")
+                contact_parts.append(f"{purchase_label(settings.locale, 'contact')}: {supplier.contact_name}")
             if supplier.phone:
-                contact_parts.append(f"电话：{supplier.phone}")
+                contact_parts.append(f"{purchase_label(settings.locale, 'phone')}: {supplier.phone}")
             if supplier.email:
-                contact_parts.append(f"邮箱：{supplier.email}")
+                contact_parts.append(f"{purchase_label(settings.locale, 'email')}: {supplier.email}")
         sheet.merge_cells(f"A3:{last_column}3")
-        sheet["A3"] = _xlsx_text(f"供应商：{supplier_name}")
+        sheet["A3"] = _xlsx_text(f"{purchase_label(settings.locale, 'supplier')}: {supplier_name}")
         _style_merged_label(sheet, 3, 1, column_count)
         sheet.merge_cells(f"A4:{last_column}4")
-        sheet["A4"] = _xlsx_text("    ".join(contact_parts) or "联系人：")
+        sheet["A4"] = _xlsx_text("    ".join(contact_parts) or f"{purchase_label(settings.locale, 'contact')}:")
         _style_merged_label(sheet, 4, 1, column_count)
         sheet.merge_cells(f"A5:{last_column}5")
         sheet["A5"] = _xlsx_text(
-            f"地址：{supplier.address}" if supplier is not None and supplier.address else "地址："
+            f"{purchase_label(settings.locale, 'address')}: {supplier.address}" if supplier is not None and supplier.address else f"{purchase_label(settings.locale, 'address')}:"
         )
         _style_merged_label(sheet, 5, 1, column_count)
 
         headers = (
-            "序号",
-            "图片",
+            purchase_label(settings.locale, "serial_number"),
+            purchase_label(settings.locale, "image"),
             "SKU",
-            "供应商货号",
-            "商品名称",
-            "规格",
-            "数量",
-            "单位",
-            "采购单价",
-            "币种",
-            "金额",
-            "备注",
+            purchase_label(settings.locale, "supplier_sku"),
+            purchase_label(settings.locale, "product_name"),
+            purchase_label(settings.locale, "specification"),
+            purchase_label(settings.locale, "quantity"),
+            purchase_label(settings.locale, "unit"),
+            purchase_label(settings.locale, "unit_price"),
+            purchase_label(settings.locale, "currency"),
+            purchase_label(settings.locale, "line_total"),
+            purchase_label(settings.locale, "notes"),
             *[field.label for field in custom_fields],
         )
         header_row = 7
@@ -227,7 +251,7 @@ def render_purchase_order_xlsx(
 
         total_row = header_row + max(len(items), 1) + 1
         sheet.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=10)
-        sheet.cell(total_row, 1, "合计 / TOTAL")
+        sheet.cell(total_row, 1, purchase_label(settings.locale, "total"))
         sheet.cell(total_row, 11, f"=SUM(K{first_item_row}:K{max(first_item_row, total_row - 1)})")
         for column in range(1, column_count + 1):
             cell = sheet.cell(total_row, column)
@@ -257,3 +281,39 @@ def render_purchase_order_xlsx(
     workbook.save(buffer)
     workbook.close()
     return buffer.getvalue()
+
+
+def render_purchase_order_download(
+    settings: PurchaseOrderSettings,
+    *,
+    image_loader: QuoteImageLoader | None = None,
+) -> tuple[bytes, str, str]:
+    """Return a separate XLSX per supplier; bundle multiple files in one ZIP."""
+
+    groups = _supplier_groups(settings) or [("未指定供应商", [])]
+    if len(groups) == 1:
+        return (
+            render_purchase_order_xlsx(settings, image_loader=image_loader, groups=groups),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xlsx",
+        )
+    output = BytesIO()
+    occupied: set[str] = set()
+    with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+        for supplier_name, items in groups:
+            safe_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "-", supplier_name).strip(" .")[:70] or "未指定供应商"
+            filename = safe_name
+            index = 2
+            while filename.casefold() in occupied:
+                filename = f"{safe_name[:65]}-{index}"
+                index += 1
+            occupied.add(filename.casefold())
+            archive.writestr(
+                f"{filename}.xlsx",
+                render_purchase_order_xlsx(
+                    settings,
+                    image_loader=image_loader,
+                    groups=[(supplier_name, items)],
+                ),
+            )
+    return output.getvalue(), "application/zip", "zip"

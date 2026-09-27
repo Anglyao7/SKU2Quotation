@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 from uuid import UUID
 from urllib.parse import unquote
@@ -57,7 +58,7 @@ from ..services.public_quote_documents import (
     render_public_quote_draft_pdf,
     render_public_quote_draft_xlsx,
 )
-from ..services.purchase_order_documents import render_purchase_order_xlsx
+from ..services.purchase_order_documents import render_purchase_order_download
 from ..services.rate_limit import configured_limit, enforce_rate_limit
 from ..services.storefront_analytics import (
     cleanup_expired_raw_events,
@@ -1168,8 +1169,8 @@ def _document_headers(*, quote_number: str, extension: str) -> dict[str, str]:
     }
 
 
-def _quote_image_loader(session: Session):
-    cache: dict[str, bytes | None] = {}
+def _quote_image_loader(session: Session, *, prefetched: dict[str, bytes | None] | None = None):
+    cache: dict[str, bytes | None] = dict(prefetched or {})
 
     def load(image_url: str) -> bytes | None:
         if image_url in cache:
@@ -1194,6 +1195,28 @@ def _quote_image_loader(session: Session):
         return content
 
     return load
+
+
+def _prefetch_purchase_order_images(settings: PurchaseOrderSettings) -> dict[str, bytes | None]:
+    """Fetch independent public images concurrently without sharing a DB session."""
+
+    urls = {
+        item.image_url for item in settings.items
+        if item.image_url and item.image_url.startswith(("https://", "http://"))
+        and _PUBLIC_QUOTE_MEDIA_PATTERN.fullmatch(item.image_url) is None
+    }
+    if not urls:
+        return {}
+    result: dict[str, bytes | None] = {}
+    with ThreadPoolExecutor(max_workers=min(6, len(urls))) as executor:
+        futures = {executor.submit(fetch_remote_quote_image, url): url for url in urls}
+        for future in as_completed(futures):
+            url = futures[future]
+            try:
+                result[url] = future.result()
+            except Exception:
+                result[url] = None
+    return result
 
 
 def _render_quote_xlsx(
@@ -1381,16 +1404,29 @@ def download_tenant_quote_draft_xlsx(
                 account_scope=context.account_scope,
                 membership_id=context.membership_id,
             )
+            content, media_type, extension = render_purchase_order_download(
+                purchase_order,
+                image_loader=_quote_image_loader(
+                    session,
+                    prefetched=_prefetch_purchase_order_images(purchase_order),
+                ),
+            )
+            safe_filename = re.sub(
+                r"[^A-Za-z0-9._-]+", "-", purchase_order.purchase_order_number
+            ).strip(".-") or "purchase-order"
             return Response(
-                content=render_purchase_order_xlsx(
-                    purchase_order,
-                    image_loader=_quote_image_loader(session),
-                ),
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers=_document_headers(
-                    quote_number=purchase_order.purchase_order_number,
-                    extension="xlsx",
-                ),
+                content=content,
+                media_type=media_type,
+                headers={
+                    **_document_headers(
+                        quote_number=safe_filename,
+                        extension=extension,
+                    ),
+                    "Content-Disposition": (
+                        f'attachment; filename="{safe_filename}.{extension}"; '
+                        f"filename*=UTF-8''{safe_filename}.{extension}"
+                    ),
+                },
             )
         document = use_cases.get_tenant_quote_document(
             session,

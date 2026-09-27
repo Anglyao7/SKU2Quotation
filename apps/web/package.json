@@ -21,6 +21,7 @@
     "test:proforma": "node scripts/test-proforma-invoice.mjs",
     "test:document-navigation": "node scripts/test-quote-document-navigation.mjs",
     "test:document-excel": "node scripts/test-document-excel-preview.mjs",
+    "test:translation-settings": "node --experimental-strip-types scripts/test-translation-settings-tabs.mjs",
     "locales:generate": "node scripts/generate-console-locales.mjs",
     "locales:check": "node scripts/generate-console-locales.mjs --check",
     "prebuild": "npm run locales:check",

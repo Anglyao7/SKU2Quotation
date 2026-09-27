@@ -520,6 +520,7 @@ async function downloadCoreRequest(
   init: RequestInit = {},
   retrySession = true,
   preferResponseFilename = false,
+  onProgress?: (receivedBytes: number, totalBytes?: number) => void,
 ): Promise<void> {
   await prepareCoreRequestAuth(path);
   const headers = new Headers(init.headers);
@@ -535,7 +536,7 @@ async function downloadCoreRequest(
   });
   if (response.status === 401 && retrySession) {
     const restored = await refreshAuthSession();
-    if (restored) return downloadCoreRequest(path, filename, init, false, preferResponseFilename);
+    if (restored) return downloadCoreRequest(path, filename, init, false, preferResponseFilename, onProgress);
     window.dispatchEvent(new CustomEvent("atc:auth-expired"));
   }
   if (!response.ok) {
@@ -549,7 +550,25 @@ async function downloadCoreRequest(
       payload,
     );
   }
-  const blob = await response.blob();
+  let blob: Blob;
+  const reader = onProgress ? response.body?.getReader() : undefined;
+  if (reader && onProgress) {
+    const chunks: Uint8Array[] = [];
+    const parsedLength = Number(response.headers.get("content-length"));
+    const totalBytes = Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : undefined;
+    let receivedBytes = 0;
+    onProgress(0, totalBytes);
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(new Uint8Array(value));
+      receivedBytes += value.byteLength;
+      onProgress(receivedBytes, totalBytes);
+    }
+    blob = new Blob(chunks, { type: response.headers.get("content-type") || "application/octet-stream" });
+  } else {
+    blob = await response.blob();
+  }
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -563,7 +582,10 @@ async function downloadCoreRequest(
       responseFilename = undefined;
     }
   }
-  anchor.download = responseFilename || filename;
+  const fallbackFilename = preferResponseFilename && (response.headers.get("content-type") || "").includes("application/zip")
+    ? filename.replace(/\.[^.]+$/, ".zip")
+    : filename;
+  anchor.download = responseFilename || fallbackFilename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -575,8 +597,9 @@ async function downloadCoreFile(
   filename: string,
   retrySession = true,
   preferResponseFilename = false,
+  onProgress?: (receivedBytes: number, totalBytes?: number) => void,
 ): Promise<void> {
-  return downloadCoreRequest(path, filename, {}, retrySession, preferResponseFilename);
+  return downloadCoreRequest(path, filename, {}, retrySession, preferResponseFilename, onProgress);
 }
 
 export async function loginPassword(identifier: string, password: string): Promise<AuthTokenData> {
@@ -2332,6 +2355,7 @@ export async function exportSkuCatalog(params: {
   statuses?: ProductSku["status"][];
   missingImagesOnly?: boolean;
   skuIds?: string[];
+  productIds?: string[];
 } = {}): Promise<void> {
   await downloadCoreRequest(
     "/product-center/skus/export",
@@ -2344,6 +2368,7 @@ export async function exportSkuCatalog(params: {
         statuses: params.statuses ?? [],
         missing_images_only: Boolean(params.missingImagesOnly),
         sku_ids: params.skuIds ?? [],
+        product_ids: params.productIds ?? [],
       }),
     },
   );
@@ -7091,6 +7116,7 @@ interface ApiPurchaseOrderSupplierOption {
 interface ApiPurchaseOrderSettings {
   purchase_order_number: string;
   issue_date: string;
+  locale: StorefrontLocale;
   custom_fields: Array<{ id: string; label: string; values: Record<string, string> }>;
   items: Array<{
     item_id: string; position: number; supplier_id?: string | null; supplier_name: string;
@@ -7105,6 +7131,7 @@ function mapQuotePurchaseOrder(row: ApiPurchaseOrderSettings): QuotePurchaseOrde
   return {
     purchaseOrderNumber: row.purchase_order_number,
     issueDate: row.issue_date,
+    locale: row.locale ?? "zh-CN",
     customFields: (row.custom_fields ?? []).map((field) => ({ id: field.id, label: field.label, values: { ...field.values } })),
     items: row.items.map((item) => ({
       itemId: item.item_id,
@@ -7144,6 +7171,7 @@ function quotePurchaseOrderPayload(row: QuotePurchaseOrderSettings): ApiPurchase
   return {
     purchase_order_number: row.purchaseOrderNumber.trim(),
     issue_date: row.issueDate,
+    locale: row.locale,
     custom_fields: row.customFields.map((field) => ({ id: field.id, label: field.label.trim(), values: { ...field.values } })),
     items: row.items.map((item) => ({
       item_id: item.itemId,
@@ -7414,6 +7442,7 @@ export async function downloadPublicQuoteDraftDocument(
   documentNumber: string,
   type: "pdf" | "xlsx",
   documentType: "quotation" | "proforma_invoice" | "packing_list" | "purchase_order" = "quotation",
+  onProgress?: (receivedBytes: number, totalBytes?: number) => void,
 ): Promise<void> {
   const fallback = documentType === "proforma_invoice"
     ? "proforma-invoice"
@@ -7422,6 +7451,9 @@ export async function downloadPublicQuoteDraftDocument(
   await downloadCoreFile(
     `/public-quote-drafts/${encodeURIComponent(draftId)}/${type}?document_type=${documentType}`,
     `${safeDocumentNumber}.${type}`,
+    true,
+    documentType === "purchase_order",
+    onProgress,
   );
 }
 

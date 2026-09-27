@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 QuoteTemplateField = Literal[
     "serial_number",
+    "product_attribute",
     "sku_code",
     "product_name",
     "description",

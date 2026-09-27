@@ -16,6 +16,22 @@ from ..product_supplier_models import ProductAttributeRow, ProductRow
 
 _LINE_PATTERN = re.compile(r"^\s*([^:：\r\n;；]{1,100}?)\s*[:：]\s*(.*?)\s*$")
 _KEY_NORMALIZE_PATTERN = re.compile(r"[\s_\-/:：,.，。()（）\[\]【】]+")
+_INLINE_LABEL_PATTERN = re.compile(r"(?:^|[\s,，。|])([^\s,，。|:：]{1,30})\s*$")
+_TRAILING_CHINESE_PATTERN = re.compile(r"[\u4e00-\u9fff]{2,30}$")
+_COLON_PATTERN = re.compile(r"[:：]")
+# Without a separator, Chinese text on both sides of a field name is
+# inherently ambiguous. Recognize common catalogue labels as suffixes while
+# leaving the preceding description text in the previous field's value.
+_INLINE_LABEL_HINTS = tuple(sorted({
+    "支持系统", "操作系统", "适用系统", "蓝牙版本", "无线距离", "连接距离",
+    "传输距离", "连接方式", "无线频率", "工作频率", "电池容量", "充电时间",
+    "续航时间", "产品尺寸", "包装尺寸", "商品尺寸", "产品重量", "包装重量",
+    "产品型号", "商品型号", "防水等级", "防护等级", "认证标准", "额定电压",
+    "额定功率", "工作电压", "工作电流", "适用对象", "适用范围", "装箱数量",
+    "装箱数", "毛重", "净重", "材质", "颜色", "尺寸", "规格", "型号",
+    "重量", "容量", "功率", "电压", "电流", "频率", "长度", "宽度",
+    "高度", "证书", "认证", "品牌", "产地", "保修期", "用途", "功能",
+}, key=len, reverse=True))
 
 
 def description_attribute_key(value: object) -> str:
@@ -25,6 +41,64 @@ def description_attribute_key(value: object) -> str:
 def description_attribute_definition_key(display_name: str) -> str:
     digest = sha256(description_attribute_key(display_name).encode("utf-8")).hexdigest()[:20]
     return f"auto_{digest}"
+
+
+def _inline_label_start(fragment: str, value_start: int, colon_index: int) -> int | None:
+    """Find a plausible next field name before a colon in a single line."""
+
+    if fragment[colon_index + 1 :].startswith("//"):
+        return None
+    before_colon = fragment[value_start:colon_index].rstrip()
+    spaced = _INLINE_LABEL_PATTERN.search(before_colon)
+    if spaced is not None:
+        label = spaced.group(1)
+        label_start = value_start + spaced.start(1)
+        if (
+            label_start > value_start
+            and fragment[value_start:label_start].strip()
+            and any(character.isalpha() for character in label)
+            and description_attribute_key(label) not in {"http", "https"}
+        ):
+            return label_start
+
+    # When ASCII/numeric value text runs straight into a Chinese label, the
+    # entire trailing Chinese run is usually the field name. "要求" is a
+    # common value ending, so defer that ambiguous case to known suffixes.
+    trailing_chinese = _TRAILING_CHINESE_PATTERN.search(before_colon)
+    if (
+        trailing_chinese is not None
+        and trailing_chinese.start() > 0
+        and not trailing_chinese.group().startswith("要求")
+    ):
+        label_start = value_start + trailing_chinese.start()
+        if fragment[value_start:label_start].strip():
+            return label_start
+
+    for label in _INLINE_LABEL_HINTS:
+        if before_colon.endswith(label):
+            label_start = value_start + len(before_colon) - len(label)
+            if label_start > value_start and fragment[value_start:label_start].strip():
+                return label_start
+
+    return None
+
+
+def _split_inline_attributes(fragment: str) -> tuple[tuple[str, str], ...]:
+    first = _LINE_PATTERN.match(fragment)
+    if first is None:
+        return ()
+    markers: list[tuple[str, int, int]] = [
+        (first.group(1), first.start(1), first.start(2))
+    ]
+    for colon in _COLON_PATTERN.finditer(fragment, first.start(2)):
+        label_start = _inline_label_start(fragment, markers[-1][2], colon.start())
+        if label_start is None:
+            continue
+        markers.append((fragment[label_start:colon.start()].strip(), label_start, colon.end()))
+    return tuple(
+        (name, fragment[value_start:markers[index + 1][1] if index + 1 < len(markers) else len(fragment)])
+        for index, (name, _label_start, value_start) in enumerate(markers)
+    )
 
 
 def extract_description_attributes(
@@ -41,29 +115,27 @@ def extract_description_attributes(
         description,
     )
     for fragment in fragments:
-        match = _LINE_PATTERN.match(fragment)
-        if match is None:
-            continue
-        name = re.sub(r"\s+", " ", match.group(1)).strip(" -_：:")
-        value = re.sub(r"\s+", " ", match.group(2)).strip()
-        normalized_name = description_attribute_key(name)
-        if (
-            not normalized_name
-            or normalized_name in {"http", "https"}
-            or not value
-            or len(name) > 100
-            or len(value) > 4000
-        ):
-            continue
-        existing_index = by_key.get(normalized_name)
-        if existing_index is None:
-            by_key[normalized_name] = len(result)
-            result.append((name, value))
-            continue
-        previous_name, previous_value = result[existing_index]
-        values = [part.strip() for part in re.split(r"[；;]", previous_value) if part.strip()]
-        if value not in values:
-            result[existing_index] = (previous_name, f"{previous_value}；{value}")
+        for raw_name, raw_value in _split_inline_attributes(fragment):
+            name = re.sub(r"\s+", " ", raw_name).strip(" -_：:")
+            value = re.sub(r"\s+", " ", raw_value).strip()
+            normalized_name = description_attribute_key(name)
+            if (
+                not normalized_name
+                or normalized_name in {"http", "https"}
+                or not value
+                or len(name) > 100
+                or len(value) > 4000
+            ):
+                continue
+            existing_index = by_key.get(normalized_name)
+            if existing_index is None:
+                by_key[normalized_name] = len(result)
+                result.append((name, value))
+                continue
+            previous_name, previous_value = result[existing_index]
+            values = [part.strip() for part in re.split(r"[；;]", previous_value) if part.strip()]
+            if value not in values:
+                result[existing_index] = (previous_name, f"{previous_value}；{value}")
     return tuple(result)
 
 

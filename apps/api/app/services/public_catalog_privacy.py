@@ -38,8 +38,8 @@ _NORMALIZED_PRIVATE_SKU_OPTION_KEYS = frozenset(
 )
 _PRIVATE_SKU_OPTION_FRAGMENT_PATTERN = re.compile(
     r"supplier|vendor|factory|manufacturer|sourcing|procurement|purchaseprice|"
-    r"cost|internalprice|供应商|供應商|厂家|廠家|工厂|工廠|采购|採購|"
-    r"进货|進貨|成本|内部价|內部價|供货|供貨",
+    r"cost|internalprice|internal[a-z]*note|internal[a-z]*remark|供应商|供應商|厂家|廠家|工厂|工廠|采购|採購|"
+    r"进货|進貨|成本|内部价|內部價|备注|備註|供货|供貨",
     re.IGNORECASE,
 )
 

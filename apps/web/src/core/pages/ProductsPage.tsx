@@ -1290,17 +1290,21 @@ export function ProductsPage() {
     }
   };
   const exportCatalog = async () => {
-    if (!result.total || exportBusy) return;
+    const productIds = [...selectedProductIds];
+    if ((!result.total && !productIds.length) || exportBusy) return;
     setExportBusy(true);
     setError("");
     try {
       await exportSkuCatalog({
-        q: debouncedQuery.trim() || undefined,
-        categoryId: categoryId || undefined,
+        q: productIds.length ? undefined : debouncedQuery.trim() || undefined,
+        categoryId: productIds.length ? undefined : categoryId || undefined,
         statuses: undefined,
-        missingImagesOnly,
+        missingImagesOnly: !productIds.length && missingImagesOnly,
+        productIds,
       });
-      setBulkNotice(t("已导出当前筛选条件下的 SKU 数据；无 SKU 商品仍保留在商品列表中。"));
+      setBulkNotice(productIds.length
+        ? t("已导出所选 {count} 个商品。", { count: productIds.length })
+        : t("已导出当前筛选条件下的 SKU 数据；无 SKU 商品仍保留在商品列表中。"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("SKU 商品库导出失败"));
     } finally {
@@ -1385,7 +1389,7 @@ export function ProductsPage() {
         title={t("SKU 商品库")}
         actions={<>
           {canShare ? <Button variant="soft" onClick={() => setShareTarget({ type: "STOREFRONT" })}>{t("商品前台")} · {t("分享链接")}</Button> : null}
-          <Button variant="soft" disabled={!result.total || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出商品与 SKU")}</Button>
+          <Button variant="soft" disabled={(!result.total && !selectedProductIds.size) || exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t(selectedProductIds.size ? "导出已选商品与 SKU" : "导出商品与 SKU")}</Button>
           {canCreate ? <Button onClick={() => setCreateOpen(true)}><Plus />{t("新建商品")}</Button> : null}
           {canImport ? <Button variant="soft" onClick={() => setImportDialogOpen(true)}><FileArrowUp />{t("导入与撤回")}</Button> : null}
           {canImport || canDelete ? (
@@ -1448,6 +1452,7 @@ export function ProductsPage() {
             <Text size="2" weight="bold">{t("已选 {products} 个商品 · {skus} 个 SKU", { products: selectedProductIds.size, skus: selectedSkuCount })}</Text>
           </div>
           <div className="core-sku-bulk-actions">
+            <Button size="2" variant="soft" disabled={exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出已选商品与 SKU")}</Button>
             {canShare ? <Button size="2" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [...selectedProductIds] })}>{t("分享商品")}</Button> : null}
             {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("移动分类")}</Button> : null}
             {canEdit && isPlatformAdmin ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}

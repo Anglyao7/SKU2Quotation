@@ -670,6 +670,7 @@ class PurchaseOrderItem(BaseModel):
 class PurchaseOrderSettings(BaseModel):
     purchase_order_number: str = Field(min_length=1, max_length=80)
     issue_date: date
+    locale: StorefrontLocale = "zh-CN"
     items: list[PurchaseOrderItem] = Field(default_factory=list, max_length=200)
     custom_fields: list[PublicQuoteCustomField] = Field(
         default_factory=list,

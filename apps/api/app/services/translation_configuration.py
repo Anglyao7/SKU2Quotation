@@ -18,6 +18,8 @@ from ..translation_constants import MAX_TRANSLATION_TIMEOUT_SECONDS
 from .translation import (
     DEFAULT_ALIYUN_ALIMT_ENDPOINT,
     DEFAULT_ALIYUN_ALIMT_REGION,
+    DEFAULT_TENCENT_TOKENHUB_BASE_URL,
+    DEFAULT_TENCENT_TOKENHUB_MODEL,
     TranslationProvider,
     TranslationProviderError,
     _aliyun_endpoint,
@@ -26,6 +28,8 @@ from .translation import (
     aliyun_alimt_translation_provider,
     deeplx_translation_provider,
     openai_compatible_translation_provider,
+    tencent_tokenhub_translation_provider,
+    _tencent_tokenhub_base_url,
 )
 from .translation_rate_limit import (
     environment_translation_requests_per_minute,
@@ -62,7 +66,9 @@ MAX_CATALOG_BATCH_CHARACTERS = 100_000
 MAX_TRANSLATION_RETRY_COUNT = 10
 DEFAULT_REASONING_EFFORT = "low"
 SUPPORTED_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high"}
-SUPPORTED_PROVIDERS = {"openai-compatible", "deeplx", "aliyun-alimt"}
+SUPPORTED_PROVIDERS = {
+    "openai-compatible", "deeplx", "aliyun-alimt", "tencent-tokenhub"
+}
 ALIYUN_GENERAL_EDITION = "translate_standard"
 DEFAULT_CATALOG_EXECUTION_MODE = "REALTIME"
 SUPPORTED_CATALOG_EXECUTION_MODES = {"REALTIME", "QWEN_BATCH"}
@@ -168,7 +174,7 @@ def _normalized_provider(value: str) -> str:
     normalized = value.strip().lower().replace("_", "-")
     if normalized not in SUPPORTED_PROVIDERS:
         raise TranslationProviderError(
-            "translation provider must be openai-compatible, deeplx, or aliyun-alimt"
+            "translation provider must be openai-compatible, deeplx, aliyun-alimt, or tencent-tokenhub"
         )
     return normalized
 
@@ -344,6 +350,14 @@ def _validated_provider(
             endpoint=_aliyun_endpoint(normalized_base_url),
             timeout_seconds=float(timeout_seconds),
         )
+    if normalized_provider == "tencent-tokenhub":
+        return tencent_tokenhub_translation_provider(
+            base_url=normalized_base_url,
+            api_key=api_key,
+            model=normalized_model,
+            timeout_seconds=float(timeout_seconds),
+            max_tokens=max_tokens,
+        )
     _openai_chat_completions_endpoint(
         normalized_base_url,
         production=_managed_environment(),
@@ -375,6 +389,8 @@ def _environment_provider() -> str | None:
         return "openai-compatible"
     if profile == "aliyun_alimt":
         return "aliyun-alimt"
+    if profile == "tencent_tokenhub":
+        return "tencent-tokenhub"
     return None
 
 
@@ -387,7 +403,11 @@ def _environment_api_key(provider: str) -> str:
         else (
             "ALIYUN_TRANSLATION_ACCESS_KEY_SECRET"
             if provider == "aliyun-alimt"
-            else "OPENAI_TRANSLATION_API_KEY"
+            else (
+                "TENCENT_TOKENHUB_API_KEY"
+                if provider == "tencent-tokenhub"
+                else "OPENAI_TRANSLATION_API_KEY"
+            )
         )
     )
     return os.getenv(variable, "").strip()
@@ -611,6 +631,46 @@ def _environment_snapshot() -> TranslationConfigurationSnapshot:
             batch_api_key_hint=(
                 f"••••{batch_api_key[-4:]}" if batch_api_key else None
             ),
+            updated_at=None,
+        )
+    if profile == "tencent_tokenhub":
+        raw_api_key = _environment_api_key("tencent-tokenhub")
+        try:
+            timeout_seconds = int(
+                float(os.getenv("TENCENT_TOKENHUB_TIMEOUT_SECONDS", "20"))
+            )
+        except ValueError as exc:
+            raise TranslationProviderError(
+                "TENCENT_TOKENHUB_TIMEOUT_SECONDS must be a number"
+            ) from exc
+        return TranslationConfigurationSnapshot(
+            source="environment",
+            provider="tencent-tokenhub",
+            enabled=bool(raw_api_key),
+            base_url=os.getenv(
+                "TENCENT_TOKENHUB_BASE_URL", DEFAULT_TENCENT_TOKENHUB_BASE_URL
+            ).strip(),
+            model_name=os.getenv(
+                "TENCENT_TOKENHUB_MODEL", DEFAULT_TENCENT_TOKENHUB_MODEL
+            ).strip(),
+            region_id=None,
+            timeout_seconds=timeout_seconds,
+            max_tokens=4096,
+            requests_per_minute=environment_translation_requests_per_minute(),
+            max_retry_count=_environment_catalog_translation_retry_count(),
+            catalog_batch_size=catalog_batch_size,
+            catalog_batch_characters=catalog_batch_characters,
+            catalog_concurrency=_environment_catalog_translation_concurrency(),
+            catalog_execution_mode=catalog_execution_mode,
+            reasoning_effort="none",
+            api_key_configured=bool(raw_api_key),
+            api_key_hint=f"••••{raw_api_key[-4:]}" if raw_api_key else None,
+            access_key_id_configured=False,
+            access_key_id_hint=None,
+            batch_base_url=batch_base_url,
+            batch_model_name=batch_model_name,
+            batch_api_key_configured=bool(batch_api_key),
+            batch_api_key_hint=f"••••{batch_api_key[-4:]}" if batch_api_key else None,
             updated_at=None,
         )
     if profile != "openai_compatible":
@@ -1109,6 +1169,11 @@ def save_managed_translation_settings(
             (region_id or DEFAULT_ALIYUN_ALIMT_REGION).strip()
             or DEFAULT_ALIYUN_ALIMT_REGION
         )
+        normalized_reasoning = "none"
+    elif normalized_provider == "tencent-tokenhub":
+        normalized_base_url = _tencent_tokenhub_base_url(base_url)
+        normalized_model = model_name.strip()
+        normalized_region = None
         normalized_reasoning = "none"
     else:
         normalized_base_url = base_url.strip().rstrip("/")

@@ -19,6 +19,7 @@ from app.services.translation import (
     AliyunAlimtTranslator,
     DeepLXTranslator,
     OpenAICompatibleTranslator,
+    TencentTokenHubTranslator,
     TranslationIdentity,
     TranslationProviderError,
     catalog_translation_is_configured,
@@ -372,6 +373,56 @@ def test_openai_compatible_adapter_uses_chat_completions_contract() -> None:
     ) == "Smart pet feeder SF-6L20"
     assert translator.identity.provider == "openai-compatible"
     assert "catalog-translation-model" in translator.identity.version
+
+
+def test_tencent_tokenhub_uses_official_endpoint_and_hy_mt2_without_reasoning() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://tokenhub.tencentmaas.com/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer test-tokenhub-key"
+        payload = json.loads(request.content)
+        assert payload["model"] == "hy-mt2-plus"
+        assert "reasoning_effort" not in payload
+        assert payload["max_tokens"] <= 4096
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "Smart pet feeder SF-6L20"},
+                    }
+                ]
+            },
+        )
+
+    translator = TencentTokenHubTranslator(
+        base_url="https://tokenhub.tencentmaas.com/v1",
+        api_key="test-tokenhub-key",
+        model="hy-mt2-plus",
+        max_tokens=16384,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert translator.translate(
+        "智能宠物喂食器 SF-6L20",
+        source_locale="zh-CN",
+        target_locale="en-US",
+    ) == "Smart pet feeder SF-6L20"
+    assert translator.identity.provider == "tencent-tokenhub"
+
+
+def test_tencent_tokenhub_rejects_unofficial_endpoint_and_non_translation_model() -> None:
+    with pytest.raises(TranslationProviderError, match="official HTTPS"):
+        TencentTokenHubTranslator(
+            base_url="https://attacker.example/v1",
+            api_key="test-key",
+            model="hy-mt2-plus",
+        )
+    with pytest.raises(TranslationProviderError, match="hy-mt2"):
+        TencentTokenHubTranslator(
+            base_url="https://tokenhub.tencentmaas.com/v1",
+            api_key="test-key",
+            model="not-a-translation-model",
+        )
 
 
 def test_openai_compatible_adapter_translates_marker_payload_as_json() -> None:
