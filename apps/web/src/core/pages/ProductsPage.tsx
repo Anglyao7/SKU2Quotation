@@ -1070,14 +1070,16 @@ export function ProductsPage() {
       return next;
     });
   };
-  const startMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+  const startMarqueeSelection = (event: React.PointerEvent<HTMLElement>) => {
     if (!canSelect || event.pointerType !== "mouse" || event.button !== 0 || loading) return;
     const target = event.target;
-    if (!(target instanceof Element) || !target.closest("tbody tr[data-product-id]")) return;
-    if (target.closest("button, a, input, select, textarea, [role='button'], [role='checkbox'], .core-sku-select-column, .core-sku-action-column")) return;
+    if (!(target instanceof Element) || !target.closest(".core-sku-table-summary, .core-sku-table-scroll")) return;
+    if (target.closest("button, a, input, select, textarea, [role='button'], [role='checkbox']")) return;
 
     marqueeCleanupRef.current?.();
-    const scroll = event.currentTarget;
+    const panel = event.currentTarget;
+    const scroll = panel.querySelector<HTMLDivElement>(".core-sku-table-scroll");
+    if (!scroll) return;
     const pointerId = event.pointerId;
     const initialSelection = new Set(selectedProductIds);
     const additive = event.ctrlKey || event.metaKey || event.shiftKey;
@@ -1136,7 +1138,7 @@ export function ProductsPage() {
       window.removeEventListener("pointercancel", onCancel);
       window.removeEventListener("keydown", onKeyDown);
       window.cancelAnimationFrame(animationFrame);
-      scroll.classList.remove("is-marquee-pending");
+      panel.classList.remove("is-marquee-pending");
       setMarqueeRect(null);
       setMarqueeBulkBarVisible(null);
       marqueeCleanupRef.current = null;
@@ -1174,7 +1176,7 @@ export function ProductsPage() {
       if (dragging) setSelectedProductIds(initialSelection);
       cleanup();
     };
-    scroll.classList.add("is-marquee-pending");
+    panel.classList.add("is-marquee-pending");
     marqueeCleanupRef.current = cleanup;
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -1594,7 +1596,7 @@ export function ProductsPage() {
             />
       ) : null}
       {!languagePackLoading && result.items.length ? (
-        <section className="core-sku-data-panel" aria-label={t("商品列表")}>
+        <section className="core-sku-data-panel" aria-label={t("商品列表")} onPointerDown={startMarqueeSelection}>
           <header className="core-sku-table-summary" aria-live="polite">
             <Text size="2">
               {t("共 {total} 个商品 · 当前显示 {start}–{end}", {
@@ -1607,7 +1609,6 @@ export function ProductsPage() {
           </header>
           <div
             className={`core-sku-table-scroll${loading ? " is-loading" : ""}`}
-            onPointerDown={startMarqueeSelection}
             onClickCapture={(event) => {
               if (!suppressMarqueeClickRef.current) return;
               event.preventDefault();

@@ -581,7 +581,7 @@
 .core-sku-table-summary > span:first-child { color: var(--core-ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .core-sku-table-summary > div { display: flex; align-items: center; justify-content: flex-end; gap: 14px; }
 .core-sku-table-scroll { position: relative; max-height: clamp(380px, calc(100dvh - 350px), 720px); overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; background: var(--core-surface); }
-.core-sku-table-scroll.is-marquee-pending .core-sku-data-table { user-select: none; -webkit-user-select: none; }
+.core-sku-data-panel.is-marquee-pending .core-sku-table-summary, .core-sku-data-panel.is-marquee-pending .core-sku-data-table { user-select: none; -webkit-user-select: none; }
 .core-sku-marquee { position: absolute; z-index: 8; pointer-events: none; border: 1px solid var(--core-accent); border-radius: 3px; background: color-mix(in srgb, var(--core-accent) 15%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--core-accent) 20%, transparent); }
 .core-sku-table-scroll.is-loading { cursor: progress; }
 .core-sku-table-scroll.is-loading::before { content: ""; position: sticky; top: 0; z-index: 9; width: 100%; height: 2px; display: block; margin-bottom: -2px; background: linear-gradient(90deg, transparent, var(--core-accent), transparent); background-size: 45% 100%; animation: core-table-loading 1s linear infinite; }
