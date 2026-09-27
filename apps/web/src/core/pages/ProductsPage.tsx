@@ -458,6 +458,11 @@ export function ProductsPage() {
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const marqueeCleanupRef = useRef<(() => void) | null>(null);
+  const suppressMarqueeClickRef = useRef(false);
+  const [marqueeRect, setMarqueeRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [marqueeBulkBarVisible, setMarqueeBulkBarVisible] = useState<boolean | null>(null);
+  useEffect(() => () => marqueeCleanupRef.current?.(), []);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [singleDeleteTarget, setSingleDeleteTarget] = useState<SkuListItem>();
@@ -1065,6 +1070,117 @@ export function ProductsPage() {
       return next;
     });
   };
+  const startMarqueeSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!canSelect || event.pointerType !== "mouse" || event.button !== 0 || loading) return;
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest("tbody tr[data-product-id]")) return;
+    if (target.closest("button, a, input, select, textarea, [role='button'], [role='checkbox'], .core-sku-select-column, .core-sku-action-column")) return;
+
+    marqueeCleanupRef.current?.();
+    const scroll = event.currentTarget;
+    const pointerId = event.pointerId;
+    const initialSelection = new Set(selectedProductIds);
+    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    const initialPointer = { x: event.clientX, y: event.clientY };
+    let lastPointer = initialPointer;
+    let dragging = false;
+    let animationFrame = 0;
+    const contentPoint = (point: { x: number; y: number }) => {
+      const bounds = scroll.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.min(scroll.clientWidth, point.x - bounds.left)) + scroll.scrollLeft,
+        y: Math.max(0, Math.min(scroll.clientHeight, point.y - bounds.top)) + scroll.scrollTop,
+      };
+    };
+    const origin = contentPoint(initialPointer);
+    const updateSelection = () => {
+      const end = contentPoint(lastPointer);
+      const left = Math.min(origin.x, end.x);
+      const top = Math.min(origin.y, end.y);
+      const right = Math.max(origin.x, end.x) + 1;
+      const bottom = Math.max(origin.y, end.y) + 1;
+      setMarqueeRect({ left, top, width: right - left, height: bottom - top });
+      const bounds = scroll.getBoundingClientRect();
+      const next = additive ? new Set(initialSelection) : new Set<string>();
+      scroll.querySelectorAll<HTMLTableRowElement>("tbody tr[data-product-id]").forEach((row) => {
+        const rect = row.getBoundingClientRect();
+        const rowLeft = rect.left - bounds.left + scroll.scrollLeft;
+        const rowTop = rect.top - bounds.top + scroll.scrollTop;
+        if (rowLeft < right && rowLeft + rect.width > left && rowTop < bottom && rowTop + rect.height > top && next.size < 500) {
+          const productId = row.dataset.productId;
+          if (productId) next.add(productId);
+        }
+      });
+      setSelectedProductIds((current) => current.size === next.size && [...next].every((id) => current.has(id)) ? current : next);
+    };
+    const autoScroll = () => {
+      if (!dragging) return;
+      const bounds = scroll.getBoundingClientRect();
+      const edge = 32;
+      const step = 14;
+      const visibleLeft = Math.max(0, bounds.left);
+      const visibleRight = Math.min(window.innerWidth, bounds.right);
+      const visibleTop = Math.max(0, bounds.top);
+      const visibleBottom = Math.min(window.innerHeight, bounds.bottom);
+      const horizontal = lastPointer.x < visibleLeft + edge ? -step : lastPointer.x > visibleRight - edge ? step : 0;
+      const vertical = lastPointer.y < visibleTop + edge ? -step : lastPointer.y > visibleBottom - edge ? step : 0;
+      const beforeLeft = scroll.scrollLeft;
+      const beforeTop = scroll.scrollTop;
+      if (horizontal || vertical) scroll.scrollBy(horizontal, vertical);
+      if (scroll.scrollLeft !== beforeLeft || scroll.scrollTop !== beforeTop) updateSelection();
+      animationFrame = window.requestAnimationFrame(autoScroll);
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      window.removeEventListener("keydown", onKeyDown);
+      window.cancelAnimationFrame(animationFrame);
+      scroll.classList.remove("is-marquee-pending");
+      setMarqueeRect(null);
+      setMarqueeBulkBarVisible(null);
+      marqueeCleanupRef.current = null;
+    };
+    const onMove = (move: PointerEvent) => {
+      if (move.pointerId !== pointerId) return;
+      lastPointer = { x: move.clientX, y: move.clientY };
+      if (!dragging && Math.hypot(move.clientX - initialPointer.x, move.clientY - initialPointer.y) < 5) return;
+      if (!dragging) {
+        dragging = true;
+        setMarqueeBulkBarVisible(initialSelection.size > 0);
+        setBulkNotice("");
+        setBulkError("");
+        animationFrame = window.requestAnimationFrame(autoScroll);
+      }
+      move.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      updateSelection();
+    };
+    const onUp = (up: PointerEvent) => {
+      if (up.pointerId !== pointerId) return;
+      if (dragging) {
+        suppressMarqueeClickRef.current = true;
+        window.setTimeout(() => { suppressMarqueeClickRef.current = false; }, 0);
+      }
+      cleanup();
+    };
+    const onCancel = (cancel: PointerEvent) => {
+      if (cancel.pointerId !== pointerId) return;
+      if (dragging) setSelectedProductIds(initialSelection);
+      cleanup();
+    };
+    const onKeyDown = (key: KeyboardEvent) => {
+      if (key.key !== "Escape") return;
+      if (dragging) setSelectedProductIds(initialSelection);
+      cleanup();
+    };
+    scroll.classList.add("is-marquee-pending");
+    marqueeCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+    window.addEventListener("keydown", onKeyDown);
+  };
   const clearProductSelection = () => {
     setSelectedProductIds(new Set());
     setDeleteDialogOpen(false);
@@ -1446,7 +1562,7 @@ export function ProductsPage() {
           <Button size="1" variant="ghost" color="gray" onClick={() => setBulkNotice("")} aria-label={t("关闭")}><X /></Button>
         </Card>
       ) : null}
-      {canSelect && selectedProductIds.size > 0 ? (
+      {canSelect && (marqueeBulkBarVisible ?? selectedProductIds.size > 0) ? (
         <Card className="core-sku-bulk-bar">
           <div>
             <Text size="2" weight="bold">{t("已选 {products} 个商品 · {skus} 个 SKU", { products: selectedProductIds.size, skus: selectedSkuCount })}</Text>
@@ -1489,7 +1605,17 @@ export function ProductsPage() {
             </Text>
             <div>{loading ? <Text size="1" color="gray">{t("正在更新结果…")}</Text> : null}</div>
           </header>
-          <div className={`core-sku-table-scroll${loading ? " is-loading" : ""}`}>
+          <div
+            className={`core-sku-table-scroll${loading ? " is-loading" : ""}`}
+            onPointerDown={startMarqueeSelection}
+            onClickCapture={(event) => {
+              if (!suppressMarqueeClickRef.current) return;
+              event.preventDefault();
+              event.stopPropagation();
+              suppressMarqueeClickRef.current = false;
+            }}
+            onDragStart={(event) => { if (marqueeCleanupRef.current) event.preventDefault(); }}
+          >
             <table className="core-sku-data-table">
               <thead>
                 <tr>
@@ -1517,6 +1643,7 @@ export function ProductsPage() {
                 {result.items.map((product) => (
                   <tr
                     key={product.id}
+                    data-product-id={product.id}
                     data-selected={selectedProductIds.has(product.id) || undefined}
                     tabIndex={0}
                     onClick={() => void openProduct(product.id)}
@@ -1616,6 +1743,7 @@ export function ProductsPage() {
                 ))}
               </tbody>
             </table>
+            {marqueeRect ? <div className="core-sku-marquee" style={marqueeRect} aria-hidden="true" /> : null}
           </div>
           <nav className="core-sku-pagination" aria-label={t("SKU 列表分页")}>
             <div className="core-sku-pagination-summary">
