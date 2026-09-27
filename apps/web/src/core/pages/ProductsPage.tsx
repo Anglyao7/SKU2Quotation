@@ -1188,17 +1188,17 @@ export function ProductsPage() {
     setBulkError("");
   };
   const openImageEnhancementForProducts = () => {
-    if (!canEdit || !isPlatformAdmin || !selectedProductIds.size) return;
+    if (!canEdit || !selectedProductIds.size) return;
     setImageEnhancementTargets(
       [...selectedProductIds].map((productId) => ({ productId, skuIds: [] })),
     );
   };
   const openImageEnhancementForSkus = (productId: string, skuIds: string[]) => {
-    if (!canEdit || !isPlatformAdmin || !skuIds.length) return;
+    if (!canEdit || !skuIds.length) return;
     setImageEnhancementTargets([{ productId, skuIds }]);
   };
   const openImageEnhancementForProduct = (productId: string) => {
-    if (!canEdit || !isPlatformAdmin) return;
+    if (!canEdit) return;
     setImageEnhancementTargets([{ productId, skuIds: [] }]);
   };
   const openBulkAction = (action: BulkSkuAction) => {
@@ -1571,7 +1571,7 @@ export function ProductsPage() {
             <Button size="2" variant="soft" disabled={exportBusy} loading={exportBusy} onClick={() => void exportCatalog()}><DownloadSimple />{t("导出已选商品与 SKU")}</Button>
             {canShare ? <Button size="2" variant="soft" onClick={() => setShareTarget({ type: "PRODUCTS", productIds: [...selectedProductIds] })}>{t("分享商品")}</Button> : null}
             {canEdit ? <Button size="2" variant="soft" color="blue" onClick={() => openBulkAction("category")}><Folders />{t("移动分类")}</Button> : null}
-            {canEdit && isPlatformAdmin ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
+            {canEdit ? <Button size="2" variant="soft" color="blue" onClick={openImageEnhancementForProducts}><Sparkle />{t("图片变清晰")}</Button> : null}
             {canDelete ? <Button size="2" color="red" disabled={deleteBusy} onClick={() => setDeleteDialogOpen(true)}><Trash />{t("删除已选商品")}</Button> : null}
             <Button size="2" variant="ghost" color="gray" onClick={clearProductSelection}><X />{t("取消选择")}</Button>
           </div>
@@ -2948,16 +2948,18 @@ function ProductDetailPanel({ product, sourceProduct, selectedSkuId, categories,
   const [activeTab, setActiveTab] = useState<"product" | "skus">(selectedSkuId ? "skus" : "product");
   const canEdit = hasPermission("product.edit");
   const isPlatformAdmin = Boolean(profile?.user.isPlatformAdmin);
-  const canEnhanceImages = canEdit && isPlatformAdmin;
-  const selectedImage = product.images.find((image) => image.id === selectedImageId)
-    ?? product.images.find((image) => image.imageRole === "MAIN")
+  const canEnhanceImages = canEdit;
+  const mainImage = product.images.find((image) => image.imageRole === "MAIN")
     ?? product.images[0];
+  const selectedImage = product.images.find((image) => image.id === selectedImageId)
+    ?? mainImage;
   const selectedImageUrl = selectedImage?.url || product.primaryImageUrl;
   const selectedImageIndex = selectedImage
     ? product.images.findIndex((image) => image.id === selectedImage.id)
     : -1;
-  const selectedImageIsMain = selectedImage?.imageRole === "MAIN"
-    || (!selectedImage && Boolean(product.primaryImageUrl));
+  const selectedImageIsMain = selectedImage
+    ? selectedImage.id === mainImage?.id
+    : Boolean(product.primaryImageUrl);
 
   useEffect(() => setImageFailed(false), [selectedImageUrl]);
   useEffect(() => {
@@ -3256,10 +3258,10 @@ function SkuPanel({ product, displayProduct, initialSkuId, managedTags, onEnhanc
   onEnhanceSkus: (productId: string, skuIds: string[]) => void;
   onChanged: () => Promise<void>;
 }) {
-  const { hasAnyPermission, hasPermission, profile } = useCoreAuth();
+  const { hasAnyPermission, hasPermission } = useCoreAuth();
   const { t } = useLocale();
   const canEdit = hasPermission("product.edit");
-  const canEnhanceImages = canEdit && Boolean(profile?.user.isPlatformAdmin);
+  const canEnhanceImages = canEdit;
   const canViewCatalog = hasAnyPermission("catalog.view", "catalog.publish");
   const canPublish = hasAnyPermission("catalog.publish");
   const canManageSku = canEdit || canPublish;
