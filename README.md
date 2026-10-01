@@ -5,6 +5,17 @@
 
 品牌规范：中文统一使用“智贸云”，英文统一使用“AI Trade Cloud”。
 
+## 公网演示
+
+| 项目 | 信息 |
+|---|---|
+| 网站 | <https://aitradecloud.top/> |
+| 登录页 | <https://aitradecloud.top/login> |
+| 演示账号 | `demonstration@aitradecloud.top` |
+| 演示密码 | `888888` |
+
+该账号用于独立的演示租户，可修改演示租户内的数据；请勿在演示环境存放真实客户或供应商资料。公网演示账号与下面的本地开发账号分别配置。
+
 ## 项目结构
 
 ```text
@@ -44,11 +55,11 @@ VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 
 访问 <http://127.0.0.1:5173/>。本地与正式环境使用同一个登录界面，不再提供单独的开发演示入口。未设置 `LOCAL_LOGIN_*` 时，仓库的本地开发默认账号是 `owner` / `owner@local.aitradecloud.invalid`，租户为 `Local Demo Company`（slug：`demo`）；默认开发密码见 `.env.example`，仅限本地使用。
 
-当前项目的本机演示登录邮箱配置为 `admin@AITradeCloud.top`。若要在另一台电脑使用相同的本地演示账号，在被 Git 忽略的 `.env` 中设置：
+需要自定义本地开发账号时，在被 Git 忽略的 `.env` 中设置：
 
 ```dotenv
-LOCAL_LOGIN_ACCOUNT=admin
-LOCAL_LOGIN_EMAIL=admin@AITradeCloud.top
+LOCAL_LOGIN_ACCOUNT=<本地账号>
+LOCAL_LOGIN_EMAIL=<本地邮箱>
 LOCAL_LOGIN_PASSWORD=<本机单独设置的密码>
 ```
 
