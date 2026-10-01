@@ -42,13 +42,17 @@ npm ci
 VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 ```
 
-访问 <http://127.0.0.1:5173/>。本地与正式环境使用同一个账号密码登录界面，不再提供单独的开发演示入口。默认本地凭据为：
+访问 <http://127.0.0.1:5173/>。本地与正式环境使用同一个登录界面，不再提供单独的开发演示入口。未设置 `LOCAL_LOGIN_*` 时，仓库的本地开发默认账号是 `owner` / `owner@local.aitradecloud.invalid`，租户为 `Local Demo Company`（slug：`demo`）；默认开发密码见 `.env.example`，仅限本地使用。
 
-| 本地角色 | 账号 / 邮箱 | 密码 | 租户 |
-|---|---|---|---|
-| Company Owner / Platform Admin | `owner` / `owner@local.aitradecloud.invalid` | `zhimaoyun123` | `Local Demo Company`（slug：`demo`） |
+当前项目的本机演示登录邮箱配置为 `admin@AITradeCloud.top`。若要在另一台电脑使用相同的本地演示账号，在被 Git 忽略的 `.env` 中设置：
 
-可以通过 `.env` 中的 `LOCAL_LOGIN_ACCOUNT`、`LOCAL_LOGIN_EMAIL`、`LOCAL_LOGIN_PHONE` 和 `LOCAL_LOGIN_PASSWORD` 调整本地凭据。该身份和本地密钥只用于开发，不能用于 Staging 或 Production。
+```dotenv
+LOCAL_LOGIN_ACCOUNT=admin
+LOCAL_LOGIN_EMAIL=admin@AITradeCloud.top
+LOCAL_LOGIN_PASSWORD=<本机单独设置的密码>
+```
+
+`LOCAL_LOGIN_PASSWORD` 的实际值只保存在本机，不写入 README 或提交到 GitHub。Docker Compose 会读取根目录的 `.env`；直接运行上面的 Uvicorn 命令时，需先将 `LOCAL_LOGIN_*` 变量加载到 API 进程环境中，应用不会自动读取该文件。修改配置后需重启 API；克隆仓库或拉取 `main` 不会同步本地密码。上述本地身份只用于开发，Staging 和 Production 使用各自的认证配置。
 
 ## 完整 Docker Compose
 
