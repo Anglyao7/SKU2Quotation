@@ -1,0 +1,151 @@
+.page {
+  --public-bg: #080f1a;
+  --public-surface: #101c2b;
+  --public-raised: #152333;
+  --public-text: #edf3f9;
+  --public-muted: #a0b1c4;
+  --public-accent: #82e8db;
+  --public-accent-ink: #092722;
+  --public-line: #27374b;
+  --public-glow: rgba(91, 212, 199, 0.09);
+  --public-shadow: 0 30px 80px rgba(0, 0, 0, 0.24);
+  --public-radius: 16px;
+  --public-font: "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  min-height: 100dvh;
+  color: var(--public-text);
+  background: var(--public-bg);
+  font-family: var(--public-font);
+  font-size: 15px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+  --text: var(--public-text);
+  --text-soft: var(--public-muted);
+  --accent: var(--public-accent);
+  --accent-soft: var(--public-glow);
+  --page-soft: var(--public-raised);
+}
+:global(html[data-theme="light"]) .page {
+  --public-bg: #f5f8fa;
+  --public-surface: #ffffff;
+  --public-raised: #eaf0f5;
+  --public-text: #152638;
+  --public-muted: #526579;
+  --public-accent: #127367;
+  --public-accent-ink: #ffffff;
+  --public-line: #d5dfe8;
+  --public-glow: rgba(20, 137, 119, 0.07);
+  --public-shadow: 0 25px 70px rgba(30, 57, 76, 0.08);
+}
+.page *,
+.page *::before,
+.page *::after {
+  box-sizing: border-box;
+}
+.page h1,
+.page h2,
+.page h3,
+.page p {
+  margin: 0;
+}
+.page h1,
+.page h2,
+.page h3 {
+  font-family: var(--public-font);
+  color: var(--public-text);
+}
+.page a {
+  color: inherit;
+  text-decoration: none;
+}
+.page button,
+.page input {
+  font-family: inherit;
+}
+.page :is(a, button, input):focus-visible {
+  outline: 2px solid var(--public-accent);
+  outline-offset: 5px;
+}
+.page ::selection {
+  background: var(--public-accent);
+  color: var(--public-accent-ink);
+}
+.page :global(.brand) {
+  gap: 11px;
+  color: var(--public-text);
+}
+.page :global(.brand-mark) {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--public-accent);
+  color: var(--public-accent-ink);
+  box-shadow: none;
+}
+.page :global(.brand-copy strong) {
+  font-size: 19px;
+  letter-spacing: 0.06em;
+  font-family: var(--public-font);
+}
+.page :global(.brand-copy small) {
+  color: var(--public-muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+.page :global(.rt-IconButton),
+.page :global(.rt-Button.rt-variant-ghost) {
+  color: var(--public-muted);
+}
+.primary,
+.secondary {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 12px 23px;
+  border-radius: 8px;
+  border: 1px solid var(--public-line);
+  font-size: 14px;
+  font-weight: 600;
+  transition:
+    background 0.18s ease,
+    transform 0.18s ease,
+    border-color 0.18s ease;
+}
+.page .primary {
+  background: var(--public-accent);
+  color: var(--public-accent-ink);
+  border-color: var(--public-accent);
+}
+.primary:hover {
+  transform: translateY(-2px);
+}
+.secondary {
+  background: transparent;
+}
+.secondary:hover {
+  background: var(--public-raised);
+  border-color: var(--public-muted);
+}
+.kicker {
+  color: var(--public-accent);
+  font-family: "Segoe UI", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.2em;
+  font-weight: 600;
+}
+.muted {
+  color: var(--public-muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .page *,
+  .page *::before,
+  .page *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+  .primary:hover {
+    transform: none;
+  }
+}

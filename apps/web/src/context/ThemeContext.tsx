@@ -14,6 +14,8 @@ const THEME_KEY = "zhimaoyun.theme";
 function initialTheme(): ThemeMode {
   const saved = localStorage.getItem(THEME_KEY);
   if (saved === "light" || saved === "dark") return saved;
+  // Public entry pages start dark; other pages retain their system default.
+  if (window.location.pathname === "/" || window.location.pathname === "/login") return "dark";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
